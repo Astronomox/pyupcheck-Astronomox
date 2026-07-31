@@ -15,9 +15,7 @@ django 4.2.0 -> 5.0.6  1 deprecated
   ! core/models.py:8  from django.utils import timezone
     Deprecated: use datetime.timezone instead
 
-╭──────────────────────────────────────────────────╮
-│ 2 breaking | 1 deprecated across 12 packages     │
-╰──────────────────────────────────────────────────╯
+2 breaking | 1 deprecated across 12 packages
 ```
 
 ## Install
@@ -28,14 +26,14 @@ pip install pyupcheck
 
 ## Commands
 
-### `check` — check one package
+### `check` - check one package
 
 ```bash
 pyupcheck check flask 3.0.0        # against specific version
 pyupcheck check flask              # against latest
 ```
 
-### `check-all` — check every dependency
+### `check-all` - check every dependency
 
 Reads `requirements.txt` and `pyproject.toml` (PEP 621 and Poetry), checks every dependency against its latest version.
 
@@ -44,7 +42,7 @@ pyupcheck check-all
 pyupcheck check-all --format html -o report.html
 ```
 
-### `outdated` — list stale dependencies
+### `outdated` - list stale dependencies
 
 ```bash
 pyupcheck outdated
@@ -52,7 +50,7 @@ pyupcheck outdated
 
 Flags major version bumps separately since they carry the most risk.
 
-### `diff` — changelog diff between versions
+### `diff` - changelog diff between versions
 
 See breaking/deprecated changes between any two versions without scanning code:
 
@@ -60,13 +58,13 @@ See breaking/deprecated changes between any two versions without scanning code:
 pyupcheck diff django 4.2.0 5.0.0
 ```
 
-### `scan` — list your usages of a package
+### `scan` - list your usages of a package
 
 ```bash
 pyupcheck scan requests
 ```
 
-### `versions` / `cache-clear`
+### `versions` and `cache-clear`
 
 ```bash
 pyupcheck versions flask
@@ -77,7 +75,7 @@ pyupcheck cache-clear
 
 ```bash
 pyupcheck check flask -f json          # machine-readable
-pyupcheck check flask -f md -o r.md    # markdown report
+pyupcheck check flask -f md -o r.md   # markdown report
 pyupcheck check flask -f html -o r.html # styled HTML report
 ```
 
@@ -129,9 +127,9 @@ cache = true
 Or `.pyupcheckignore`:
 
 ```
-migrations/     # trailing slash = directory
+migrations/          # trailing slash = directory
 legacy/
-internal-package   # no slash = package to skip
+internal-package     # no slash = package to skip
 ```
 
 ## Features
@@ -147,7 +145,30 @@ internal-package   # no slash = package to skip
 
 - Changelog parsing relies on maintainers writing structured changelogs
 - Dynamic attribute access (`getattr(pkg, name)`) is not detected
-- GitHub API is rate limited to 60 req/hr unauthenticated; pass `--github-token` or set `GITHUB_TOKEN` for more
+- GitHub API is rate limited to 60 req/hr unauthenticated; pass `--github-token` or set `GITHUB_TOKEN` for higher limits
+
+## Contributing
+
+Contributions are welcome. Here is how to get started:
+
+```bash
+git clone https://github.com/AgbaDev/pyupcheck.git
+cd pyupcheck
+pip install -e ".[dev]"
+```
+
+Things that would genuinely improve the tool:
+
+- Better changelog parsing for packages that use unconventional formats (e.g. Sphinx-based changelogs, HISTORY files)
+- Support for `setup.cfg` and `setup.py` dependency parsing
+- Detection of dynamic attribute access patterns (`getattr`, `__import__`)
+- `pip-tools` and `conda` lockfile support
+- A `--watch` mode that monitors your lockfile for changes and alerts on risky upgrades
+- Test coverage
+
+To contribute, open an issue describing what you want to work on, then submit a pull request. Please include a short test or example showing the bug or feature.
+
+If you find a package whose changelog pyupcheck fails to parse correctly, open an issue with the package name and version range. That is the most common and most impactful thing to fix.
 
 ## License
 
