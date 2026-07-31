@@ -709,7 +709,7 @@ Remove-Item Env:_PYUPCHECK_COMPLETE
 """,
     }
     print(scripts[shell])
-    console.print(f"\n[dim]Pipe this to your shell config and restart your terminal.[/]", err=True)
+    console.print("\n[dim]Pipe this to your shell config and restart your terminal.[/]")
 
 
 if __name__ == "__main__":
