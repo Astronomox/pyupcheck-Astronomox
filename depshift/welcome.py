@@ -15,7 +15,7 @@ BANNER = """
 
 [bold white]  Know if a dependency upgrade will break your code before you run it.[/]
 
-  [dim]Version[/]   [green]0.2.1[/]
+  [dim]Version[/]   [green]0.3.0[/]
   [dim]PyPI[/]      [blue]https://pypi.org/project/pyupcheck[/]
   [dim]GitHub[/]    [blue]https://github.com/Astronomox/pyupcheck-Astronomox[/]
   [dim]Author[/]    [cyan]AgbaDev (Astronomox)[/]

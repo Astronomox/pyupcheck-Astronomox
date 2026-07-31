@@ -3,12 +3,14 @@
 import json as _json
 import os
 import sys
+from datetime import datetime
 from typing import List, Optional
 
 import click
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 
 from depshift import __version__
 from depshift.scanner import scan_directory
@@ -38,8 +40,8 @@ def get_installed_version(package: str) -> Optional[str]:
 
 
 def _run_single_check(package: str, target_version: Optional[str], directory: str,
-                      github_token: Optional[str], cfg, quiet: bool) -> Optional[dict]:
-    """Run a check for one package. Returns result dict or None on error."""
+                      github_token: Optional[str], cfg, quiet: bool,
+                      since: Optional[str] = None) -> Optional[dict]:
     installed = get_installed_version(package)
 
     if not target_version:
@@ -72,6 +74,34 @@ def _run_single_check(package: str, target_version: Optional[str], directory: st
         changes = get_changes_between(package, current, target_version, github_token=github_token)
     except Exception:
         changes = []
+
+    # --since filter
+    if since and changes:
+        try:
+            since_dt = datetime.strptime(since, "%Y-%m-%d")
+            from packaging.version import Version, InvalidVersion
+            from depshift.changelog import get_pypi_info
+            try:
+                info = get_pypi_info(package)
+                releases = info.get("releases", {})
+                def version_date(ver: str) -> Optional[datetime]:
+                    files = releases.get(ver, [])
+                    for f in files:
+                        upload = f.get("upload_time")
+                        if upload:
+                            try:
+                                return datetime.strptime(upload[:10], "%Y-%m-%d")
+                            except Exception:
+                                pass
+                    return None
+                changes = [
+                    c for c in changes
+                    if (version_date(c.version) or since_dt) >= since_dt
+                ]
+            except Exception:
+                pass
+        except ValueError:
+            pass
 
     risks, safe = analyze(usages, changes, package)
 
@@ -133,7 +163,6 @@ def _emit(results: List[dict], fmt: str, output: Optional[str], quiet: bool):
             print(text)
         return
 
-    # terminal format
     for r in results:
         _print_terminal_result(r, quiet)
 
@@ -176,6 +205,8 @@ def main(ctx):
         show_if_first_run(console)
 
 
+# ── check ─────────────────────────────────────────────────────────────────────
+
 @main.command()
 @click.argument("package")
 @click.argument("target_version", required=False)
@@ -185,11 +216,12 @@ def main(ctx):
 @click.option("--output", "-o", default=None, help="Write report to file")
 @click.option("--fail-on", type=click.Choice(["breaking", "deprecated", "any", "never"]), default=None)
 @click.option("--min-severity", type=click.Choice(["breaking", "deprecated", "warning"]), default=None)
-@click.option("--exclude", "-e", multiple=True, help="Extra directories to exclude")
-@click.option("--no-cache", is_flag=True, help="Bypass response cache")
-@click.option("--quiet", "-q", is_flag=True, help="Only print problems")
+@click.option("--exclude", "-e", multiple=True)
+@click.option("--no-cache", is_flag=True)
+@click.option("--quiet", "-q", is_flag=True)
+@click.option("--since", default=None, metavar="YYYY-MM-DD", help="Only show changes since this date")
 def check(package, target_version, directory, github_token, fmt, output, fail_on,
-          min_severity, exclude, no_cache, quiet):
+          min_severity, exclude, no_cache, quiet, since):
     """Check if upgrading PACKAGE to TARGET_VERSION will break your code."""
     directory = os.path.abspath(directory)
     cfg = load_config(directory)
@@ -201,11 +233,8 @@ def check(package, target_version, directory, github_token, fmt, output, fail_on
     if no_cache or not cfg.cache:
         cache_mod.disable_cache()
 
-    if not quiet and fmt == "terminal":
-        with console.status(f"Checking [bold]{package}[/]..."):
-            result = _run_single_check(package, target_version, directory, github_token, cfg, quiet)
-    else:
-        result = _run_single_check(package, target_version, directory, github_token, cfg, quiet)
+    with console.status(f"Checking [bold]{package}[/]..."):
+        result = _run_single_check(package, target_version, directory, github_token, cfg, quiet, since=since)
 
     if result is None:
         sys.exit(2)
@@ -214,18 +243,21 @@ def check(package, target_version, directory, github_token, fmt, output, fail_on
     sys.exit(1 if _should_fail([result], cfg.fail_on) else 0)
 
 
+# ── check-all ─────────────────────────────────────────────────────────────────
+
 @main.command("check-all")
 @click.option("--dir", "-d", "directory", default=".", help="Project directory")
 @click.option("--github-token", envvar="GITHUB_TOKEN", default=None)
 @click.option("--format", "-f", "fmt", type=click.Choice(["terminal", "json", "md", "html"]), default="terminal")
-@click.option("--output", "-o", default=None, help="Write report to file")
+@click.option("--output", "-o", default=None)
 @click.option("--fail-on", type=click.Choice(["breaking", "deprecated", "any", "never"]), default=None)
 @click.option("--min-severity", type=click.Choice(["breaking", "deprecated", "warning"]), default=None)
 @click.option("--exclude", "-e", multiple=True)
 @click.option("--no-cache", is_flag=True)
 @click.option("--quiet", "-q", is_flag=True)
-def check_all(directory, github_token, fmt, output, fail_on, min_severity, exclude, no_cache, quiet):
-    """Check ALL dependencies found in requirements.txt / pyproject.toml."""
+@click.option("--since", default=None, metavar="YYYY-MM-DD")
+def check_all(directory, github_token, fmt, output, fail_on, min_severity, exclude, no_cache, quiet, since):
+    """Check ALL dependencies found in requirements.txt / pyproject.toml / setup.cfg / setup.py / environment.yml."""
     directory = os.path.abspath(directory)
     cfg = load_config(directory)
     if fail_on:
@@ -240,23 +272,33 @@ def check_all(directory, github_token, fmt, output, fail_on, min_severity, exclu
     deps = [d for d in deps if d.name not in cfg.ignore_packages]
 
     if not deps:
-        console.print("[yellow]No dependency files found[/] (looked for requirements.txt, pyproject.toml)")
+        console.print("[yellow]No dependency files found[/] (looked for requirements.txt, pyproject.toml, setup.cfg, setup.py, environment.yml)")
         sys.exit(2)
 
     if not quiet:
         console.print(f"Found [bold]{len(deps)}[/] dependencies to check\n")
 
     results = []
-    for dep in deps:
-        if not quiet and fmt == "terminal":
-            with console.status(f"Checking [bold]{dep.name}[/]..."):
-                r = _run_single_check(dep.name, None, directory, github_token, cfg, quiet=True)
-        else:
-            r = _run_single_check(dep.name, None, directory, github_token, cfg, quiet=True)
-        if r:
-            results.append(r)
-            if fmt == "terminal":
-                _print_terminal_result(r, quiet)
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        console=console,
+        transient=True,
+        disable=quiet,
+    ) as progress:
+        task = progress.add_task("Checking dependencies...", total=len(deps))
+        for dep in deps:
+            progress.update(task, description=f"Checking [bold]{dep.name}[/]...")
+            r = _run_single_check(dep.name, None, directory, github_token, cfg, quiet=True, since=since)
+            if r:
+                results.append(r)
+                if fmt == "terminal" and not quiet:
+                    progress.stop()
+                    _print_terminal_result(r, quiet)
+                    progress.start()
+            progress.advance(task)
 
     if fmt != "terminal":
         _emit(results, fmt, output, quiet)
@@ -268,21 +310,211 @@ def check_all(directory, github_token, fmt, output, fail_on, min_severity, exclu
     if fmt == "terminal" and not quiet:
         console.print()
         if total_breaking:
-            console.print(Panel(f"[red bold]{total_breaking} breaking[/] | "
-                                f"[yellow]{total_deprecated} deprecated[/] across {len(results)} packages",
-                                border_style="red"))
+            console.print(Panel(
+                f"[red bold]{total_breaking} breaking[/] | [yellow]{total_deprecated} deprecated[/] across {len(results)} packages",
+                border_style="red"))
         elif total_deprecated:
-            console.print(Panel(f"[yellow]{total_deprecated} deprecated[/] across {len(results)} packages",
-                                border_style="yellow"))
+            console.print(Panel(f"[yellow]{total_deprecated} deprecated[/] across {len(results)} packages", border_style="yellow"))
         else:
-            console.print(Panel(f"[green]All {len(results)} packages safe to upgrade[/]",
-                                border_style="green"))
+            console.print(Panel(f"[green]All {len(results)} packages safe to upgrade[/]", border_style="green"))
 
     sys.exit(1 if _should_fail(results, cfg.fail_on) else 0)
 
 
+# ── fix ───────────────────────────────────────────────────────────────────────
+
 @main.command()
-@click.option("--dir", "-d", "directory", default=".", help="Project directory")
+@click.option("--dir", "-d", "directory", default=".")
+@click.option("--dry-run", is_flag=True, help="Show what would change without writing")
+@click.option("--no-cache", is_flag=True)
+def fix(directory, dry_run, no_cache):
+    """Update requirements to the latest safe version of each dependency.
+
+    Rewrites pinned versions (==x.y.z) in requirements.txt to the latest
+    version that has no breaking changes against your code.
+    """
+    if no_cache:
+        cache_mod.disable_cache()
+
+    directory = os.path.abspath(directory)
+    cfg = load_config(directory)
+    deps = discover_dependencies(directory)
+
+    req_files = []
+    for rel in ["requirements.txt", "requirements-dev.txt", "requirements/base.txt", "requirements/dev.txt"]:
+        path = os.path.join(directory, rel)
+        if os.path.isfile(path):
+            req_files.append(path)
+
+    if not req_files:
+        console.print("[yellow]No requirements.txt files found to fix.[/]")
+        sys.exit(2)
+
+    from packaging.version import Version, InvalidVersion
+
+    updates: List[dict] = []
+
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console, transient=True) as progress:
+        task = progress.add_task("Scanning...", total=len(deps))
+        for dep in deps:
+            progress.update(task, description=f"Checking [bold]{dep.name}[/]...")
+            installed = get_installed_version(dep.name)
+            try:
+                latest = get_current_version(dep.name)
+            except Exception:
+                progress.advance(task)
+                continue
+
+            if not installed or not dep.pinned_version:
+                progress.advance(task)
+                continue
+
+            try:
+                if Version(installed) >= Version(latest):
+                    progress.advance(task)
+                    continue
+            except InvalidVersion:
+                progress.advance(task)
+                continue
+
+            # check if upgrade is safe
+            try:
+                changes = get_changes_between(dep.name, installed, latest)
+            except Exception:
+                changes = []
+
+            usages = scan_directory(directory, dep.name, exclude_dirs=cfg.exclude_dirs)
+            risks, _ = analyze(usages, changes, dep.name)
+            breaking = [r for r in risks if r.severity == "breaking"]
+
+            if not breaking:
+                updates.append({
+                    "name": dep.name,
+                    "old": dep.pinned_version,
+                    "new": latest,
+                    "source": dep.source,
+                })
+            progress.advance(task)
+
+    if not updates:
+        console.print("[green]Nothing to update.[/] All pinned versions are already at latest safe version.")
+        return
+
+    console.print(f"\n{'[dim]DRY RUN - no files written[/]' if dry_run else ''}")
+    console.print(f"[bold]{len(updates)}[/] safe update(s):\n")
+    for u in updates:
+        console.print(f"  [cyan]{u['name']}[/]  {u['old']} -> [green]{u['new']}[/]  [dim]({u['source']})[/]")
+
+    if dry_run:
+        return
+
+    # apply rewrites
+    for req_path in req_files:
+        try:
+            with open(req_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            for u in updates:
+                import re
+                content = re.sub(
+                    rf"(?i)({re.escape(u['name'])}\s*==\s*){re.escape(u['old'])}",
+                    rf"\g<1>{u['new']}",
+                    content,
+                )
+            with open(req_path, "w", encoding="utf-8") as f:
+                f.write(content)
+        except OSError as e:
+            console.print(f"[red]Could not write {req_path}:[/] {e}")
+
+    console.print(f"\n[green]Done.[/] Run [bold]pip install -r requirements.txt[/] to apply.")
+
+
+# ── ci-setup ──────────────────────────────────────────────────────────────────
+
+_GH_ACTIONS = """\
+name: Dependency upgrade check
+
+on:
+  push:
+    paths:
+      - 'requirements*.txt'
+      - 'pyproject.toml'
+      - 'setup.cfg'
+      - 'setup.py'
+      - 'environment.yml'
+  schedule:
+    - cron: '0 9 * * 1'  # every Monday 9am UTC
+
+jobs:
+  pyupcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pyupcheck
+        run: pip install pyupcheck
+
+      - name: Check dependency upgrades
+        run: pyupcheck check-all --fail-on breaking --quiet
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+"""
+
+_PRE_COMMIT = """\
+repos:
+  - repo: local
+    hooks:
+      - id: pyupcheck
+        name: pyupcheck
+        entry: pyupcheck check-all --quiet --fail-on breaking
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+"""
+
+
+@main.command("ci-setup")
+@click.option("--type", "ci_type", type=click.Choice(["github", "pre-commit", "all"]), default="all",
+              help="Which CI config to generate")
+@click.option("--dir", "-d", "directory", default=".")
+def ci_setup(ci_type, directory):
+    """Generate CI config files for running pyupcheck automatically."""
+    directory = os.path.abspath(directory)
+
+    if ci_type in ("github", "all"):
+        gha_dir = os.path.join(directory, ".github", "workflows")
+        os.makedirs(gha_dir, exist_ok=True)
+        path = os.path.join(gha_dir, "pyupcheck.yml")
+        if os.path.exists(path):
+            console.print(f"[yellow]Already exists:[/] {os.path.relpath(path)}")
+        else:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(_GH_ACTIONS)
+            console.print(f"[green]Created:[/] {os.path.relpath(path)}")
+
+    if ci_type in ("pre-commit", "all"):
+        path = os.path.join(directory, ".pre-commit-config.yaml")
+        if os.path.exists(path):
+            console.print(f"[yellow]Already exists:[/] {os.path.relpath(path)} (not modified)")
+            console.print("  Add this manually to your existing config:")
+            console.print(_PRE_COMMIT)
+        else:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(_PRE_COMMIT)
+            console.print(f"[green]Created:[/] {os.path.relpath(path)}")
+            console.print("\nInstall the hook with: [bold]pre-commit install[/]")
+
+    console.print("\nDone. Commit the generated files and push.")
+
+
+# ── outdated ──────────────────────────────────────────────────────────────────
+
+@main.command()
+@click.option("--dir", "-d", "directory", default=".")
 @click.option("--no-cache", is_flag=True)
 def outdated(directory, no_cache):
     """List all dependencies that have newer versions available."""
@@ -303,15 +535,19 @@ def outdated(directory, no_cache):
     table.add_column("Status")
 
     outdated_count = 0
-    with console.status("Checking versions..."):
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console, transient=True) as progress:
+        task = progress.add_task("Checking versions...", total=len(deps))
         for dep in deps:
+            progress.update(task, description=f"Checking [bold]{dep.name}[/]...")
             installed = get_installed_version(dep.name)
             try:
                 latest = get_current_version(dep.name)
             except Exception:
+                progress.advance(task)
                 continue
             if not installed:
                 table.add_row(dep.name, "-", latest, "[dim]not installed[/]")
+                progress.advance(task)
                 continue
             try:
                 if Version(installed) < Version(latest):
@@ -320,7 +556,8 @@ def outdated(directory, no_cache):
                     status = "[red]major bump[/]" if major_bump else "[yellow]update available[/]"
                     table.add_row(dep.name, installed, latest, status)
             except InvalidVersion:
-                continue
+                pass
+            progress.advance(task)
 
     if outdated_count:
         console.print(table)
@@ -329,13 +566,16 @@ def outdated(directory, no_cache):
         console.print("[green]All dependencies up to date.[/]")
 
 
+# ── diff ──────────────────────────────────────────────────────────────────────
+
 @main.command()
 @click.argument("package")
 @click.argument("from_version")
 @click.argument("to_version")
 @click.option("--github-token", envvar="GITHUB_TOKEN", default=None)
 @click.option("--no-cache", is_flag=True)
-def diff(package, from_version, to_version, github_token, no_cache):
+@click.option("--since", default=None, metavar="YYYY-MM-DD")
+def diff(package, from_version, to_version, github_token, no_cache, since):
     """Show breaking/deprecated changes in PACKAGE between two versions."""
     if no_cache:
         cache_mod.disable_cache()
@@ -349,7 +589,6 @@ def diff(package, from_version, to_version, github_token, no_cache):
 
     if not changes:
         console.print(f"[green]No breaking/deprecated changes found[/] between {from_version} and {to_version}.")
-        console.print("[dim]Note: relies on changelog quality. Check release notes for full detail.[/]")
         return
 
     console.print(f"\n[bold]{package}[/] {from_version} -> {to_version}: {len(changes)} changes\n")
@@ -358,6 +597,8 @@ def diff(package, from_version, to_version, github_token, no_cache):
         color = kind_color.get(c.kind, "white")
         console.print(f"  [{color}]{c.kind.upper():<11}[/] [bold]{c.version:<10}[/] {c.description}")
 
+
+# ── scan ──────────────────────────────────────────────────────────────────────
 
 @main.command()
 @click.argument("package")
@@ -379,16 +620,19 @@ def scan(package, directory, exclude):
     table = Table(title=f"Usages of {package}")
     table.add_column("File", style="cyan")
     table.add_column("Line", justify="right", style="green")
+    table.add_column("Type", style="magenta")
     table.add_column("API", style="yellow")
     table.add_column("Code", style="dim")
 
     for u in usages:
         rel_path = os.path.relpath(u.file)
-        table.add_row(rel_path, str(u.line), u.attr_chain, u.code[:80])
+        table.add_row(rel_path, str(u.line), u.usage_type, u.attr_chain, u.code[:70])
 
     console.print(table)
     console.print(f"\n[bold]{len(usages)}[/] usages across [bold]{len(set(u.file for u in usages))}[/] files.")
 
+
+# ── versions ──────────────────────────────────────────────────────────────────
 
 @main.command()
 @click.argument("package")
@@ -417,11 +661,55 @@ def versions(package):
         console.print(f"\n  ...and {len(parsed) - 10} more")
 
 
+# ── cache-clear ───────────────────────────────────────────────────────────────
+
 @main.command("cache-clear")
 def cache_clear_cmd():
     """Clear the local response cache."""
     n = cache_mod.cache_clear()
     console.print(f"Removed [bold]{n}[/] cached entries.")
+
+
+# ── shell completion ──────────────────────────────────────────────────────────
+
+@main.command("install-completion")
+@click.argument("shell", type=click.Choice(["bash", "zsh", "fish", "powershell"]))
+def install_completion(shell):
+    """Print shell completion script. Pipe it to your shell config.
+
+    \b
+    bash:        pyupcheck install-completion bash >> ~/.bashrc
+    zsh:         pyupcheck install-completion zsh >> ~/.zshrc
+    fish:        pyupcheck install-completion fish > ~/.config/fish/completions/pyupcheck.fish
+    powershell:  pyupcheck install-completion powershell >> $PROFILE
+    """
+    scripts = {
+        "bash": """\
+# pyupcheck bash completion
+_pyupcheck_completion() {
+    local IFS=$'\\n'
+    COMPREPLY=($(env COMP_WORDS="${COMP_WORDS[*]}" COMP_CWORD=$COMP_CWORD _PYUPCHECK_COMPLETE=bash_complete pyupcheck))
+}
+complete -F _pyupcheck_completion pyupcheck
+""",
+        "zsh": """\
+# pyupcheck zsh completion
+autoload -Uz compinit && compinit
+eval "$(_PYUPCHECK_COMPLETE=zsh_source pyupcheck)"
+""",
+        "fish": """\
+# pyupcheck fish completion
+eval (env _PYUPCHECK_COMPLETE=fish_source pyupcheck)
+""",
+        "powershell": """\
+# pyupcheck PowerShell completion
+$env:_PYUPCHECK_COMPLETE = "powershell_complete"
+Invoke-Expression (pyupcheck | Out-String)
+Remove-Item Env:_PYUPCHECK_COMPLETE
+""",
+    }
+    print(scripts[shell])
+    console.print(f"\n[dim]Pipe this to your shell config and restart your terminal.[/]", err=True)
 
 
 if __name__ == "__main__":

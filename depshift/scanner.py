@@ -80,6 +80,27 @@ class PackageVisitor(ast.NodeVisitor):
                 attr_chain=chain,
                 usage_type="function_call",
             ))
+
+        # detect dynamic imports: importlib.import_module("pkg"), __import__("pkg")
+        func = node.func
+        is_import_module = (
+            isinstance(func, ast.Attribute) and func.attr == "import_module"
+        ) or (
+            isinstance(func, ast.Name) and func.id == "__import__"
+        )
+        if is_import_module and node.args:
+            first_arg = node.args[0]
+            if isinstance(first_arg, ast.Constant) and isinstance(first_arg.value, str):
+                mod = first_arg.value
+                if mod == self.package or mod.startswith(f"{self.package}."):
+                    self.usages.append(Usage(
+                        file=self.filepath,
+                        line=node.lineno,
+                        code=self.lines[node.lineno - 1].strip(),
+                        attr_chain=mod,
+                        usage_type="dynamic_import",
+                    ))
+
         self.generic_visit(node)
 
     def _resolve_attr_chain(self, node) -> Optional[str]:
@@ -187,7 +208,7 @@ def scan_directory(directory: str, package_name: str, exclude_dirs: Optional[Set
         dirs[:] = [d for d in dirs if d not in exclude_dirs and not d.endswith(".egg-info")]
         for fname in files:
             fpath = os.path.join(root, fname)
-            if fname.endswith(".py"):
+            if fname.endswith(".py") or fname.endswith(".pyi"):
                 usages.extend(scan_file(fpath, package_name))
             elif include_notebooks and fname.endswith(".ipynb"):
                 usages.extend(scan_notebook(fpath, package_name))
