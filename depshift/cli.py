@@ -2,6 +2,7 @@
 
 import json as _json
 import os
+import re
 import sys
 from datetime import datetime
 from typing import List, Optional
@@ -18,6 +19,7 @@ from depshift.changelog import (
     get_changes_between,
     get_current_version,
     get_available_versions,
+    get_pypi_info,
 )
 from depshift.analyzer import analyze
 from depshift.deps import discover_dependencies
@@ -39,8 +41,41 @@ def get_installed_version(package: str) -> Optional[str]:
         return None
 
 
+def _filter_by_since(changes, since_str: str, package: str):
+    """Filter changelog entries to only those introduced after since_str (YYYY-MM-DD)."""
+    try:
+        since_dt = datetime.strptime(since_str, "%Y-%m-%d")
+    except ValueError:
+        return changes  # bad date format, return unfiltered
+
+    try:
+        info = get_pypi_info(package)
+        releases = info.get("releases", {})
+    except Exception:
+        return changes  # can't fetch, return unfiltered
+
+    def version_date(ver: str) -> Optional[datetime]:
+        for f in releases.get(ver, []):
+            upload = f.get("upload_time")
+            if upload:
+                try:
+                    return datetime.strptime(upload[:10], "%Y-%m-%d")
+                except Exception:
+                    pass
+        return None
+
+    filtered = []
+    for c in changes:
+        vd = version_date(c.version)
+        if vd is None:
+            continue  # unknown date — exclude when filtering by date
+        if vd >= since_dt:
+            filtered.append(c)
+    return filtered
+
+
 def _run_single_check(package: str, target_version: Optional[str], directory: str,
-                      github_token: Optional[str], cfg, quiet: bool,
+                      github_token: Optional[str], cfg, suppress_errors: bool = False,
                       since: Optional[str] = None) -> Optional[dict]:
     installed = get_installed_version(package)
 
@@ -48,7 +83,7 @@ def _run_single_check(package: str, target_version: Optional[str], directory: st
         try:
             target_version = get_current_version(package)
         except Exception as e:
-            if not quiet:
+            if not suppress_errors:
                 console.print(f"[red]{package}:[/] not found on PyPI ({e})")
             return None
 
@@ -75,33 +110,8 @@ def _run_single_check(package: str, target_version: Optional[str], directory: st
     except Exception:
         changes = []
 
-    # --since filter
     if since and changes:
-        try:
-            since_dt = datetime.strptime(since, "%Y-%m-%d")
-            from packaging.version import Version, InvalidVersion
-            from depshift.changelog import get_pypi_info
-            try:
-                info = get_pypi_info(package)
-                releases = info.get("releases", {})
-                def version_date(ver: str) -> Optional[datetime]:
-                    files = releases.get(ver, [])
-                    for f in files:
-                        upload = f.get("upload_time")
-                        if upload:
-                            try:
-                                return datetime.strptime(upload[:10], "%Y-%m-%d")
-                            except Exception:
-                                pass
-                    return None
-                changes = [
-                    c for c in changes
-                    if (version_date(c.version) or since_dt) >= since_dt
-                ]
-            except Exception:
-                pass
-        except ValueError:
-            pass
+        changes = _filter_by_since(changes, since, package)
 
     risks, safe = analyze(usages, changes, package)
 
@@ -190,7 +200,10 @@ def _print_terminal_result(r: dict, quiet: bool):
     for risk in r["risks"]:
         color = {"breaking": "red", "deprecated": "yellow", "warning": "blue"}[risk["severity"]]
         mark = {"breaking": "x", "deprecated": "!", "warning": "?"}[risk["severity"]]
-        rel = os.path.relpath(risk["file"])
+        try:
+            rel = os.path.relpath(risk["file"])
+        except ValueError:
+            rel = risk["file"]
         console.print(f"  [{color}]{mark}[/] [bold]{rel}:{risk['line']}[/]  {risk['code']}")
         console.print(f"    [dim]{risk['change_description']}[/]")
 
@@ -219,7 +232,7 @@ def main(ctx):
 @click.option("--exclude", "-e", multiple=True)
 @click.option("--no-cache", is_flag=True)
 @click.option("--quiet", "-q", is_flag=True)
-@click.option("--since", default=None, metavar="YYYY-MM-DD", help="Only show changes since this date")
+@click.option("--since", default=None, metavar="YYYY-MM-DD", help="Only show changes introduced since this date")
 def check(package, target_version, directory, github_token, fmt, output, fail_on,
           min_severity, exclude, no_cache, quiet, since):
     """Check if upgrading PACKAGE to TARGET_VERSION will break your code."""
@@ -234,7 +247,8 @@ def check(package, target_version, directory, github_token, fmt, output, fail_on
         cache_mod.disable_cache()
 
     with console.status(f"Checking [bold]{package}[/]..."):
-        result = _run_single_check(package, target_version, directory, github_token, cfg, quiet, since=since)
+        result = _run_single_check(package, target_version, directory, github_token,
+                                   cfg, suppress_errors=quiet, since=since)
 
     if result is None:
         sys.exit(2)
@@ -278,6 +292,7 @@ def check_all(directory, github_token, fmt, output, fail_on, min_severity, exclu
     if not quiet:
         console.print(f"Found [bold]{len(deps)}[/] dependencies to check\n")
 
+    # collect all results with progress bar, then print
     results = []
     with Progress(
         SpinnerColumn(),
@@ -291,32 +306,35 @@ def check_all(directory, github_token, fmt, output, fail_on, min_severity, exclu
         task = progress.add_task("Checking dependencies...", total=len(deps))
         for dep in deps:
             progress.update(task, description=f"Checking [bold]{dep.name}[/]...")
-            r = _run_single_check(dep.name, None, directory, github_token, cfg, quiet=True, since=since)
+            r = _run_single_check(dep.name, None, directory, github_token, cfg,
+                                  suppress_errors=True, since=since)
             if r:
                 results.append(r)
-                if fmt == "terminal" and not quiet:
-                    progress.stop()
-                    _print_terminal_result(r, quiet)
-                    progress.start()
             progress.advance(task)
 
-    if fmt != "terminal":
-        _emit(results, fmt, output, quiet)
-    elif output:
-        _emit(results, "md", output, quiet)
+    # print results after progress bar closes cleanly
+    if fmt == "terminal":
+        for r in results:
+            _print_terminal_result(r, quiet)
 
-    total_breaking = sum(r["breaking_count"] for r in results)
-    total_deprecated = sum(r["deprecated_count"] for r in results)
-    if fmt == "terminal" and not quiet:
-        console.print()
-        if total_breaking:
-            console.print(Panel(
-                f"[red bold]{total_breaking} breaking[/] | [yellow]{total_deprecated} deprecated[/] across {len(results)} packages",
-                border_style="red"))
-        elif total_deprecated:
-            console.print(Panel(f"[yellow]{total_deprecated} deprecated[/] across {len(results)} packages", border_style="yellow"))
-        else:
-            console.print(Panel(f"[green]All {len(results)} packages safe to upgrade[/]", border_style="green"))
+        total_breaking = sum(r["breaking_count"] for r in results)
+        total_deprecated = sum(r["deprecated_count"] for r in results)
+        if not quiet:
+            console.print()
+            if total_breaking:
+                console.print(Panel(
+                    f"[red bold]{total_breaking} breaking[/] | [yellow]{total_deprecated} deprecated[/] across {len(results)} packages",
+                    border_style="red"))
+            elif total_deprecated:
+                console.print(Panel(f"[yellow]{total_deprecated} deprecated[/] across {len(results)} packages",
+                                    border_style="yellow"))
+            else:
+                console.print(Panel(f"[green]All {len(results)} packages safe to upgrade[/]",
+                                    border_style="green"))
+        if output:
+            _emit(results, "md", output, quiet)
+    else:
+        _emit(results, fmt, output, quiet)
 
     sys.exit(1 if _should_fail(results, cfg.fail_on) else 0)
 
@@ -358,28 +376,28 @@ def fix(directory, dry_run, no_cache):
         task = progress.add_task("Scanning...", total=len(deps))
         for dep in deps:
             progress.update(task, description=f"Checking [bold]{dep.name}[/]...")
-            installed = get_installed_version(dep.name)
+
+            if not dep.pinned_version:
+                progress.advance(task)
+                continue
+
+            pinned = dep.pinned_version
             try:
                 latest = get_current_version(dep.name)
             except Exception:
                 progress.advance(task)
                 continue
 
-            if not installed or not dep.pinned_version:
-                progress.advance(task)
-                continue
-
             try:
-                if Version(installed) >= Version(latest):
+                if Version(pinned) >= Version(latest):
                     progress.advance(task)
                     continue
             except InvalidVersion:
                 progress.advance(task)
                 continue
 
-            # check if upgrade is safe
             try:
-                changes = get_changes_between(dep.name, installed, latest)
+                changes = get_changes_between(dep.name, pinned, latest)
             except Exception:
                 changes = []
 
@@ -390,17 +408,18 @@ def fix(directory, dry_run, no_cache):
             if not breaking:
                 updates.append({
                     "name": dep.name,
-                    "old": dep.pinned_version,
+                    "old": pinned,
                     "new": latest,
                     "source": dep.source,
                 })
             progress.advance(task)
 
     if not updates:
-        console.print("[green]Nothing to update.[/] All pinned versions are already at latest safe version.")
+        console.print("[green]Nothing to update.[/] All pinned deps are at the latest safe version.")
         return
 
-    console.print(f"\n{'[dim]DRY RUN - no files written[/]' if dry_run else ''}")
+    if dry_run:
+        console.print("[dim]DRY RUN - no files written[/]\n")
     console.print(f"[bold]{len(updates)}[/] safe update(s):\n")
     for u in updates:
         console.print(f"  [cyan]{u['name']}[/]  {u['old']} -> [green]{u['new']}[/]  [dim]({u['source']})[/]")
@@ -408,13 +427,11 @@ def fix(directory, dry_run, no_cache):
     if dry_run:
         return
 
-    # apply rewrites
     for req_path in req_files:
         try:
             with open(req_path, "r", encoding="utf-8") as f:
                 content = f.read()
             for u in updates:
-                import re
                 content = re.sub(
                     rf"(?i)({re.escape(u['name'])}\s*==\s*){re.escape(u['old'])}",
                     rf"\g<1>{u['new']}",
@@ -500,7 +517,7 @@ def ci_setup(ci_type, directory):
         path = os.path.join(directory, ".pre-commit-config.yaml")
         if os.path.exists(path):
             console.print(f"[yellow]Already exists:[/] {os.path.relpath(path)} (not modified)")
-            console.print("  Add this manually to your existing config:")
+            console.print("Add this to your existing config:")
             console.print(_PRE_COMMIT)
         else:
             with open(path, "w", encoding="utf-8") as f:
@@ -535,6 +552,7 @@ def outdated(directory, no_cache):
     table.add_column("Status")
 
     outdated_count = 0
+    rows = []
     with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console, transient=True) as progress:
         task = progress.add_task("Checking versions...", total=len(deps))
         for dep in deps:
@@ -546,7 +564,7 @@ def outdated(directory, no_cache):
                 progress.advance(task)
                 continue
             if not installed:
-                table.add_row(dep.name, "-", latest, "[dim]not installed[/]")
+                rows.append((dep.name, "-", latest, "[dim]not installed[/]"))
                 progress.advance(task)
                 continue
             try:
@@ -554,12 +572,14 @@ def outdated(directory, no_cache):
                     outdated_count += 1
                     major_bump = Version(installed).major < Version(latest).major
                     status = "[red]major bump[/]" if major_bump else "[yellow]update available[/]"
-                    table.add_row(dep.name, installed, latest, status)
+                    rows.append((dep.name, installed, latest, status))
             except InvalidVersion:
                 pass
             progress.advance(task)
 
     if outdated_count:
+        for row in rows:
+            table.add_row(*row)
         console.print(table)
         console.print(f"\n[bold]{outdated_count}[/] outdated. Run [bold]pyupcheck check-all[/] to see if upgrades are safe.")
     else:
@@ -586,6 +606,9 @@ def diff(package, from_version, to_version, github_token, no_cache, since):
         except Exception as e:
             console.print(f"[red]Error:[/] {e}")
             sys.exit(2)
+
+    if since and changes:
+        changes = _filter_by_since(changes, since, package)
 
     if not changes:
         console.print(f"[green]No breaking/deprecated changes found[/] between {from_version} and {to_version}.")
@@ -625,7 +648,10 @@ def scan(package, directory, exclude):
     table.add_column("Code", style="dim")
 
     for u in usages:
-        rel_path = os.path.relpath(u.file)
+        try:
+            rel_path = os.path.relpath(u.file)
+        except ValueError:
+            rel_path = u.file
         table.add_row(rel_path, str(u.line), u.usage_type, u.attr_chain, u.code[:70])
 
     console.print(table)

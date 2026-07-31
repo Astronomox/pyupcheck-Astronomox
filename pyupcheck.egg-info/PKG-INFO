@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: pyupcheck
-Version: 0.3.0
+Version: 0.3.2
 Summary: Check if upgrading a Python dependency will break your code
 Author: AgbaDev
 License-Expression: MIT
