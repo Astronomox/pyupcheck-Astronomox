@@ -1,0 +1,14 @@
+LICENSE
+README.md
+pyproject.toml
+depshift/__init__.py
+depshift/analyzer.py
+depshift/changelog.py
+depshift/cli.py
+depshift/scanner.py
+pyupcheck.egg-info/PKG-INFO
+pyupcheck.egg-info/SOURCES.txt
+pyupcheck.egg-info/dependency_links.txt
+pyupcheck.egg-info/entry_points.txt
+pyupcheck.egg-info/requires.txt
+pyupcheck.egg-info/top_level.txt

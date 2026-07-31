@@ -1,0 +1,116 @@
+Metadata-Version: 2.4
+Name: pyupcheck
+Version: 0.1.0
+Summary: Check if upgrading a Python dependency will break your code
+Author: AgbaDev
+License-Expression: MIT
+Project-URL: Homepage, https://github.com/AgbaDev/pyupcheck
+Project-URL: Issues, https://github.com/AgbaDev/pyupcheck/issues
+Keywords: cli,dependency,upgrade,migration,breaking-changes
+Classifier: Development Status :: 3 - Alpha
+Classifier: Environment :: Console
+Classifier: Intended Audience :: Developers
+Classifier: Programming Language :: Python :: 3
+Classifier: Topic :: Software Development :: Quality Assurance
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: httpx>=0.24.0
+Requires-Dist: rich>=13.0.0
+Requires-Dist: click>=8.0.0
+Dynamic: license-file
+
+# pyupcheck
+
+Check if upgrading a Python dependency will break your code.
+
+```
+$ pyupcheck check requests 3.0.0
+
+pyupcheck 2.31.0 -> 3.0.0
+
+Found 14 usages across 5 files.
+Found 3 potentially breaking/deprecated changes.
+
+BREAKING (1):
+
+  x src/api.py:23  resp = requests.get(url, verify=False)
+    Removed: `verify` parameter no longer accepted
+
+DEPRECATED (1):
+
+  ! src/utils.py:8  from requests.packages import urllib3
+    Deprecated: use `urllib3` directly instead
+
+12 other usages are safe.
+
+╭─ pyupcheck report ──────────────────────────────────╮
+│ Upgrade risky. 1 breaking change(s) affect your    │
+│ code.                                              │
+╰────────────────────────────────────────────────────╯
+```
+
+## Install
+
+```bash
+pip install pyupcheck
+```
+
+## Usage
+
+### Check an upgrade
+
+```bash
+# check against a specific version
+pyupcheck check flask 3.0.0
+
+# check against the latest version
+pyupcheck check flask
+
+# scan a specific directory
+pyupcheck check requests 3.0.0 --dir ./src
+
+# json output for CI
+pyupcheck check requests 3.0.0 --json-output
+```
+
+Exit code is 1 if breaking changes are found, 0 otherwise. Use this in CI to gate upgrades.
+
+### Scan your code
+
+```bash
+# just see what APIs you use from a package
+pyupcheck scan requests
+```
+
+### List versions
+
+```bash
+pyupcheck versions flask
+```
+
+## How it works
+
+1. Scans your `.py` files with AST parsing to find every import and usage of the target package
+2. Fetches the changelog from GitHub releases and PyPI metadata
+3. Parses the changelog for breaking changes, deprecations, and renames
+4. Cross-references your usage against the changes
+5. Reports which of your usages are at risk
+
+## Limitations
+
+- Changelog parsing relies on maintainers writing structured changelogs. If a project has unstructured notes, pyupcheck may miss changes.
+- Dynamic attribute access (`getattr(requests, method_name)`) is not detected.
+- Only scans `.py` files (not Jupyter notebooks, config files, etc.)
+
+## Options
+
+| Flag | Description |
+|------|-------------|
+| `--dir`, `-d` | Directory to scan (default: `.`) |
+| `--github-token` | GitHub token for higher API rate limits (or set `GITHUB_TOKEN` env var) |
+| `--json-output`, `-j` | Output as JSON |
+
+## License
+
+MIT
