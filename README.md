@@ -3,29 +3,21 @@
 Check if upgrading a Python dependency will break your code.
 
 ```
-$ pyupcheck check requests 3.0.0
+$ pyupcheck check-all
 
-pyupcheck 2.31.0 -> 3.0.0
+Found 12 dependencies to check
 
-Found 14 usages across 5 files.
-Found 3 potentially breaking/deprecated changes.
-
-BREAKING (1):
-
+flask 2.3.3 -> 3.1.3  OK (15 usages safe)
+requests 2.28.0 -> 2.34.2  2 BREAKING
   x src/api.py:23  resp = requests.get(url, verify=False)
     Removed: `verify` parameter no longer accepted
+django 4.2.0 -> 5.0.6  1 deprecated
+  ! core/models.py:8  from django.utils import timezone
+    Deprecated: use datetime.timezone instead
 
-DEPRECATED (1):
-
-  ! src/utils.py:8  from requests.packages import urllib3
-    Deprecated: use `urllib3` directly instead
-
-12 other usages are safe.
-
-╭─ pyupcheck report ──────────────────────────────────╮
-│ Upgrade risky. 1 breaking change(s) affect your    │
-│ code.                                              │
-╰────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────╮
+│ 2 breaking | 1 deprecated across 12 packages     │
+╰──────────────────────────────────────────────────╯
 ```
 
 ## Install
@@ -34,62 +26,129 @@ DEPRECATED (1):
 pip install pyupcheck
 ```
 
-## Usage
+## Commands
 
-### Check an upgrade
+### `check` — check one package
 
 ```bash
-# check against a specific version
-pyupcheck check flask 3.0.0
-
-# check against the latest version
-pyupcheck check flask
-
-# scan a specific directory
-pyupcheck check requests 3.0.0 --dir ./src
-
-# json output for CI
-pyupcheck check requests 3.0.0 --json-output
+pyupcheck check flask 3.0.0        # against specific version
+pyupcheck check flask              # against latest
 ```
 
-Exit code is 1 if breaking changes are found, 0 otherwise. Use this in CI to gate upgrades.
+### `check-all` — check every dependency
 
-### Scan your code
+Reads `requirements.txt` and `pyproject.toml` (PEP 621 and Poetry), checks every dependency against its latest version.
 
 ```bash
-# just see what APIs you use from a package
+pyupcheck check-all
+pyupcheck check-all --format html -o report.html
+```
+
+### `outdated` — list stale dependencies
+
+```bash
+pyupcheck outdated
+```
+
+Flags major version bumps separately since they carry the most risk.
+
+### `diff` — changelog diff between versions
+
+See breaking/deprecated changes between any two versions without scanning code:
+
+```bash
+pyupcheck diff django 4.2.0 5.0.0
+```
+
+### `scan` — list your usages of a package
+
+```bash
 pyupcheck scan requests
 ```
 
-### List versions
+### `versions` / `cache-clear`
 
 ```bash
 pyupcheck versions flask
+pyupcheck cache-clear
 ```
 
-## How it works
+## Output formats
 
-1. Scans your `.py` files with AST parsing to find every import and usage of the target package
-2. Fetches the changelog from GitHub releases and PyPI metadata
-3. Parses the changelog for breaking changes, deprecations, and renames
-4. Cross-references your usage against the changes
-5. Reports which of your usages are at risk
+```bash
+pyupcheck check flask -f json          # machine-readable
+pyupcheck check flask -f md -o r.md    # markdown report
+pyupcheck check flask -f html -o r.html # styled HTML report
+```
+
+## CI integration
+
+Exit code is 1 when the `--fail-on` condition is met:
+
+```bash
+pyupcheck check-all --fail-on breaking     # default
+pyupcheck check-all --fail-on deprecated   # stricter
+pyupcheck check-all --fail-on any          # strictest
+pyupcheck check-all --fail-on never        # report only
+```
+
+GitHub Actions example:
+
+```yaml
+- name: Check dependency upgrades
+  run: |
+    pip install pyupcheck
+    pyupcheck check-all --fail-on breaking --quiet
+```
+
+Pre-commit hook (`.pre-commit-config.yaml`):
+
+```yaml
+- repo: local
+  hooks:
+    - id: pyupcheck
+      name: pyupcheck
+      entry: pyupcheck check-all --quiet
+      language: system
+      pass_filenames: false
+```
+
+## Configuration
+
+`pyproject.toml`:
+
+```toml
+[tool.pyupcheck]
+exclude = ["migrations", "legacy"]
+ignore = ["internal-package"]
+fail_on = "breaking"
+min_severity = "deprecated"
+cache = true
+```
+
+Or `.pyupcheckignore`:
+
+```
+migrations/     # trailing slash = directory
+legacy/
+internal-package   # no slash = package to skip
+```
+
+## Features
+
+- AST-based scanning: imports, from-imports, aliases, attribute chains, calls
+- Jupyter notebook (`.ipynb`) scanning, magics stripped automatically
+- Changelog sources: GitHub releases, raw changelog files, PyPI descriptions
+- 24h response cache (`--no-cache` to bypass, `cache-clear` to wipe)
+- Severity filtering with `--min-severity`
+- Quiet mode (`-q`) for hooks and scripts
 
 ## Limitations
 
-- Changelog parsing relies on maintainers writing structured changelogs. If a project has unstructured notes, pyupcheck may miss changes.
-- Dynamic attribute access (`getattr(requests, method_name)`) is not detected.
-- Only scans `.py` files (not Jupyter notebooks, config files, etc.)
-
-## Options
-
-| Flag | Description |
-|------|-------------|
-| `--dir`, `-d` | Directory to scan (default: `.`) |
-| `--github-token` | GitHub token for higher API rate limits (or set `GITHUB_TOKEN` env var) |
-| `--json-output`, `-j` | Output as JSON |
+- Changelog parsing relies on maintainers writing structured changelogs
+- Dynamic attribute access (`getattr(pkg, name)`) is not detected
+- GitHub API is rate limited to 60 req/hr unauthenticated; pass `--github-token` or set `GITHUB_TOKEN` for more
 
 ## License
 
 MIT
-"# pyupcheck-Astronomox" 

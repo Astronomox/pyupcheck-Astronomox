@@ -22,20 +22,35 @@ GITHUB_RELEASES_API = "https://api.github.com/repos/{owner}/{repo}/releases"
 GITHUB_TAGS_API = "https://api.github.com/repos/{owner}/{repo}/tags"
 
 
+from depshift.cache import cache_get, cache_set
+
+
 def get_pypi_info(package: str) -> dict:
-    """Fetch full package info from PyPI."""
+    """Fetch full package info from PyPI (cached)."""
+    key = f"pypi:{package}"
+    cached = cache_get(key)
+    if cached is not None:
+        return cached
     url = PYPI_API.format(package=package)
     resp = httpx.get(url, timeout=15, follow_redirects=True)
     resp.raise_for_status()
-    return resp.json()
+    data = resp.json()
+    cache_set(key, data)
+    return data
 
 
 def get_pypi_version_info(package: str, version: str) -> dict:
-    """Fetch info for a specific version."""
+    """Fetch info for a specific version (cached)."""
+    key = f"pypi:{package}:{version}"
+    cached = cache_get(key)
+    if cached is not None:
+        return cached
     url = PYPI_VERSION_API.format(package=package, version=version)
     resp = httpx.get(url, timeout=15, follow_redirects=True)
     resp.raise_for_status()
-    return resp.json()
+    data = resp.json()
+    cache_set(key, data)
+    return data
 
 
 def get_available_versions(package: str) -> List[str]:
@@ -75,7 +90,12 @@ def extract_github_repo(pypi_info: dict) -> Optional[Tuple[str, str]]:
 
 
 def fetch_github_releases(owner: str, repo: str, token: Optional[str] = None) -> List[dict]:
-    """Fetch releases from GitHub."""
+    """Fetch releases from GitHub (cached)."""
+    key = f"gh-releases:{owner}/{repo}"
+    cached = cache_get(key)
+    if cached is not None:
+        return cached
+
     headers = {"Accept": "application/vnd.github+json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -92,6 +112,8 @@ def fetch_github_releases(owner: str, repo: str, token: Optional[str] = None) ->
             break
         releases.extend(batch)
         page += 1
+    if releases:
+        cache_set(key, releases)
     return releases
 
 
@@ -176,7 +198,12 @@ CHANGELOG_FILENAMES = [
 
 
 def fetch_raw_changelog(owner: str, repo: str, token: Optional[str] = None) -> Optional[str]:
-    """Try to fetch the raw changelog file from GitHub."""
+    """Try to fetch the raw changelog file from GitHub (cached)."""
+    key = f"gh-changelog:{owner}/{repo}"
+    cached = cache_get(key)
+    if cached is not None:
+        return cached or None
+
     headers = {}
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -187,9 +214,11 @@ def fetch_raw_changelog(owner: str, repo: str, token: Optional[str] = None) -> O
             try:
                 resp = httpx.get(url, headers=headers, timeout=10, follow_redirects=True)
                 if resp.status_code == 200 and len(resp.text) > 50:
+                    cache_set(key, resp.text)
                     return resp.text
             except Exception:
                 continue
+    cache_set(key, "")
     return None
 
 

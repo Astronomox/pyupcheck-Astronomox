@@ -131,18 +131,64 @@ def scan_file(filepath: str, package_name: str) -> List[Usage]:
     return deduped
 
 
-def scan_directory(directory: str, package_name: str, exclude_dirs: Optional[Set[str]] = None) -> List[Usage]:
+def scan_notebook(filepath: str, package_name: str) -> List[Usage]:
+    """Scan a Jupyter notebook's code cells for usages of package_name."""
+    import json as _json
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            nb = _json.load(f)
+    except Exception:
+        return []
+
+    usages: List[Usage] = []
+    for i, cell in enumerate(nb.get("cells", [])):
+        if cell.get("cell_type") != "code":
+            continue
+        src = cell.get("source", [])
+        code = "".join(src) if isinstance(src, list) else str(src)
+        # strip magics and shell commands
+        cleaned = "\n".join(
+            l for l in code.splitlines() if not l.lstrip().startswith(("%", "!", "?"))
+        )
+        try:
+            lines = cleaned.splitlines()
+            tree = ast.parse(cleaned)
+        except SyntaxError:
+            continue
+        visitor = PackageVisitor(package_name, lines, filepath)
+        visitor.visit(tree)
+        for u in visitor.usages:
+            u.line = u.line  # line within cell
+            u.code = f"[cell {i + 1}] {u.code}"
+            usages.append(u)
+
+    seen: Set[tuple] = set()
+    deduped: List[Usage] = []
+    for u in usages:
+        key = (u.file, u.code, u.attr_chain)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(u)
+    return deduped
+
+
+def scan_directory(directory: str, package_name: str, exclude_dirs: Optional[Set[str]] = None,
+                   include_notebooks: bool = True) -> List[Usage]:
     """Recursively scan a directory for usages of package_name."""
-    if exclude_dirs is None:
-        exclude_dirs = {".venv", "venv", "env", ".env", "node_modules", "__pycache__",
+    default_excludes = {".venv", "venv", "env", ".env", "node_modules", "__pycache__",
                         ".git", ".tox", ".mypy_cache", ".pytest_cache", "dist", "build",
-                        ".eggs", "*.egg-info"}
+                        ".eggs", ".ipynb_checkpoints"}
+    if exclude_dirs:
+        default_excludes = default_excludes | set(exclude_dirs)
+    exclude_dirs = default_excludes
 
     usages: List[Usage] = []
     for root, dirs, files in os.walk(directory):
         dirs[:] = [d for d in dirs if d not in exclude_dirs and not d.endswith(".egg-info")]
         for fname in files:
+            fpath = os.path.join(root, fname)
             if fname.endswith(".py"):
-                fpath = os.path.join(root, fname)
                 usages.extend(scan_file(fpath, package_name))
+            elif include_notebooks and fname.endswith(".ipynb"):
+                usages.extend(scan_notebook(fpath, package_name))
     return usages
