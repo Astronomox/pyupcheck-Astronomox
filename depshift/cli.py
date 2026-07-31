@@ -218,6 +218,13 @@ def main(ctx):
         show_if_first_run(console)
 
 
+@main.command("banner")
+def show_banner():
+    """Show the pyupcheck banner."""
+    from depshift.welcome import BANNER
+    console.print(BANNER)
+
+
 # ── check ─────────────────────────────────────────────────────────────────────
 
 @main.command()

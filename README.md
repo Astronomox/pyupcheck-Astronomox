@@ -152,21 +152,29 @@ internal-package     # no slash = package to skip
 Contributions are welcome. Here is how to get started:
 
 ```bash
-git clone https://github.com/AgbaDev/pyupcheck.git
+git clone https://github.com/Astronomox/pyupcheck-Astronomox.git
 cd pyupcheck
-pip install -e ".[dev]"
+pip install -e "."
 ```
 
-Things that would genuinely improve the tool:
+**Releasing (for maintainers and forks)**
 
-- Better changelog parsing for packages that use unconventional formats (e.g. Sphinx-based changelogs, HISTORY files)
-- Support for `setup.cfg` and `setup.py` dependency parsing
-- Detection of dynamic attribute access patterns (`getattr`, `__import__`)
+An `upload.bat` script is included to build and publish in one step. Get a PyPI API token from https://pypi.org/manage/account/token/ and run:
+
+```
+upload.bat YOUR_PYPI_TOKEN
+```
+
+It cleans old builds, builds the package, uploads to PyPI, installs the new version locally, and shows the banner to confirm. Never commit your token.
+
+**Things that would genuinely improve the tool:**
+
+- Better changelog parsing for packages that use unconventional formats (Sphinx-based changelogs, HISTORY files)
 - `pip-tools` and `conda` lockfile support
 - A `--watch` mode that monitors your lockfile for changes and alerts on risky upgrades
 - Test coverage
 
-To contribute, open an issue describing what you want to work on, then submit a pull request. Please include a short test or example showing the bug or feature.
+To contribute, open an issue describing what you want to work on, then submit a pull request. Include a short test or example showing the bug or feature.
 
 If you find a package whose changelog pyupcheck fails to parse correctly, open an issue with the package name and version range. That is the most common and most impactful thing to fix.
 

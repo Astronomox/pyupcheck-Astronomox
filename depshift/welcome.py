@@ -1,11 +1,11 @@
 """Show a welcome banner on first run."""
 
-import os
 from pathlib import Path
+from depshift import __version__
 
 MARKER = Path.home() / ".cache" / "pyupcheck" / ".welcomed"
 
-BANNER = """
+BANNER = f"""
 [bold cyan] ██████╗ ██╗   ██╗██╗   ██╗██████╗  ██████╗██╗  ██╗███████╗ ██████╗██╗  ██╗[/]
 [bold cyan]██╔══██╗╚██╗ ██╔╝██║   ██║██╔══██╗██╔════╝██║  ██║██╔════╝██╔════╝██║ ██╔╝[/]
 [bold cyan]██████╔╝ ╚████╔╝ ██║   ██║██████╔╝██║     ███████║█████╗  ██║     █████╔╝ [/]
@@ -15,7 +15,7 @@ BANNER = """
 
 [bold white]  Know if a dependency upgrade will break your code before you run it.[/]
 
-  [dim]Version[/]   [green]0.3.2[/]
+  [dim]Version[/]   [green]{__version__}[/]
   [dim]PyPI[/]      [blue]https://pypi.org/project/pyupcheck[/]
   [dim]GitHub[/]    [blue]https://github.com/Astronomox/pyupcheck-Astronomox[/]
   [dim]Author[/]    [cyan]AgbaDev (Astronomox)[/]
