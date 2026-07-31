@@ -168,9 +168,12 @@ def _print_terminal_result(r: dict, quiet: bool):
 
 @click.group()
 @click.version_option(__version__, prog_name="pyupcheck")
-def main():
+@click.pass_context
+def main(ctx):
     """pyupcheck - Check if upgrading a Python dependency will break your code."""
-    pass
+    if ctx.invoked_subcommand is not None:
+        from depshift.welcome import show_if_first_run
+        show_if_first_run(console)
 
 
 @main.command()

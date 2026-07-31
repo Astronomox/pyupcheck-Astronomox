@@ -3,9 +3,14 @@ README.md
 pyproject.toml
 depshift/__init__.py
 depshift/analyzer.py
+depshift/cache.py
 depshift/changelog.py
 depshift/cli.py
+depshift/config.py
+depshift/deps.py
+depshift/report.py
 depshift/scanner.py
+depshift/welcome.py
 pyupcheck.egg-info/PKG-INFO
 pyupcheck.egg-info/SOURCES.txt
 pyupcheck.egg-info/dependency_links.txt
