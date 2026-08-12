@@ -53,3 +53,41 @@ class APIChange:
 PYPI_FILES_API = "https://pypi.org/pypi/{package}/{version}/json"
 
 
+def _find_sdist_or_wheel_url(package: str, version: str) -> Optional[Tuple[str, str]]:
+    """Return (url, kind) for a downloadable wheel or sdist for this version."""
+    key = f"disturl:{package}:{version}"
+    cached = cache_get(key)
+    if cached is not None:
+        return tuple(cached) if cached else None
+
+    try:
+        info = get_pypi_info(package)
+    except Exception:
+        cache_set(key, [])
+        return None
+
+    releases = info.get("releases", {})
+    files = releases.get(version, [])
+
+    # prefer a pure-python wheel, then any wheel, then sdist
+    wheel = None
+    sdist = None
+    for f in files:
+        fn = f.get("filename", "")
+        url = f.get("url", "")
+        if fn.endswith("-py3-none-any.whl") or fn.endswith("-py2.py3-none-any.whl"):
+            wheel = (url, "wheel")
+            break
+        if fn.endswith(".whl") and wheel is None:
+            wheel = (url, "wheel")
+        if (fn.endswith(".tar.gz") or fn.endswith(".zip")) and sdist is None:
+            sdist = (url, "sdist")
+
+    result = wheel or sdist
+    # Cache a "not found" result as [] rather than None: cache_get() cannot
+    # distinguish a cached None from a cache miss, so None here would defeat
+    # negative caching and re-trigger a network fetch on every call.
+    cache_set(key, list(result) if result else [])
+    return result
+
+
