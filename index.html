@@ -7,13 +7,13 @@
 <meta name="description" content="Know if a dependency upgrade will break your code before you run it.">
 <meta property="og:title" content="pyupcheck">
 <meta property="og:description" content="Know if a dependency upgrade will break your code before you run it.">
-<meta property="og:image" content="https://astronomox.github.io/pyupcheck-Astronomox/banner.png">
+<meta property="og:image" content="https://pyupcheck.vercel.app/banner.png">
 <meta property="og:type" content="website">
-<meta property="og:url" content="https://astronomox.github.io/pyupcheck-Astronomox/">
+<meta property="og:url" content="https://pyupcheck.vercel.app/">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="pyupcheck">
 <meta name="twitter:description" content="Know if a dependency upgrade will break your code before you run it.">
-<meta name="twitter:image" content="https://astronomox.github.io/pyupcheck-Astronomox/banner.png">
+<meta name="twitter:image" content="https://pyupcheck.vercel.app/banner.png">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Sora:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -24,10 +24,10 @@
   --shadow-sm:4px 4px 0 var(--black);--radius:14px;
   --display:'Space Grotesk',sans-serif;--body:'Sora',sans-serif;
 }
-html,body{width:100%;height:100%;overflow:hidden;font-family:var(--body);background:var(--black)}
+html,body{width:100%;height:100%;height:100dvh;overflow:hidden;font-family:var(--body);background:var(--black)}
 
 /* ── panels ── */
-.panel{position:absolute;width:100vw;height:100vh;overflow:hidden;will-change:transform}
+.panel{position:absolute;width:100vw;height:100vh;height:100dvh;overflow:hidden;will-change:transform}
 #p1{background:var(--cream);transform:translate(0,0)}
 #p2{background:var(--cream);transform:translate(100vw,0)}
 #p3{background:#f0eaff;transform:translate(100vw,100vh)}
@@ -71,15 +71,15 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:var(--body);backgro
 .hero-content h1{font-family:var(--display);font-size:clamp(52px,9vw,110px);font-weight:700;
   line-height:0.92;letter-spacing:-0.04em;margin-bottom:20px}
 
+.hero-content h1 .acc{color:#7c3aed}
 .hero-banner{
-  max-width:min(560px,85vw);
+  max-width:min(420px,80vw);
+  width:100%;
   border:var(--border);
   border-radius:var(--radius);
   box-shadow:var(--shadow);
-  margin-bottom:28px;
-  image-rendering:pixelated;
+  margin-bottom:26px;
 }
-.hero-content h1 .acc{color:#7c3aed}
 .hero-sub{font-size:clamp(15px,1.8vw,19px);color:#555;max-width:460px;margin:0 auto 32px}
 .install-box{display:inline-flex;align-items:center;gap:10px;background:var(--black);color:var(--cream);
   font-family:var(--display);font-size:16px;font-weight:600;padding:16px 28px;border-radius:var(--radius);
@@ -140,22 +140,57 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:var(--body);backgro
 .stat-num{font-family:var(--display);font-size:36px;font-weight:700;line-height:1}
 .stat-label{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.12em;color:#333;margin-top:4px}
 
-@media(max-width:700px){
-  .feat-grid{grid-template-columns:1fr}
-  .cmd-grid{grid-template-columns:1fr 1fr}
-  .cartoon{transform:scale(0.7)!important}
+@media(max-width:820px){
+  .cartoon{transform:scale(0.75)!important}
+  .hero-content h1{font-size:clamp(40px,10vw,72px)}
+  .term-body{font-size:12px}
 }
+
+@media(max-width:640px){
+  .feat-grid{grid-template-columns:1fr}
+  .cmd-grid{grid-template-columns:1fr}
+  /* decorative svgs and floating stickers get cluttered/clipped on phones -
+     keep only content that carries information, drop pure decoration */
+  .cartoon:not(.keep-mobile),
+  .sticker{display:none}
+  .panel-inner{padding:24px 20px}
+  .hero-banner{max-width:88vw;margin-bottom:18px}
+  .hero-sub{margin-bottom:24px}
+  .keep-mobile{top:auto!important;bottom:4%!important;left:4%!important;width:56px!important;opacity:0.9}
+  .install-box{font-size:14px;padding:13px 20px}
+  .panel-title{top:24px;font-size:clamp(24px,7vw,32px)}
+  #dots{right:8px;gap:6px}
+  .dot{width:26px;height:26px;border:none;background:transparent;position:relative;display:flex;align-items:center;justify-content:center}
+  .dot::after{content:'';width:9px;height:9px;border-radius:50%;background:rgba(0,0,0,0.15);border:2px solid var(--black)}
+  .dot.active::after{background:var(--lav);transform:scale(1.3);box-shadow:0 0 0 3px var(--cream)}
+  #dir-hint{bottom:14px;font-size:11px;padding:6px 16px}
+  .cta-content h2{font-size:clamp(32px,10vw,52px)}
+  .stats-row{gap:10px}
+  .stat-card{padding:14px 18px}
+  .stat-num{font-size:26px}
+  .cta-btns{gap:10px}
+  .nb-btn{padding:12px 20px;font-size:13px}
+  .term-wrap{width:94%}
+  .term-body{font-size:11px;padding:16px 16px 20px}
+}
+
+@media(max-width:380px){
+  .hero-content h1{font-size:clamp(34px,11vw,48px)}
+  .install-box{font-size:12px;padding:11px 16px;flex-wrap:wrap;justify-content:center}
+}
+
 @media(prefers-reduced-motion:reduce){.cartoon{animation:none!important}.tc{animation:none}}
 </style>
+
 </head>
 <body>
 
-<div id="dots">
-  <div class="dot active" data-i="0"></div>
-  <div class="dot" data-i="1"></div>
-  <div class="dot" data-i="2"></div>
-  <div class="dot" data-i="3"></div>
-  <div class="dot" data-i="4"></div>
+<div id="dots" role="tablist" aria-label="Page navigation">
+  <div class="dot active" data-i="0" role="tab" aria-label="Hero" aria-selected="true" tabindex="0"></div>
+  <div class="dot" data-i="1" role="tab" aria-label="Features" aria-selected="false" tabindex="0"></div>
+  <div class="dot" data-i="2" role="tab" aria-label="Terminal demo" aria-selected="false" tabindex="0"></div>
+  <div class="dot" data-i="3" role="tab" aria-label="Commands" aria-selected="false" tabindex="0"></div>
+  <div class="dot" data-i="4" role="tab" aria-label="Install" aria-selected="false" tabindex="0"></div>
 </div>
 <div id="dir-hint">scroll &rarr;</div>
 
@@ -168,7 +203,7 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:var(--body);backgro
   <div class="panel-inner">
 
     <!-- CARTOONS: cute snake mascot -->
-    <svg class="cartoon bob" style="top:12%;left:6%;width:100px" viewBox="0 0 100 100">
+    <svg class="cartoon bob keep-mobile" style="top:12%;left:6%;width:100px" viewBox="0 0 100 100" aria-hidden="true">
       <path d="M30 70 Q10 60 15 40 Q20 20 40 25 Q50 15 60 25 Q80 20 85 40 Q90 60 70 70 Q60 80 50 75 Q40 80 30 70Z" fill="var(--mint)" stroke="var(--black)" stroke-width="3"/>
       <circle cx="40" cy="38" r="5" fill="var(--black)"/><circle cx="60" cy="38" r="5" fill="var(--black)"/>
       <circle cx="42" cy="36" r="2" fill="white"/><circle cx="62" cy="36" r="2" fill="white"/>
@@ -177,7 +212,7 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:var(--body);backgro
     </svg>
 
     <!-- floating package box -->
-    <svg class="cartoon bob" style="top:18%;right:8%;width:80px;--delay:0.5s;animation-delay:0.5s" viewBox="0 0 80 80">
+    <svg class="cartoon bob" style="top:18%;right:8%;width:80px;--delay:0.5s;animation-delay:0.5s" viewBox="0 0 80 80" aria-hidden="true">
       <rect x="10" y="25" width="60" height="45" rx="4" fill="var(--peach)" stroke="var(--black)" stroke-width="3"/>
       <rect x="10" y="25" width="60" height="15" rx="4" fill="var(--yel)" stroke="var(--black)" stroke-width="3"/>
       <line x1="40" y1="25" x2="40" y2="70" stroke="var(--black)" stroke-width="2"/>
@@ -187,7 +222,7 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:var(--body);backgro
     </svg>
 
     <!-- little bug bottom-left -->
-    <svg class="cartoon wiggle" style="bottom:15%;left:10%;width:60px" viewBox="0 0 60 60">
+    <svg class="cartoon wiggle" style="bottom:15%;left:10%;width:60px" viewBox="0 0 60 60" aria-hidden="true">
       <ellipse cx="30" cy="35" rx="18" ry="14" fill="var(--pink)" stroke="var(--black)" stroke-width="3"/>
       <circle cx="30" cy="22" r="10" fill="var(--pink)" stroke="var(--black)" stroke-width="3"/>
       <circle cx="26" cy="20" r="3" fill="var(--black)"/><circle cx="34" cy="20" r="3" fill="var(--black)"/>
@@ -203,7 +238,7 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:var(--body);backgro
     </svg>
 
     <!-- checkmark buddy bottom-right -->
-    <svg class="cartoon bob" style="bottom:12%;right:12%;width:70px;animation-delay:1s" viewBox="0 0 70 70">
+    <svg class="cartoon bob" style="bottom:12%;right:12%;width:70px;animation-delay:1s" viewBox="0 0 70 70" aria-hidden="true">
       <circle cx="35" cy="35" r="28" fill="var(--mint)" stroke="var(--black)" stroke-width="3"/>
       <path d="M22 36 L32 46 L50 24" fill="none" stroke="var(--black)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
       <circle cx="24" cy="28" r="3" fill="var(--black)"/><circle cx="46" cy="28" r="3" fill="var(--black)"/>
@@ -212,17 +247,17 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:var(--body);backgro
 
     <!-- stickers -->
     <div class="sticker" style="top:24%;left:18%;background:var(--yel);transform:rotate(-6deg)">112 tests</div>
-    <div class="sticker" style="top:30%;right:16%;background:var(--mint);transform:rotate(4deg)">MIT licensed</div>
+    <div class="sticker" style="top:30%;right:16%;background:var(--mint);transform:rotate(4deg)">open source</div>
     <div class="sticker" style="bottom:22%;left:22%;background:var(--lav);transform:rotate(-3deg)">zero keys</div>
 
     <!-- star sparkles -->
-    <svg class="cartoon" style="top:40%;left:3%;width:30px;opacity:0.5" viewBox="0 0 30 30">
+    <svg class="cartoon" style="top:40%;left:3%;width:30px;opacity:0.5" viewBox="0 0 30 30" aria-hidden="true">
       <polygon points="15,2 18,12 28,12 20,18 23,28 15,22 7,28 10,18 2,12 12,12" fill="var(--yel)" stroke="var(--black)" stroke-width="1.5"/>
     </svg>
-    <svg class="cartoon" style="top:14%;left:42%;width:24px;opacity:0.4" viewBox="0 0 30 30">
+    <svg class="cartoon" style="top:14%;left:42%;width:24px;opacity:0.4" viewBox="0 0 30 30" aria-hidden="true">
       <polygon points="15,2 18,12 28,12 20,18 23,28 15,22 7,28 10,18 2,12 12,12" fill="var(--pink)" stroke="var(--black)" stroke-width="1.5"/>
     </svg>
-    <svg class="cartoon" style="bottom:30%;right:4%;width:26px;opacity:0.4" viewBox="0 0 30 30">
+    <svg class="cartoon" style="bottom:30%;right:4%;width:26px;opacity:0.4" viewBox="0 0 30 30" aria-hidden="true">
       <polygon points="15,2 18,12 28,12 20,18 23,28 15,22 7,28 10,18 2,12 12,12" fill="var(--lav)" stroke="var(--black)" stroke-width="1.5"/>
     </svg>
 
@@ -242,7 +277,7 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:var(--body);backgro
     <div class="panel-title">What it does</div>
 
     <!-- warning triangle cartoon top-left -->
-    <svg class="cartoon wiggle" style="top:8%;left:5%;width:65px" viewBox="0 0 70 70">
+    <svg class="cartoon wiggle" style="top:8%;left:5%;width:65px" viewBox="0 0 70 70" aria-hidden="true">
       <polygon points="35,8 65,60 5,60" fill="var(--yel)" stroke="var(--black)" stroke-width="3" stroke-linejoin="round"/>
       <circle cx="28" cy="42" r="3.5" fill="var(--black)"/><circle cx="42" cy="42" r="3.5" fill="var(--black)"/>
       <circle cx="29" cy="41" r="1.5" fill="white"/><circle cx="43" cy="41" r="1.5" fill="white"/>
@@ -251,22 +286,22 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:var(--body);backgro
     </svg>
 
     <!-- curly brace character top-right -->
-    <svg class="cartoon bob" style="top:10%;right:6%;width:55px;animation-delay:0.7s" viewBox="0 0 50 70">
+    <svg class="cartoon bob" style="top:10%;right:6%;width:55px;animation-delay:0.7s" viewBox="0 0 50 70" aria-hidden="true">
       <text x="5" y="55" font-family="var(--display)" font-size="56" font-weight="700" fill="var(--lav)" stroke="var(--black)" stroke-width="2">{</text>
       <circle cx="32" cy="22" r="4" fill="var(--black)"/><circle cx="44" cy="22" r="4" fill="var(--black)"/>
       <circle cx="33" cy="21" r="1.5" fill="white"/><circle cx="45" cy="21" r="1.5" fill="white"/>
     </svg>
 
     <!-- little snake bottom -->
-    <svg class="cartoon bob" style="bottom:6%;left:50%;width:90px;animation-delay:0.3s" viewBox="0 0 90 40">
+    <svg class="cartoon bob" style="bottom:6%;left:50%;width:90px;animation-delay:0.3s" viewBox="0 0 90 40" aria-hidden="true">
       <path d="M5 20 Q15 5 25 20 Q35 35 45 20 Q55 5 65 20 Q75 35 85 20" fill="none" stroke="var(--mint)" stroke-width="8" stroke-linecap="round"/>
-      <path d="M5 20 Q15 5 25 20 Q35 35 45 20 Q55 5 65 20 Q75 35 85 20" fill="none" stroke="var(--black)" stroke-width="3" stroke-linecap="round" fill="none"/>
+      <path d="M5 20 Q15 5 25 20 Q35 35 45 20 Q55 5 65 20 Q75 35 85 20" fill="none" stroke="var(--black)" stroke-width="3" stroke-linecap="round"/>
       <circle cx="82" cy="17" r="6" fill="var(--mint)" stroke="var(--black)" stroke-width="2.5"/>
       <circle cx="80" cy="15" r="2" fill="var(--black)"/><circle cx="85" cy="15" r="2" fill="var(--black)"/>
     </svg>
 
     <!-- gear bottom-right -->
-    <svg class="cartoon spin" style="bottom:10%;right:8%;width:50px" viewBox="0 0 50 50">
+    <svg class="cartoon spin" style="bottom:10%;right:8%;width:50px" viewBox="0 0 50 50" aria-hidden="true">
       <circle cx="25" cy="25" r="10" fill="var(--sky)" stroke="var(--black)" stroke-width="3"/>
       <rect x="22" y="2" width="6" height="10" rx="2" fill="var(--sky)" stroke="var(--black)" stroke-width="2"/>
       <rect x="22" y="38" width="6" height="10" rx="2" fill="var(--sky)" stroke="var(--black)" stroke-width="2"/>
@@ -277,37 +312,37 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:var(--body);backgro
     <div class="feat-grid">
       <div class="feat-card">
         <div class="feat-icon" style="background:var(--mint)">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--black)" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="16" y1="16" x2="21" y2="21"/></svg>
+          <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="var(--black)" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="16" y1="16" x2="21" y2="21"/></svg>
         </div>
         <h3>AST scanner</h3><p>Parses every .py, .pyi, .ipynb file. Finds imports, calls, and keyword arguments.</p>
       </div>
       <div class="feat-card">
         <div class="feat-icon" style="background:var(--peach)">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--black)" stroke-width="2.5" stroke-linecap="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="var(--black)" stroke-width="2.5" stroke-linecap="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
         </div>
         <h3>Changelog parser</h3><p>Pulls release notes from GitHub and PyPI. Finds removals, deprecations, renames.</p>
       </div>
       <div class="feat-card">
         <div class="feat-icon" style="background:var(--lav)">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--black)" stroke-width="2.5" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+          <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="var(--black)" stroke-width="2.5" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
         </div>
         <h3>Deep mode</h3><p>Downloads both versions, diffs real signatures, catches removed params at kwarg level.</p>
       </div>
       <div class="feat-card">
         <div class="feat-icon" style="background:var(--yel)">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--black)" stroke-width="2.5" stroke-linecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/></svg>
+          <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="var(--black)" stroke-width="2.5" stroke-linecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/></svg>
         </div>
         <h3>Auto-fix</h3><p>Rewrites requirements.txt to the latest safe version. Dry-run first, commit when ready.</p>
       </div>
       <div class="feat-card">
         <div class="feat-icon" style="background:var(--pink)">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--black)" stroke-width="2.5" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="9" x2="15" y2="15"/><line x1="15" y1="9" x2="9" y2="15"/></svg>
+          <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="var(--black)" stroke-width="2.5" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="9" x2="15" y2="15"/><line x1="15" y1="9" x2="9" y2="15"/></svg>
         </div>
         <h3>CI-ready</h3><p>Exit code 1 on breaking changes. Generates GitHub Actions and pre-commit hooks.</p>
       </div>
       <div class="feat-card">
         <div class="feat-icon" style="background:var(--sky)">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--black)" stroke-width="2.5" stroke-linecap="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>
+          <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="var(--black)" stroke-width="2.5" stroke-linecap="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>
         </div>
         <h3>5 dep formats</h3><p>requirements.txt, pyproject.toml, setup.cfg, setup.py, environment.yml</p>
       </div>
@@ -321,7 +356,7 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:var(--body);backgro
     <div class="panel-title" style="color:var(--black)">See it run</div>
 
     <!-- magnifying glass cartoon -->
-    <svg class="cartoon bob" style="top:8%;right:10%;width:60px" viewBox="0 0 60 60">
+    <svg class="cartoon bob" style="top:8%;right:10%;width:60px" viewBox="0 0 60 60" aria-hidden="true">
       <circle cx="25" cy="25" r="16" fill="var(--sky)" stroke="var(--black)" stroke-width="3"/>
       <line x1="37" y1="37" x2="52" y2="52" stroke="var(--black)" stroke-width="4" stroke-linecap="round"/>
       <circle cx="21" cy="22" r="3" fill="var(--black)"/><circle cx="31" cy="22" r="3" fill="var(--black)"/>
@@ -330,13 +365,13 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:var(--body);backgro
     </svg>
 
     <!-- shield cartoon left -->
-    <svg class="cartoon wiggle" style="bottom:12%;left:6%;width:55px" viewBox="0 0 50 60">
+    <svg class="cartoon wiggle" style="bottom:12%;left:6%;width:55px" viewBox="0 0 50 60" aria-hidden="true">
       <path d="M25 5 L45 15 L42 40 Q38 52 25 56 Q12 52 8 40 L5 15Z" fill="var(--lime)" stroke="var(--black)" stroke-width="3"/>
       <path d="M18 30 L23 36 L34 22" fill="none" stroke="var(--black)" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
     </svg>
 
     <!-- sparkle top-left -->
-    <svg class="cartoon" style="top:15%;left:8%;width:35px" viewBox="0 0 30 30">
+    <svg class="cartoon" style="top:15%;left:8%;width:35px" viewBox="0 0 30 30" aria-hidden="true">
       <polygon points="15,0 17,12 28,15 17,18 15,30 13,18 2,15 13,12" fill="var(--yel)" stroke="var(--black)" stroke-width="1.5"/>
     </svg>
 
@@ -355,7 +390,7 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:var(--body);backgro
     <div class="panel-title">11 commands</div>
 
     <!-- rocket cartoon -->
-    <svg class="cartoon bob" style="top:6%;right:8%;width:60px" viewBox="0 0 60 80">
+    <svg class="cartoon bob" style="top:6%;right:8%;width:60px" viewBox="0 0 60 80" aria-hidden="true">
       <path d="M30 10 Q18 25 18 50 L30 60 L42 50 Q42 25 30 10Z" fill="var(--cream)" stroke="var(--black)" stroke-width="3"/>
       <circle cx="30" cy="32" r="6" fill="var(--sky)" stroke="var(--black)" stroke-width="2.5"/>
       <path d="M18 45 Q10 48 12 55 L18 50Z" fill="var(--pink)" stroke="var(--black)" stroke-width="2"/>
@@ -364,12 +399,12 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:var(--body);backgro
     </svg>
 
     <!-- heart bottom-left -->
-    <svg class="cartoon wiggle" style="bottom:8%;left:6%;width:45px" viewBox="0 0 50 50">
+    <svg class="cartoon wiggle" style="bottom:8%;left:6%;width:45px" viewBox="0 0 50 50" aria-hidden="true">
       <path d="M25 44 Q5 28 10 16 Q14 8 25 16 Q36 8 40 16 Q45 28 25 44Z" fill="var(--pink)" stroke="var(--black)" stroke-width="3"/>
     </svg>
 
     <!-- bracket pair top-left -->
-    <svg class="cartoon" style="top:10%;left:5%;width:50px" viewBox="0 0 60 40">
+    <svg class="cartoon" style="top:10%;left:5%;width:50px" viewBox="0 0 60 40" aria-hidden="true">
       <text x="0" y="32" font-family="var(--display)" font-size="36" font-weight="700" fill="var(--mint)" stroke="var(--black)" stroke-width="2">&lt;/&gt;</text>
     </svg>
 
@@ -394,7 +429,7 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:var(--body);backgro
   <div class="panel-inner">
 
     <!-- trophy cartoon -->
-    <svg class="cartoon bob" style="top:10%;left:8%;width:70px" viewBox="0 0 70 80">
+    <svg class="cartoon bob" style="top:10%;left:8%;width:70px" viewBox="0 0 70 80" aria-hidden="true">
       <rect x="22" y="55" width="26" height="8" rx="3" fill="var(--yel)" stroke="var(--black)" stroke-width="3"/>
       <rect x="28" y="45" width="14" height="14" rx="2" fill="var(--yel)" stroke="var(--black)" stroke-width="2.5"/>
       <path d="M20 15 L20 35 Q20 48 35 48 Q50 48 50 35 L50 15Z" fill="var(--yel)" stroke="var(--black)" stroke-width="3"/>
@@ -406,7 +441,7 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:var(--body);backgro
     </svg>
 
     <!-- party popper right -->
-    <svg class="cartoon wiggle" style="top:12%;right:10%;width:60px" viewBox="0 0 60 60">
+    <svg class="cartoon wiggle" style="top:12%;right:10%;width:60px" viewBox="0 0 60 60" aria-hidden="true">
       <path d="M10 55 L25 20 L45 40Z" fill="var(--lav)" stroke="var(--black)" stroke-width="3" stroke-linejoin="round"/>
       <circle cx="35" cy="12" r="4" fill="var(--pink)" stroke="var(--black)" stroke-width="2"/>
       <circle cx="48" cy="20" r="3" fill="var(--mint)" stroke="var(--black)" stroke-width="2"/>
@@ -416,7 +451,7 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:var(--body);backgro
     </svg>
 
     <!-- snake bottom -->
-    <svg class="cartoon bob" style="bottom:6%;right:30%;width:100px;animation-delay:0.4s" viewBox="0 0 100 40">
+    <svg class="cartoon bob" style="bottom:6%;right:30%;width:100px;animation-delay:0.4s" viewBox="0 0 100 40" aria-hidden="true">
       <path d="M5 25 Q20 5 35 25 Q50 45 65 25 Q80 5 95 25" fill="none" stroke="var(--lav)" stroke-width="10" stroke-linecap="round"/>
       <path d="M5 25 Q20 5 35 25 Q50 45 65 25 Q80 5 95 25" fill="none" stroke="var(--black)" stroke-width="3" stroke-linecap="round"/>
       <circle cx="92" cy="22" r="7" fill="var(--lav)" stroke="var(--black)" stroke-width="2.5"/>
@@ -425,16 +460,16 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:var(--body);backgro
     </svg>
 
     <!-- sparkles -->
-    <svg class="cartoon" style="bottom:20%;left:5%;width:25px" viewBox="0 0 30 30">
+    <svg class="cartoon" style="bottom:20%;left:5%;width:25px" viewBox="0 0 30 30" aria-hidden="true">
       <polygon points="15,0 17,12 28,15 17,18 15,30 13,18 2,15 13,12" fill="var(--yel)" stroke="var(--black)" stroke-width="1.5"/>
     </svg>
-    <svg class="cartoon" style="top:35%;right:4%;width:20px" viewBox="0 0 30 30">
+    <svg class="cartoon" style="top:35%;right:4%;width:20px" viewBox="0 0 30 30" aria-hidden="true">
       <polygon points="15,0 17,12 28,15 17,18 15,30 13,18 2,15 13,12" fill="var(--pink)" stroke="var(--black)" stroke-width="1.5"/>
     </svg>
 
     <div class="cta-content">
       <h2>Ship safer.</h2>
-      <p>Open source. MIT licensed. Built by AgbaDev.</p>
+      <p>Open source. Built by AgbaDev.</p>
       <div class="cta-btns">
         <a class="nb-btn" style="background:var(--black);color:var(--cream)" href="https://pypi.org/project/pyupcheck/" target="_blank">pip install pyupcheck</a>
         <a class="nb-btn" style="background:var(--lav)" href="https://github.com/Astronomox/pyupcheck-Astronomox" target="_blank">GitHub</a>
@@ -496,7 +531,7 @@ function positionPanels() {
         else if (d === 'down') { tx = 0; ty = -100; }
         else if (d === 'up') { tx = 0; ty = 100; }
       }
-      p.style.transform = `translate(${tx}vw, ${ty}vh)`;
+      p.style.transform = `translate(${tx}vw, ${ty}dvh)`;
       p.style.opacity = '0.6';
       p.style.transition = 'transform 0.9s cubic-bezier(0.76,0,0.24,1), opacity 0.5s';
     }
@@ -525,7 +560,7 @@ function goTo(n) {
 
   // snap incoming to start position (no transition)
   panels[n].style.transition = 'none';
-  panels[n].style.transform = `translate(${fromX}vw, ${fromY}vh)`;
+  panels[n].style.transform = `translate(${fromX}vw, ${fromY}dvh)`;
   panels[n].style.opacity = '0.6';
 
   // force reflow
@@ -539,11 +574,14 @@ function goTo(n) {
   // move current out
   let outX = -fromX, outY = -fromY;
   panels[cur].style.transition = 'transform 0.9s cubic-bezier(0.76,0,0.24,1), opacity 0.4s';
-  panels[cur].style.transform = `translate(${outX}vw, ${outY}vh)`;
+  panels[cur].style.transform = `translate(${outX}vw, ${outY}dvh)`;
   panels[cur].style.opacity = '0.6';
 
   cur = n;
-  dots.forEach((d, i) => d.classList.toggle('active', i === cur));
+  dots.forEach((d, i) => {
+    d.classList.toggle('active', i === cur);
+    d.setAttribute('aria-selected', i === cur ? 'true' : 'false');
+  });
 
   if (cur < transitions.length) {
     hint.textContent = transitions[cur].hint;
@@ -582,7 +620,12 @@ window.addEventListener('touchend',e=>{
 },{passive:true});
 
 // dots
-dots.forEach(d => d.addEventListener('click', () => goTo(+d.dataset.i)));
+dots.forEach(d => {
+  d.addEventListener('click', () => goTo(+d.dataset.i));
+  d.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goTo(+d.dataset.i); }
+  });
+});
 
 // ═══ TERMINAL TYPING ═══
 const sleep = ms => new Promise(r => setTimeout(r, ms));
