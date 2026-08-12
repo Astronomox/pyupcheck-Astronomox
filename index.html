@@ -4,743 +4,811 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>pyupcheck — know before you upgrade</title>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700;800&family=Montserrat:ital,wght@0,300;0,400;0,600;0,700;0,900;1,700;1,900&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Sora:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --black:  #080808;
-  --white:  #f5f2ee;
-  --offwhite: #ede9e3;
-  --cyan:   #00c2e0;
-  --blue:   #0055aa;
-  --dim:    #4a6b8a;
-  --dimmer: #1e2e3e;
-  --green:  #00cc66;
-  --red:    #ee3355;
-  --yellow: #ddaa00;
-  --mono:   'JetBrains Mono', monospace;
-  --serif:  'Montserrat', sans-serif;
+  --cream:    #FFF8F0;
+  --black:    #1a1a1a;
+  --mint:     #A7F3D0;
+  --lav:      #C4B5FD;
+  --peach:    #FBBF77;
+  --pink:     #FCA5A5;
+  --sky:      #7DD3FC;
+  --yel:      #FDE047;
+  --lime:     #BEF264;
+  --border:   3px solid var(--black);
+  --shadow:   6px 6px 0 var(--black);
+  --shadow-sm: 4px 4px 0 var(--black);
+  --radius:   14px;
+  --display:  'Space Grotesk', sans-serif;
+  --body:     'Sora', sans-serif;
 }
 
-html, body {
-  width: 100%; height: 100%;
-  overflow: hidden;
-  font-family: var(--mono);
-  background: var(--black);
+html {
+  scroll-behavior: smooth;
+  overflow-x: hidden;
 }
 
-/* scanlines on dark panels only */
-.dark-scan::after {
-  content: '';
-  position: absolute; inset: 0;
-  background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.07) 2px, rgba(0,0,0,0.07) 4px);
-  pointer-events: none;
-  z-index: 5;
+body {
+  background: var(--cream);
+  color: var(--black);
+  font-family: var(--body);
+  font-size: 15px;
+  line-height: 1.6;
+  overflow-x: hidden;
 }
 
-/* ── horizontal track ── */
-#track {
-  display: flex;
-  width: 600vw;
-  height: 100vh;
-  transition: transform 1s cubic-bezier(0.76, 0, 0.24, 1);
-  will-change: transform;
+/* ── utility ── */
+.container {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 24px;
 }
 
-.panel {
-  width: 100vw;
-  height: 100vh;
-  position: relative;
-  overflow: hidden;
-  flex-shrink: 0;
+/* ── nav ── */
+nav {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+  background: var(--cream);
+  border-bottom: var(--border);
+  padding: 14px 24px;
+  display: flex; align-items: center; justify-content: space-between;
 }
-
-/* ── NAV DOTS ── */
-#nav {
-  position: fixed;
-  right: 24px; top: 50%;
-  transform: translateY(-50%);
-  display: flex; flex-direction: column; gap: 10px;
-  z-index: 1000;
+.nav-logo {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 20px;
+  text-decoration: none;
+  color: var(--black);
 }
-.nav-dot {
-  width: 5px; height: 5px;
-  border-radius: 50%;
-  background: rgba(255,255,255,0.25);
-  cursor: pointer;
-  transition: background 0.3s, transform 0.3s, box-shadow 0.3s;
-}
-.nav-dot.active {
-  background: var(--cyan);
-  transform: scale(1.8);
-  box-shadow: 0 0 8px var(--cyan);
-}
-/* on white panel, dark dots */
-#nav.light .nav-dot { background: rgba(0,0,0,0.2); }
-#nav.light .nav-dot.active { background: var(--black); box-shadow: none; }
-
-/* ── PROGRESS ── */
-#prog {
-  position: fixed; bottom: 0; left: 0;
-  height: 2px;
-  background: linear-gradient(90deg, var(--blue), var(--cyan));
-  box-shadow: 0 0 8px var(--cyan);
-  transition: width 1s cubic-bezier(0.76, 0, 0.24, 1);
-  z-index: 1000;
-}
-
-/* ═══════════════════════════════════════
-   PANEL 1 — WHITE HERO
-═══════════════════════════════════════ */
-#p1 {
-  background: var(--white);
-}
-
-/* flower left-bottom — bleeds off left and bottom edge */
-.flower-p1 {
-  position: absolute;
-  left: -80px; bottom: -60px;
-  width: 55vw; height: 90vh;
-  object-fit: cover;
-  object-position: right top;
-  opacity: 0;
-  filter: grayscale(20%) contrast(1.05);
-  transition: opacity 1.4s ease 0.3s;
-  z-index: 1;
-  /* mask so it bleeds from edges cleanly */
-  -webkit-mask-image: linear-gradient(to right, rgba(0,0,0,1) 0%, rgba(0,0,0,0.85) 60%, transparent 100%),
-                      linear-gradient(to top, rgba(0,0,0,1) 0%, rgba(0,0,0,0.7) 50%, transparent 100%);
-  -webkit-mask-composite: source-in;
-  mask-image: linear-gradient(to right, rgba(0,0,0,1) 0%, rgba(0,0,0,0.85) 60%, transparent 100%);
-}
-.flower-p1.show { opacity: 1; }
-
-/* hero text — right side of p1 */
-.hero-text {
-  position: absolute;
-  right: 8vw; top: 50%;
-  transform: translateY(-50%);
-  text-align: right;
-  z-index: 10;
-  opacity: 0;
-  transition: opacity 1s ease 0.6s, transform 1s ease 0.6s;
-  transform: translateY(-40%);
-}
-.hero-text.show {
-  opacity: 1;
-  transform: translateY(-50%);
-}
-
-.hero-eyebrow {
-  font-family: var(--serif);
+.nav-logo span { color: #7c3aed; }
+.nav-links { display: flex; gap: 8px; }
+.nav-links a {
+  font-family: var(--display);
   font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.28em;
-  text-transform: uppercase;
-  color: #555;
-  margin-bottom: 24px;
+  text-decoration: none;
+  color: var(--black);
+  padding: 8px 16px;
+  border: 2px solid var(--black);
+  border-radius: 40px;
+  transition: transform 0.1s, box-shadow 0.1s, background 0.15s;
+  box-shadow: 3px 3px 0 var(--black);
+}
+.nav-links a:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0 var(--black);
+}
+.nav-links a:active {
+  transform: translate(2px, 2px);
+  box-shadow: 1px 1px 0 var(--black);
+}
+.nav-links .primary {
+  background: var(--yel);
 }
 
-.hero-title {
-  font-family: var(--serif);
-  font-size: clamp(72px, 10vw, 148px);
-  font-weight: 900;
-  color: var(--black);
-  line-height: 0.88;
-  letter-spacing: -0.04em;
+/* ═══ HERO ═══ */
+.hero {
+  padding: 140px 24px 80px;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+}
+
+/* floating sticker badges */
+.sticker {
+  position: absolute;
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 12px;
+  padding: 8px 16px;
+  border: var(--border);
+  border-radius: 40px;
+  box-shadow: var(--shadow-sm);
+  transform: rotate(var(--rot, 0deg));
+  animation: float 3s ease-in-out infinite;
+  animation-delay: var(--delay, 0s);
+  z-index: 2;
+  white-space: nowrap;
+}
+@keyframes float {
+  0%, 100% { transform: rotate(var(--rot, 0deg)) translateY(0); }
+  50% { transform: rotate(var(--rot, 0deg)) translateY(-8px); }
+}
+
+.s1 { top: 160px; left: 8%; background: var(--mint); --rot: -8deg; --delay: 0s; }
+.s2 { top: 200px; right: 6%; background: var(--lav); --rot: 5deg; --delay: 0.4s; }
+.s3 { top: 380px; left: 12%; background: var(--pink); --rot: -3deg; --delay: 0.8s; }
+.s4 { top: 340px; right: 10%; background: var(--yel); --rot: 7deg; --delay: 1.2s; }
+
+/* blob mascot */
+.blob-wrap {
+  display: inline-block;
+  position: relative;
   margin-bottom: 32px;
 }
-.hero-title em {
-  font-style: italic;
-  font-weight: 700;
-  color: #222;
+.blob {
+  width: 120px; height: 120px;
+  background: var(--lav);
+  border: var(--border);
+  border-radius: 60% 40% 50% 50% / 50% 60% 40% 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 48px;
+  box-shadow: var(--shadow);
+  animation: blobmorph 4s ease-in-out infinite, blobbounce 2s ease-in-out infinite;
+  cursor: default;
 }
+@keyframes blobmorph {
+  0%, 100% { border-radius: 60% 40% 50% 50% / 50% 60% 40% 50%; }
+  25% { border-radius: 50% 60% 40% 50% / 40% 50% 60% 50%; }
+  50% { border-radius: 40% 50% 60% 50% / 60% 40% 50% 50%; }
+  75% { border-radius: 50% 40% 50% 60% / 50% 50% 40% 60%; }
+}
+@keyframes blobbounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+.hero h1 {
+  font-family: var(--display);
+  font-size: clamp(48px, 8vw, 96px);
+  font-weight: 700;
+  line-height: 0.95;
+  letter-spacing: -0.04em;
+  margin-bottom: 20px;
+}
+.hero h1 .accent { color: #7c3aed; }
 
 .hero-sub {
-  font-family: var(--serif);
-  font-size: clamp(15px, 1.5vw, 20px);
+  font-size: clamp(16px, 2vw, 20px);
+  color: #555;
+  max-width: 500px;
+  margin: 0 auto 36px;
   font-weight: 400;
-  color: #333;
-  line-height: 1.7;
-  max-width: 400px;
-  margin-left: auto;
-  margin-bottom: 44px;
 }
 
-.install-pill {
+.install-card {
   display: inline-flex;
   align-items: center;
   gap: 12px;
   background: var(--black);
-  color: var(--white);
-  font-family: var(--mono);
-  font-size: 14px;
-  padding: 14px 26px;
-  border-radius: 4px;
-  margin-bottom: 24px;
+  color: var(--cream);
+  font-family: 'Space Grotesk', monospace;
+  font-size: 16px;
+  font-weight: 600;
+  padding: 16px 28px;
+  border-radius: var(--radius);
+  border: var(--border);
+  box-shadow: var(--shadow);
+  margin-bottom: 16px;
   cursor: text;
   user-select: all;
-  letter-spacing: 0.04em;
+  transition: transform 0.1s, box-shadow 0.1s;
 }
-.install-pill .dollar { color: #555; }
+.install-card:hover {
+  transform: translate(-2px, -2px);
+  box-shadow: 8px 8px 0 var(--black);
+}
+.install-card .dollar { color: #888; }
 
 .hero-hint {
-  font-family: var(--serif);
   font-size: 12px;
-  font-weight: 600;
-  color: #888;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
+  color: #aaa;
+  font-weight: 500;
 }
 
-/* ═══════════════════════════════════════
-   PANEL 2 — FLOWER CONTINUES + TERMINAL
-═══════════════════════════════════════ */
-#p2 { background: var(--black); }
-
-/* flower right side — the continuation from p1 */
-.flower-p2 {
-  position: absolute;
-  right: -40px; bottom: -40px;
-  width: 48vw; height: 85vh;
-  object-fit: cover;
-  object-position: left top;
-  opacity: 0;
-  filter: grayscale(30%) brightness(0.55) contrast(1.1);
-  transition: opacity 1.2s ease 0.4s;
-  z-index: 1;
-  mask-image: linear-gradient(to left, rgba(0,0,0,1) 0%, rgba(0,0,0,0.7) 55%, transparent 100%);
-  -webkit-mask-image: linear-gradient(to left, rgba(0,0,0,1) 0%, rgba(0,0,0,0.7) 55%, transparent 100%);
+/* ═══ FEATURES ═══ */
+.features {
+  padding: 80px 0;
 }
-.flower-p2.show { opacity: 1; }
-
-.terminal-p2 {
-  position: absolute;
-  left: 6vw; top: 50%;
-  transform: translateY(-48%);
-  width: min(560px, 52vw);
-  z-index: 10;
-  opacity: 0;
-  transition: opacity 0.8s ease 0.6s, transform 0.8s ease 0.6s;
-  transform: translateY(-43%);
-}
-.terminal-p2.show {
-  opacity: 1;
-  transform: translateY(-48%);
+.features h2 {
+  font-family: var(--display);
+  font-size: clamp(32px, 5vw, 52px);
+  font-weight: 700;
+  text-align: center;
+  margin-bottom: 48px;
+  letter-spacing: -0.03em;
 }
 
-/* ═══════════════════════════════════════
-   SHARED TERMINAL STYLES
-═══════════════════════════════════════ */
-.term-win {
-  background: #0a0d12;
-  border: 1px solid #1a2a3a;
-  border-radius: 10px;
-  box-shadow:
-    0 0 0 1px rgba(0,194,224,0.06),
-    0 50px 140px rgba(0,0,0,0.9),
-    0 0 80px rgba(0,85,170,0.12);
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 20px;
+}
+
+.card {
+  background: white;
+  border: var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 28px;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.card:hover {
+  transform: translate(-3px, -3px);
+  box-shadow: 9px 9px 0 var(--black);
+}
+.card:active {
+  transform: translate(2px, 2px);
+  box-shadow: 3px 3px 0 var(--black);
+}
+
+.card-icon {
+  width: 52px; height: 52px;
+  border: var(--border);
+  border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 24px;
+  margin-bottom: 16px;
+  box-shadow: var(--shadow-sm);
+}
+.card h3 {
+  font-family: var(--display);
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+.card p {
+  font-size: 13px;
+  color: #555;
+  line-height: 1.65;
+}
+
+/* ═══ TERMINAL SECTION ═══ */
+.terminal-section {
+  padding: 80px 0;
+}
+.terminal-section h2 {
+  font-family: var(--display);
+  font-size: clamp(32px, 5vw, 52px);
+  font-weight: 700;
+  text-align: center;
+  margin-bottom: 48px;
+  letter-spacing: -0.03em;
+}
+
+.term-card {
+  background: var(--black);
+  border: var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
   overflow: hidden;
+  max-width: 800px;
+  margin: 0 auto;
 }
 
-.titlebar {
+.term-bar {
   display: flex; align-items: center; gap: 7px;
-  padding: 11px 16px;
-  background: #0e131b;
-  border-bottom: 1px solid #1a2a3a;
+  padding: 12px 16px;
+  background: #111;
+  border-bottom: 2px solid #333;
 }
-.dot { width: 11px; height: 11px; border-radius: 50%; }
-.dot.r { background: #ff5f57; } .dot.y { background: #febc2e; } .dot.g { background: #28c840; }
-.tbar-label { margin-left: 8px; font-size: 10px; color: #2a4a6a; letter-spacing: 0.1em; flex:1; text-align:center; }
+.term-dot { width: 12px; height: 12px; border-radius: 50%; border: 2px solid #444; }
+.term-dot.r { background: #ff5f57; border-color: #ff5f57; }
+.term-dot.y { background: #febc2e; border-color: #febc2e; }
+.term-dot.g { background: #28c840; border-color: #28c840; }
+.term-bar-label {
+  flex: 1; text-align: center;
+  font-family: var(--display);
+  font-size: 11px;
+  color: #555;
+  letter-spacing: 0.1em;
+}
 
 .term-body {
   padding: 20px 24px 28px;
-  font-size: 12.5px;
-  line-height: 1.75;
-  min-height: 220px;
-}
-
-.line { display: block; min-height: 1.75em; }
-.prompt { color: var(--cyan); }
-.prompt::before { content: '$ '; }
-.out { color: #3a5a7a; }
-.out.ok  { color: var(--green); }
-.out.warn{ color: var(--yellow); }
-.out.err { color: var(--red); }
-.out.inf { color: #4488cc; }
-.out.bold{ color: #c8dff0; font-weight: 600; }
-.out.white { color: #c8dff0; }
-
-.cursor-blink {
-  display: inline-block;
-  width: 7px; height: 1em;
-  background: var(--cyan);
-  vertical-align: middle; margin-left: 2px;
-  animation: blink 1s step-end infinite;
-}
-@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
-
-/* ═══════════════════════════════════════
-   PANELS 3-5 — PURE TERMINAL
-═══════════════════════════════════════ */
-#p3, #p4, #p5 {
-  background: var(--black);
-  display: flex; align-items: center; justify-content: center;
-}
-
-/* grid bg */
-#p3::before, #p4::before {
-  content: '';
-  position: absolute; inset: 0;
-  background-image:
-    linear-gradient(rgba(0,194,224,0.025) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0,194,224,0.025) 1px, transparent 1px);
-  background-size: 52px 52px;
-}
-
-.center-terminal {
-  width: min(820px, 88vw);
-  opacity: 0;
-  transform: translateY(28px);
-  transition: opacity 0.7s ease, transform 0.7s ease;
-}
-.center-terminal.show {
-  opacity: 1; transform: translateY(0);
-}
-
-.panel-label {
-  position: absolute;
-  top: 26px; left: 36px;
-  font-size: 9px;
-  letter-spacing: 0.25em;
-  text-transform: uppercase;
-  color: #1e3050;
-}
-.panel-label span { color: var(--cyan); }
-
-/* ═══════════════════════════════════════
-   PANEL 6 — CTA
-═══════════════════════════════════════ */
-#p6 {
-  background: var(--white);
-  display: flex; align-items: center; justify-content: center;
-}
-
-/* flower corners on CTA */
-.flower-cta-bl {
-  position: absolute;
-  left: -30px; bottom: -30px;
-  width: 38vw; height: 70vh;
-  object-fit: cover;
-  object-position: right top;
-  opacity: 0;
-  filter: grayscale(25%) contrast(1.05);
-  transition: opacity 1.3s ease 0.2s;
-  mask-image: linear-gradient(to right, rgba(0,0,0,0.9) 0%, transparent 80%),
-              linear-gradient(to top, rgba(0,0,0,0.9) 0%, transparent 70%);
-  -webkit-mask-image: linear-gradient(to right, rgba(0,0,0,0.9) 0%, transparent 80%);
-  z-index: 1;
-}
-.flower-cta-tr {
-  position: absolute;
-  right: -30px; top: -30px;
-  width: 32vw; height: 60vh;
-  object-fit: cover;
-  object-position: left bottom;
-  opacity: 0;
-  filter: grayscale(25%) contrast(1.05);
-  transition: opacity 1.3s ease 0.4s;
-  mask-image: linear-gradient(to left, rgba(0,0,0,0.9) 0%, transparent 80%),
-              linear-gradient(to bottom, rgba(0,0,0,0.9) 0%, transparent 70%);
-  -webkit-mask-image: linear-gradient(to left, rgba(0,0,0,0.9) 0%, transparent 80%);
-  z-index: 1;
-}
-.flower-cta-bl.show, .flower-cta-tr.show { opacity: 1; }
-
-.cta-inner {
-  text-align: center;
-  z-index: 10;
-  opacity: 0;
-  transition: opacity 1s ease 0.5s;
-}
-.cta-inner.show { opacity: 1; }
-
-.cta-eyebrow {
-  font-family: var(--serif);
+  font-family: 'Space Grotesk', monospace;
   font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.28em;
-  text-transform: uppercase;
+  line-height: 1.8;
+  color: #eee;
+  min-height: 250px;
+}
+
+.term-line { display: block; min-height: 1.8em; }
+.t-prompt { color: #7DD3FC; }
+.t-prompt::before { content: "$ "; }
+.t-ok { color: #A7F3D0; }
+.t-warn { color: #FBBF77; }
+.t-err { color: #FCA5A5; }
+.t-dim { color: #666; }
+.t-white { color: #ddd; }
+.t-cursor {
+  display: inline-block;
+  width: 8px; height: 1em;
+  background: #7DD3FC;
+  vertical-align: middle;
+  margin-left: 2px;
+  animation: tblink 1s step-end infinite;
+}
+@keyframes tblink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+/* ═══ DEEP MODE ═══ */
+.deep-section {
+  padding: 80px 0;
+}
+.deep-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 28px;
+  align-items: center;
+}
+@media (max-width: 700px) { .deep-split { grid-template-columns: 1fr; } }
+
+.deep-text h2 {
+  font-family: var(--display);
+  font-size: clamp(28px, 4vw, 44px);
+  font-weight: 700;
+  margin-bottom: 16px;
+  letter-spacing: -0.03em;
+}
+.deep-text h2 .badge {
+  display: inline-block;
+  background: var(--lime);
+  font-size: 14px;
+  padding: 4px 14px;
+  border: 2px solid var(--black);
+  border-radius: 40px;
+  box-shadow: 3px 3px 0 var(--black);
+  vertical-align: middle;
+  margin-left: 8px;
+  transform: rotate(2deg);
+}
+.deep-text p {
+  font-size: 14px;
   color: #555;
-  margin-bottom: 24px;
+  margin-bottom: 16px;
+  line-height: 1.7;
 }
 
-.cta-title {
-  font-family: var(--serif);
-  font-size: clamp(64px, 9vw, 130px);
-  font-weight: 900;
-  color: var(--black);
-  line-height: 0.9;
-  letter-spacing: -0.04em;
-  margin-bottom: 24px;
+.fact-card {
+  background: var(--mint);
+  border: var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 24px;
+  font-family: var(--display);
+  font-size: 13px;
+  line-height: 1.7;
 }
-.cta-title em { font-style: italic; font-weight: 700; }
+.fact-card .fact-tag {
+  display: inline-block;
+  background: var(--black);
+  color: var(--mint);
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  margin-bottom: 12px;
+}
+.fact-card code {
+  background: rgba(0,0,0,0.08);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+}
 
-.cta-sub {
-  font-family: var(--serif);
-  font-size: clamp(14px, 1.4vw, 18px);
-  font-weight: 400;
+/* ═══ COMMANDS ═══ */
+.commands-section {
+  padding: 80px 0;
+}
+.commands-section h2 {
+  font-family: var(--display);
+  font-size: clamp(32px, 5vw, 52px);
+  font-weight: 700;
+  text-align: center;
+  margin-bottom: 48px;
+  letter-spacing: -0.03em;
+}
+.cmd-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+}
+.cmd-pill {
+  background: white;
+  border: var(--border);
+  border-radius: 10px;
+  padding: 14px 18px;
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.12s, box-shadow 0.12s, background 0.15s;
+  cursor: default;
+}
+.cmd-pill:hover {
+  transform: translate(-2px, -2px);
+  box-shadow: 6px 6px 0 var(--black);
+}
+.cmd-pill:nth-child(1)  { background: var(--mint); }
+.cmd-pill:nth-child(2)  { background: var(--sky); }
+.cmd-pill:nth-child(3)  { background: var(--yel); }
+.cmd-pill:nth-child(4)  { background: var(--pink); }
+.cmd-pill:nth-child(5)  { background: var(--lav); }
+.cmd-pill:nth-child(6)  { background: var(--lime); }
+.cmd-pill:nth-child(7)  { background: var(--peach); }
+.cmd-pill:nth-child(8)  { background: var(--mint); }
+.cmd-pill:nth-child(9)  { background: var(--sky); }
+.cmd-pill:nth-child(10) { background: var(--yel); }
+.cmd-pill:nth-child(11) { background: var(--pink); }
+
+.cmd-name {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 15px;
+  margin-bottom: 4px;
+}
+.cmd-desc {
+  font-size: 12px;
   color: #444;
-  margin-bottom: 44px;
+  line-height: 1.5;
 }
 
-.btn-row { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; margin-bottom: 52px; }
+/* ═══ STATS ═══ */
+.stats-section {
+  padding: 80px 0;
+}
+.stats-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+}
+.stat-card {
+  border: var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 28px;
+  text-align: center;
+  transition: transform 0.12s, box-shadow 0.12s;
+}
+.stat-card:hover {
+  transform: translate(-2px, -2px);
+  box-shadow: 8px 8px 0 var(--black);
+}
+.stat-card:nth-child(1) { background: var(--yel); }
+.stat-card:nth-child(2) { background: var(--lav); }
+.stat-card:nth-child(3) { background: var(--mint); }
+.stat-card:nth-child(4) { background: var(--pink); }
+.stat-card:nth-child(5) { background: var(--sky); }
+
+.stat-num {
+  font-family: var(--display);
+  font-size: 44px;
+  font-weight: 700;
+  line-height: 1;
+  margin-bottom: 6px;
+}
+.stat-label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: #333;
+}
+
+/* ═══ CTA ═══ */
+.cta-section {
+  padding: 100px 0 120px;
+  text-align: center;
+}
+.cta-section h2 {
+  font-family: var(--display);
+  font-size: clamp(36px, 6vw, 64px);
+  font-weight: 700;
+  margin-bottom: 12px;
+  letter-spacing: -0.03em;
+}
+.cta-section p {
+  font-size: 14px;
+  color: #666;
+  margin-bottom: 36px;
+}
+
+.btn-row {
+  display: flex;
+  gap: 14px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
 
 .btn {
   display: inline-flex; align-items: center; gap: 8px;
-  padding: 16px 36px;
-  border-radius: 4px;
-  font-family: var(--serif);
-  font-size: 14px;
+  font-family: var(--display);
   font-weight: 700;
-  letter-spacing: 0.06em;
+  font-size: 15px;
+  padding: 14px 32px;
+  border: var(--border);
+  border-radius: 10px;
   text-decoration: none;
-  transition: transform 0.15s, box-shadow 0.15s;
-  border: none; cursor: pointer;
-  text-transform: uppercase;
+  cursor: pointer;
+  transition: transform 0.1s, box-shadow 0.1s;
+  box-shadow: var(--shadow);
 }
-.btn:hover { transform: translateY(-2px); }
-.btn-dark { background: var(--black); color: var(--white); }
-.btn-dark:hover { box-shadow: 0 8px 24px rgba(0,0,0,0.25); }
-.btn-outline { background: transparent; color: var(--black); border: 1.5px solid #ccc; }
-.btn-outline:hover { border-color: var(--black); }
+.btn:hover {
+  transform: translate(-2px, -2px);
+  box-shadow: 8px 8px 0 var(--black);
+}
+.btn:active {
+  transform: translate(3px, 3px);
+  box-shadow: 2px 2px 0 var(--black);
+}
+.btn-dark { background: var(--black); color: var(--cream); }
+.btn-lav { background: var(--lav); color: var(--black); }
+.btn-mint { background: var(--mint); color: var(--black); }
 
-.stats-row { display: flex; gap: 40px; justify-content: center; }
-.stat { text-align: center; }
-.stat-num { font-family: var(--serif); font-size: 44px; font-weight: 900; color: var(--black); letter-spacing: -0.03em; }
-.stat-label { font-family: var(--serif); font-size: 12px; font-weight: 600; letter-spacing: 0.15em; text-transform: uppercase; color: #666; margin-top: 6px; }
+/* ═══ FOOTER ═══ */
+footer {
+  border-top: var(--border);
+  padding: 28px;
+  text-align: center;
+  font-size: 12px;
+  color: #999;
+  font-family: var(--display);
+}
+footer a { color: var(--black); }
+
+/* ═══ SCROLL ANIMATIONS ═══ */
+.reveal {
+  opacity: 0;
+  transform: translateY(24px);
+  transition: opacity 0.6s ease, transform 0.6s ease;
+}
+.reveal.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* ═══ WIGGLE on hover for stickers ═══ */
+.sticker:hover {
+  animation: wiggle 0.3s ease;
+}
+@keyframes wiggle {
+  0% { transform: rotate(var(--rot, 0deg)); }
+  25% { transform: rotate(calc(var(--rot, 0deg) + 8deg)); }
+  75% { transform: rotate(calc(var(--rot, 0deg) - 8deg)); }
+  100% { transform: rotate(var(--rot, 0deg)); }
+}
+
+/* responsive */
+@media (max-width: 600px) {
+  .sticker { display: none; }
+  .nav-links a span { display: none; }
+  .deep-split { grid-template-columns: 1fr; }
+  .stats-row { grid-template-columns: 1fr 1fr; }
+}
 
 @media (prefers-reduced-motion: reduce) {
-  #track { transition: none; }
-  .cursor-blink { animation: none; opacity: 1; }
+  .blob { animation: none; }
+  .sticker { animation: none; }
+  .reveal { transition: none; opacity: 1; transform: none; }
+  .t-cursor { animation: none; }
 }
 </style>
 </head>
 <body>
 
-<div id="nav">
-  <div class="nav-dot active" data-i="0"></div>
-  <div class="nav-dot" data-i="1"></div>
-  <div class="nav-dot" data-i="2"></div>
-  <div class="nav-dot" data-i="3"></div>
-  <div class="nav-dot" data-i="4"></div>
-  <div class="nav-dot" data-i="5"></div>
-</div>
+<!-- NAV -->
+<nav>
+  <a href="#" class="nav-logo">py<span>up</span>check</a>
+  <div class="nav-links">
+    <a href="https://pypi.org/project/pyupcheck/" target="_blank">PyPI</a>
+    <a href="https://github.com/Astronomox/pyupcheck-Astronomox" target="_blank">GitHub</a>
+    <a href="https://pypi.org/project/pyupcheck/" target="_blank" class="primary">Install</a>
+  </div>
+</nav>
 
-<div id="prog" style="width:16.6%"></div>
+<!-- HERO -->
+<section class="hero">
+  <div class="sticker s1">112 tests passing</div>
+  <div class="sticker s2">MIT licensed</div>
+  <div class="sticker s3">zero api keys</div>
+  <div class="sticker s4">works offline</div>
 
-<div id="track">
+  <div class="blob-wrap">
+    <div class="blob">🐍</div>
+  </div>
 
-  <!-- ══ P1: WHITE HERO ══ -->
-  <section class="panel" id="p1">
-    <img class="flower-p1" id="fl1"
-      src="https://images.unsplash.com/photo-1490750967868-88df5691166a?w=1200&q=85&fit=crop"
-      alt="">
-    <div class="hero-text" id="ht">
-      <div class="hero-eyebrow">v0.3.4 — open source CLI tool</div>
-      <h1 class="hero-title">py<em>up</em><br>check</h1>
-      <p class="hero-sub">Know if upgrading a dependency<br>will break your code<br>before you run it.</p>
-      <div class="install-pill"><span class="dollar">$</span> pip install pyupcheck</div>
-      <div class="hero-hint">scroll →</div>
+  <h1>Know before<br>you <span class="accent">upgrade.</span></h1>
+  <p class="hero-sub">pyupcheck scans your code, reads changelogs, and tells you exactly what will break before you run pip install.</p>
+
+  <div class="install-card"><span class="dollar">$</span> pip install pyupcheck</div>
+  <br>
+  <span class="hero-hint">works on Python 3.9+, any OS</span>
+</section>
+
+<!-- FEATURES -->
+<section class="features container">
+  <h2 class="reveal">What it actually does</h2>
+  <div class="cards">
+    <div class="card reveal">
+      <div class="card-icon" style="background:var(--mint)">🔍</div>
+      <h3>Scans your code</h3>
+      <p>AST-parses every .py, .pyi, and .ipynb file. Finds every import, function call, and keyword argument you use from a package.</p>
     </div>
-  </section>
-
-  <!-- ══ P2: FLOWER CONTINUES + TERMINAL ══ -->
-  <section class="panel dark-scan" id="p2">
-    <img class="flower-p2" id="fl2"
-      src="https://images.unsplash.com/photo-1490750967868-88df5691166a?w=1200&q=85&fit=crop"
-      alt="">
-    <div class="panel-label"><span>01</span> / check</div>
-    <div class="terminal-p2" id="tp2">
-      <div class="term-win">
-        <div class="titlebar">
-          <div class="dot r"></div><div class="dot y"></div><div class="dot g"></div>
-          <div class="tbar-label">pyupcheck — zsh</div>
-        </div>
-        <div class="term-body" id="b2"></div>
-      </div>
+    <div class="card reveal">
+      <div class="card-icon" style="background:var(--peach)">📋</div>
+      <h3>Reads the changelog</h3>
+      <p>Pulls release notes from GitHub and PyPI. Parses them for removals, deprecations, and renames that could affect you.</p>
     </div>
-  </section>
-
-  <!-- ══ P3: CHECK-ALL ══ -->
-  <section class="panel dark-scan" id="p3">
-    <div class="panel-label"><span>02</span> / check-all</div>
-    <div class="center-terminal" id="ct3">
-      <div class="term-win">
-        <div class="titlebar">
-          <div class="dot r"></div><div class="dot y"></div><div class="dot g"></div>
-          <div class="tbar-label">pyupcheck — zsh</div>
-        </div>
-        <div class="term-body" id="b3"></div>
-      </div>
+    <div class="card reveal">
+      <div class="card-icon" style="background:var(--lav)">⚡</div>
+      <h3>Cross-references</h3>
+      <p>Matches what you use against what changed. Reports file, line, and the exact API at risk with severity levels.</p>
     </div>
-  </section>
-
-  <!-- ══ P4: FIX + CI ══ -->
-  <section class="panel dark-scan" id="p4">
-    <div class="panel-label"><span>03</span> / fix &amp; ci-setup</div>
-    <div class="center-terminal" id="ct4">
-      <div class="term-win">
-        <div class="titlebar">
-          <div class="dot r"></div><div class="dot y"></div><div class="dot g"></div>
-          <div class="tbar-label">pyupcheck — zsh</div>
-        </div>
-        <div class="term-body" id="b4"></div>
-      </div>
+    <div class="card reveal">
+      <div class="card-icon" style="background:var(--pink)">🧬</div>
+      <h3>Deep mode</h3>
+      <p>Downloads both versions, diffs real function signatures, catches removed parameters at the argument level. Facts, not guesses.</p>
     </div>
-  </section>
-
-  <!-- ══ P5: HELP / COMMANDS ══ -->
-  <section class="panel dark-scan" id="p5">
-    <div class="panel-label"><span>04</span> / commands</div>
-    <div class="center-terminal" id="ct5">
-      <div class="term-win">
-        <div class="titlebar">
-          <div class="dot r"></div><div class="dot y"></div><div class="dot g"></div>
-          <div class="tbar-label">pyupcheck — zsh</div>
-        </div>
-        <div class="term-body" id="b5"></div>
-      </div>
+    <div class="card reveal">
+      <div class="card-icon" style="background:var(--sky)">🛠️</div>
+      <h3>Auto-fix</h3>
+      <p>Rewrites your requirements.txt to the latest safe version of every dependency. Dry-run first, commit when ready.</p>
     </div>
-  </section>
-
-  <!-- ══ P6: WHITE CTA ══ -->
-  <section class="panel" id="p6">
-    <img class="flower-cta-bl" id="fl6a"
-      src="https://images.unsplash.com/photo-1490750967868-88df5691166a?w=900&q=80&fit=crop"
-      alt="">
-    <img class="flower-cta-tr" id="fl6b"
-      src="https://images.unsplash.com/photo-1508610048659-a06b669e3321?w=900&q=80&fit=crop"
-      alt="">
-    <div class="cta-inner" id="ci">
-      <div class="cta-eyebrow">MIT licensed — free forever</div>
-      <h2 class="cta-title">Ship<br><em>safer.</em></h2>
-      <p class="cta-sub">Built by Abdullahi Oriola (Astronomox) — open to contributions.</p>
-      <div class="btn-row">
-        <a class="btn btn-dark" href="https://pypi.org/project/pyupcheck/" target="_blank">pip install pyupcheck</a>
-        <a class="btn btn-outline" href="https://github.com/Astronomox/pyupcheck-Astronomox" target="_blank">View on GitHub →</a>
-      </div>
-      <div class="stats-row">
-        <div class="stat"><div class="stat-num">11</div><div class="stat-label">commands</div></div>
-        <div class="stat"><div class="stat-num">5</div><div class="stat-label">file formats</div></div>
-        <div class="stat"><div class="stat-num">0</div><div class="stat-label">api keys</div></div>
-      </div>
+    <div class="card reveal">
+      <div class="card-icon" style="background:var(--yel)">🚀</div>
+      <h3>CI-ready</h3>
+      <p>Exit code 1 on breaking changes. Generates GitHub Actions workflows and pre-commit hooks with one command.</p>
     </div>
-  </section>
+  </div>
+</section>
 
-</div>
+<!-- TERMINAL -->
+<section class="terminal-section container">
+  <h2 class="reveal">See it in action</h2>
+  <div class="term-card reveal" id="termCard">
+    <div class="term-bar">
+      <div class="term-dot r"></div>
+      <div class="term-dot y"></div>
+      <div class="term-dot g"></div>
+      <div class="term-bar-label">pyupcheck</div>
+    </div>
+    <div class="term-body" id="termBody"></div>
+  </div>
+</section>
+
+<!-- DEEP MODE -->
+<section class="deep-section container">
+  <div class="deep-split">
+    <div class="deep-text reveal">
+      <h2>Go deeper. <span class="badge">NEW</span></h2>
+      <p>Normal mode parses changelogs. Deep mode downloads the actual package source code for both versions and diffs every public function signature.</p>
+      <p>It knows you pass <code>verify=False</code> on line 23. It knows that parameter was removed in 3.0. It flags that exact call, not just the function.</p>
+      <p>Findings from real code analysis are tagged <strong>[FACT]</strong> so you can tell them apart from changelog-based guesses.</p>
+    </div>
+    <div class="fact-card reveal">
+      <div class="fact-tag">FACT-BASED</div>
+      <p><strong>src/api.py:23</strong></p>
+      <p><code>requests.get(url, verify=False)</code></p>
+      <br>
+      <p>You pass <code>verify=</code> but this parameter was removed from <code>requests.get()</code> in 3.0.0</p>
+      <br>
+      <p>Detected by: real API surface diff</p>
+      <p>Confidence: <strong>100%</strong></p>
+    </div>
+  </div>
+</section>
+
+<!-- COMMANDS -->
+<section class="commands-section container">
+  <h2 class="reveal">11 commands. Zero bloat.</h2>
+  <div class="cmd-grid reveal">
+    <div class="cmd-pill"><div class="cmd-name">check</div><div class="cmd-desc">One package, one target version</div></div>
+    <div class="cmd-pill"><div class="cmd-name">check-all</div><div class="cmd-desc">Batch check every dependency</div></div>
+    <div class="cmd-pill"><div class="cmd-name">fix</div><div class="cmd-desc">Rewrite requirements to safe versions</div></div>
+    <div class="cmd-pill"><div class="cmd-name">outdated</div><div class="cmd-desc">List deps with newer versions</div></div>
+    <div class="cmd-pill"><div class="cmd-name">diff</div><div class="cmd-desc">Changelog diff between any two versions</div></div>
+    <div class="cmd-pill"><div class="cmd-name">scan</div><div class="cmd-desc">List all usages of a package</div></div>
+    <div class="cmd-pill"><div class="cmd-name">ci-setup</div><div class="cmd-desc">Generate GitHub Actions + pre-commit</div></div>
+    <div class="cmd-pill"><div class="cmd-name">versions</div><div class="cmd-desc">List available versions on PyPI</div></div>
+    <div class="cmd-pill"><div class="cmd-name">banner</div><div class="cmd-desc">Live version info from PyPI</div></div>
+    <div class="cmd-pill"><div class="cmd-name">cache-clear</div><div class="cmd-desc">Wipe the local response cache</div></div>
+    <div class="cmd-pill"><div class="cmd-name">install-completion</div><div class="cmd-desc">Shell tab completion</div></div>
+  </div>
+</section>
+
+<!-- STATS -->
+<section class="stats-section container">
+  <div class="stats-row">
+    <div class="stat-card reveal"><div class="stat-num">11</div><div class="stat-label">commands</div></div>
+    <div class="stat-card reveal"><div class="stat-num">112</div><div class="stat-label">tests</div></div>
+    <div class="stat-card reveal"><div class="stat-num">5</div><div class="stat-label">dep formats</div></div>
+    <div class="stat-card reveal"><div class="stat-num">0</div><div class="stat-label">api keys</div></div>
+    <div class="stat-card reveal"><div class="stat-num">v0.4</div><div class="stat-label">latest</div></div>
+  </div>
+</section>
+
+<!-- CTA -->
+<section class="cta-section container">
+  <h2 class="reveal">Ship safer upgrades.</h2>
+  <p class="reveal">Open source. MIT licensed. Built by AgbaDev.</p>
+  <div class="btn-row reveal">
+    <a class="btn btn-dark" href="https://pypi.org/project/pyupcheck/" target="_blank">pip install pyupcheck</a>
+    <a class="btn btn-lav" href="https://github.com/Astronomox/pyupcheck-Astronomox" target="_blank">View on GitHub</a>
+    <a class="btn btn-mint" href="https://github.com/Astronomox/pyupcheck-Astronomox/blob/main/CONTRIBUTING.md" target="_blank">Contribute</a>
+  </div>
+</section>
+
+<footer>
+  <p>Built by <a href="https://github.com/Astronomox" target="_blank">AgbaDev (Astronomox)</a></p>
+</footer>
 
 <script>
-// ── engine ─────────────────────────────────────────────────────────────────
-const TOTAL = 6;
-let cur = 0, moving = false;
-const track = document.getElementById('track');
-const nav   = document.getElementById('nav');
-const prog  = document.getElementById('prog');
-const dots  = document.querySelectorAll('.nav-dot');
-const animated = new Set();
+// ── scroll reveal ──
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(e => {
+    if (e.isIntersecting) {
+      e.target.classList.add('visible');
+      observer.unobserve(e.target);
+    }
+  });
+}, { threshold: 0.15 });
 
-function goTo(n) {
-  if (n < 0 || n >= TOTAL || moving) return;
-  moving = true; cur = n;
-  track.style.transform = `translateX(-${n * 100}vw)`;
-  prog.style.width = `${((n+1)/TOTAL*100)}%`;
-  dots.forEach((d,i) => d.classList.toggle('active', i === n));
-  // white panels → dark nav dots
-  const white = n === 0 || n === 5;
-  nav.classList.toggle('light', white);
-  setTimeout(() => { moving = false; trigger(n); }, 1050);
-}
+document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
 
-dots.forEach(d => d.addEventListener('click', () => goTo(+d.dataset.i)));
-
-let wheelAcc = 0;
-window.addEventListener('wheel', e => {
-  e.preventDefault();
-  wheelAcc += e.deltaY + e.deltaX;
-  if (Math.abs(wheelAcc) > 55) { goTo(cur + (wheelAcc > 0 ? 1 : -1)); wheelAcc = 0; }
-}, { passive: false });
-
-window.addEventListener('keydown', e => {
-  if (e.key==='ArrowRight'||e.key==='ArrowDown') goTo(cur+1);
-  if (e.key==='ArrowLeft' ||e.key==='ArrowUp')   goTo(cur-1);
-});
-
-let tx0=0;
-window.addEventListener('touchstart',e=>{tx0=e.touches[0].clientX},{passive:true});
-window.addEventListener('touchend',e=>{
-  const dx=tx0-e.changedTouches[0].clientX;
-  if(Math.abs(dx)>50) goTo(cur+(dx>0?1:-1));
-},{passive:true});
-
-// ── typing ─────────────────────────────────────────────────────────────────
+// ── terminal typing ──
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-async function type(el, text, spd=36) {
+async function type(el, text, spd = 32) {
   for (const ch of text) {
     el.textContent += ch;
-    await sleep(spd + Math.random()*18);
+    await sleep(spd + Math.random() * 15);
   }
 }
 
-async function line(container, cls, text, delay=0, typeIt=false, spd=36) {
+async function addLine(container, cls, text, delay = 0, typed = false) {
   if (delay) await sleep(delay);
   const s = document.createElement('span');
-  s.className = 'line ' + cls;
+  s.className = 'term-line ' + cls;
   container.appendChild(s);
-  if (typeIt) await type(s, text, spd);
+  if (typed) await type(s, text);
   else s.textContent = text;
   return s;
 }
 
 function addCursor(el) {
   const c = document.createElement('span');
-  c.className = 'cursor-blink';
+  c.className = 't-cursor';
   el.appendChild(c);
-  return c;
 }
 
-// ── panel triggers ─────────────────────────────────────────────────────────
-function trigger(i) {
-  if (animated.has(i)) return;
-  animated.add(i);
-  [animP0, animP1, animP2, animP3, animP4, animP5][i]?.();
-}
+let termDone = false;
+const termObserver = new IntersectionObserver(async (entries) => {
+  if (termDone) return;
+  const e = entries[0];
+  if (!e.isIntersecting) return;
+  termDone = true;
 
-function animP0() {
-  document.getElementById('fl1').classList.add('show');
-  document.getElementById('ht').classList.add('show');
-}
-
-async function animP1() {
-  document.getElementById('fl2').classList.add('show');
-  const tp = document.getElementById('tp2');
-  setTimeout(() => tp.classList.add('show'), 300);
-  const b = document.getElementById('b2');
-  await sleep(700);
-  const c = addCursor(b); await sleep(500); c.remove();
-  await line(b,'prompt','pyupcheck check requests 3.0.0',0,true);
-  await sleep(280);
-  await line(b,'out inf','');
-  await line(b,'out inf','Scanning ./src for usages of requests...',80);
-  await line(b,'out white','Found 14 usages across 5 files.',80);
-  await line(b,'out inf','Fetching changelog  2.31.0 → 3.0.0...',80);
-  await sleep(460);
-  await line(b,'out white','Found 2 potentially breaking changes.');
-  await line(b,'out','');
-  await line(b,'out err','BREAKING (1):');
-  await line(b,'out','');
-  await line(b,'out warn','  ✗  src/api.py:23  requests.get(url, verify=False)');
-  await line(b,'out','     Removed: verify param no longer accepted in 3.0.0');
-  await line(b,'out','');
-  await line(b,'out ok','  13 other usages are safe.');
-  await line(b,'out','');
-  const last = await line(b,'prompt','');
-  addCursor(last);
-}
-
-async function animP2() {
-  const ct = document.getElementById('ct3');
-  setTimeout(() => ct.classList.add('show'), 200);
-  const b = document.getElementById('b3');
-  await sleep(500);
-  await line(b,'prompt','pyupcheck check-all',0,true);
-  await sleep(200);
-  await line(b,'out white','Found 12 dependencies to check');
-  await line(b,'out','');
-  const pkgs = [
-    ['flask   ','2.3.3 → 3.1.3','ok ','OK (15 usages safe)'],
-    ['requests','2.28.0 → 2.34.2','warn','1 deprecated'],
-    ['django  ','4.2.0 → 5.0.6','err','2 BREAKING'],
-    ['numpy   ','1.24.0 → 2.1.0','ok ','OK (4 usages safe)'],
-    ['click   ','8.1.0 → 8.4.2','ok ','already on latest'],
-    ['httpx   ','0.24.0 → 0.28.1','ok ','OK (2 usages safe)'],
-  ];
-  for (const [name, ver, cls, msg] of pkgs) {
-    await line(b, `out ${cls}`, `  ${name}  ${ver}   ${msg}`, 90);
-  }
-  await line(b,'out','');
-  await line(b,'out err','  2 breaking | 1 deprecated across 12 packages');
-  await line(b,'out','');
-  const last = await line(b,'prompt','');
-  addCursor(last);
-}
-
-async function animP3() {
-  const ct = document.getElementById('ct4');
-  setTimeout(() => ct.classList.add('show'), 200);
-  const b = document.getElementById('b4');
-  await sleep(500);
-  await line(b,'prompt','pyupcheck fix --dry-run',0,true);
+  const b = document.getElementById('termBody');
+  await sleep(400);
+  await addLine(b, 't-prompt', 'pyupcheck check requests 3.0.0', 0, true);
   await sleep(250);
-  await line(b,'out inf','DRY RUN - no files written');
-  await line(b,'out','');
-  await line(b,'out white','2 safe updates found:');
-  await line(b,'out','');
-  await line(b,'out ok','  flask    2.3.3 → 3.1.3   (requirements.txt)',80);
-  await line(b,'out ok','  numpy    1.24.0 → 2.1.0  (requirements.txt)',80);
-  await line(b,'out','');
-  await line(b,'prompt','pyupcheck ci-setup',0,true,34);
-  await sleep(220);
-  await line(b,'out ok','Created: .github/workflows/pyupcheck.yml');
-  await line(b,'out ok','Created: .pre-commit-config.yaml');
-  await line(b,'out inf','');
-  await line(b,'out white','Install the hook with: pre-commit install');
-  await line(b,'out','');
-  const last = await line(b,'prompt','');
+  await addLine(b, 't-dim', '');
+  await addLine(b, 't-dim', 'Scanning ./src for usages of requests...', 60);
+  await addLine(b, 't-white', 'Found 14 usages across 5 files.', 60);
+  await addLine(b, 't-dim', 'Fetching changelog 2.31.0 \u2192 3.0.0...', 60);
+  await sleep(400);
+  await addLine(b, 't-white', 'Found 2 potentially breaking changes.');
+  await addLine(b, 't-white', '');
+  await addLine(b, 't-err', 'BREAKING (1):');
+  await addLine(b, 't-white', '');
+  await addLine(b, 't-warn', '  \u2717  src/api.py:23  requests.get(url, verify=False)');
+  await addLine(b, 't-dim', '     Removed: verify param no longer accepted in 3.0.0');
+  await addLine(b, 't-white', '');
+  await addLine(b, 't-ok', '  13 other usages are safe.');
+  await addLine(b, 't-white', '');
+  const last = await addLine(b, 't-prompt', '');
   addCursor(last);
-}
+}, { threshold: 0.3 });
 
-async function animP4() {
-  const ct = document.getElementById('ct5');
-  setTimeout(() => ct.classList.add('show'), 200);
-  const b = document.getElementById('b5');
-  await sleep(500);
-  await line(b,'prompt','pyupcheck --help',0,true);
-  await sleep(220);
-  await line(b,'out white','');
-  await line(b,'out white','Commands:');
-  await line(b,'out','');
-  const cmds = [
-    ['check            ','Check one package against a target version'],
-    ['check-all        ','Batch check all project dependencies'],
-    ['fix              ','Auto-update requirements to safe versions'],
-    ['outdated         ','List deps with newer versions available'],
-    ['diff             ','Show changelog between two versions'],
-    ['scan             ','List all usages of a package in your code'],
-    ['ci-setup         ','Generate GitHub Actions + pre-commit config'],
-    ['install-completion','Shell tab completion (bash/zsh/fish/pwsh)'],
-    ['banner           ','Show the pyupcheck banner'],
-    ['cache-clear      ','Wipe the local response cache'],
-  ];
-  for (const [cmd, desc] of cmds) {
-    await line(b,'out',`  ${cmd}  ${desc}`,75);
-  }
-  await line(b,'out','');
-  const last = await line(b,'prompt','');
-  addCursor(last);
-}
+termObserver.observe(document.getElementById('termCard'));
 
-function animP5() {
-  document.getElementById('fl6a').classList.add('show');
-  document.getElementById('fl6b').classList.add('show');
-  setTimeout(() => document.getElementById('ci').classList.add('show'), 100);
-}
-
-// ── init ───────────────────────────────────────────────────────────────────
-nav.classList.add('light'); // p0 is white
-trigger(0);
+// ── blob click easter egg ──
+document.querySelector('.blob').addEventListener('click', function() {
+  const emojis = ['🐍', '🎉', '✅', '🚀', '💜', '🔥', '⚡', '🧬'];
+  this.textContent = emojis[Math.floor(Math.random() * emojis.length)];
+  this.style.transform = 'scale(1.15) rotate(10deg)';
+  setTimeout(() => this.style.transform = '', 300);
+});
 </script>
 </body>
 </html>
