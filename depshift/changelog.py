@@ -223,3 +223,28 @@ def fetch_raw_changelog(owner: str, repo: str, token: Optional[str] = None) -> O
     return None
 
 
+def parse_sectioned_changelog(text: str, package: str) -> List[ChangeEntry]:
+    """Parse a full changelog file that's divided by version headers."""
+    entries: List[ChangeEntry] = []
+
+    # match version headers like "Version 3.0.0", "## 3.0.0", "3.0.0 (2024-01-01)"
+    version_header = re.compile(
+        r"^(?:#{1,3}\s+)?(?:version\s+)?v?(\d+\.\d+(?:\.\d+)?(?:[a-z]\d*)?)\b",
+        re.IGNORECASE | re.MULTILINE,
+    )
+
+    splits = list(version_header.finditer(text))
+    if not splits:
+        return entries
+
+    for i, m in enumerate(splits):
+        ver = m.group(1)
+        start = m.end()
+        end = splits[i + 1].start() if i + 1 < len(splits) else len(text)
+        section = text[start:end]
+        section_entries = parse_changelog_text(section, ver)
+        entries.extend(section_entries)
+
+    return entries
+
+
