@@ -55,3 +55,36 @@ def parse_requirements_txt(path: str) -> List[Dependency]:
     return deps
 
 
+def parse_pyproject_toml(path: str) -> List[Dependency]:
+    if tomllib is None:
+        return []
+    deps = []
+    try:
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    except Exception:
+        return []
+
+    raw_deps: List[str] = []
+    project = data.get("project", {})
+    raw_deps.extend(project.get("dependencies", []) or [])
+    for group in (project.get("optional-dependencies", {}) or {}).values():
+        raw_deps.extend(group or [])
+
+    # poetry style
+    poetry = data.get("tool", {}).get("poetry", {})
+    for name, spec in (poetry.get("dependencies", {}) or {}).items():
+        if name.lower() == "python":
+            continue
+        if isinstance(spec, str):
+            raw_deps.append(f"{name}{'' if spec == '*' else spec}")
+        else:
+            raw_deps.append(name)
+
+    for raw in raw_deps:
+        d = parse_requirement_line(raw, source=os.path.basename(path))
+        if d:
+            deps.append(d)
+    return deps
+
+
