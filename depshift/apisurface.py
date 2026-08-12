@@ -30,3 +30,4 @@ class FuncSig:
     is_async: bool = False
 
 
+@dataclass
