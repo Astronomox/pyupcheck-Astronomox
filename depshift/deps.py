@@ -25,3 +25,8 @@ class Dependency:
     source: str  # which file it came from
 
 
+_REQ_LINE = re.compile(
+    r"^\s*([A-Za-z0-9._-]+)\s*(?:\[[^\]]*\])?\s*(==|>=|<=|~=|!=|>|<)?\s*([\w.*+!-]+)?"
+)
+
+
