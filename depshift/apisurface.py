@@ -21,3 +21,12 @@ from depshift.changelog import get_pypi_info
 
 
 @dataclass
+class FuncSig:
+    """A function or method signature."""
+    name: str  # dotted path within the package, e.g. "Session.get"
+    params: List[str]  # ordered parameter names
+    has_varargs: bool = False
+    has_kwargs: bool = False
+    is_async: bool = False
+
+
