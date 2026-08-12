@@ -90,3 +90,31 @@ def extract_github_repo(pypi_info: dict) -> Optional[Tuple[str, str]]:
     return None
 
 
+def fetch_github_releases(owner: str, repo: str, token: Optional[str] = None) -> List[dict]:
+    """Fetch releases from GitHub (cached)."""
+    key = f"gh-releases:{owner}/{repo}"
+    cached = cache_get(key)
+    if cached is not None:
+        return cached
+
+    headers = {"Accept": "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    releases = []
+    page = 1
+    while page <= 5:  # cap at 5 pages
+        url = f"{GITHUB_RELEASES_API.format(owner=owner, repo=repo)}?per_page=50&page={page}"
+        resp = httpx.get(url, headers=headers, timeout=15, follow_redirects=True)
+        if resp.status_code != 200:
+            break
+        batch = resp.json()
+        if not batch:
+            break
+        releases.extend(batch)
+        page += 1
+    if releases:
+        cache_set(key, releases)
+    return releases
+
+
