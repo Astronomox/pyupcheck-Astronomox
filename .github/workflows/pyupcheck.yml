@@ -1,0 +1,31 @@
+name: Dependency upgrade check
+
+on:
+  push:
+    paths:
+      - 'requirements*.txt'
+      - 'pyproject.toml'
+      - 'setup.cfg'
+      - 'setup.py'
+      - 'environment.yml'
+  schedule:
+    - cron: '0 9 * * 1'  # every Monday 9am UTC
+
+jobs:
+  pyupcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pyupcheck
+        run: pip install pyupcheck
+
+      - name: Check dependency upgrades
+        run: pyupcheck check-all --fail-on breaking --quiet
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

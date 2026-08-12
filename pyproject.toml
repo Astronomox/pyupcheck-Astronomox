@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyupcheck"
+version = "0.4.2"
+description = "Check if upgrading a Python dependency will break your code"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.8"
+authors = [{name = "AgbaDev"}]
+keywords = ["cli", "dependency", "upgrade", "migration", "breaking-changes"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = [
+    "httpx>=0.24.0",
+    "rich>=13.0.0",
+    "click>=8.0.0",
+]
+
+[project.scripts]
+pyupcheck = "depshift.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/AgbaDev/pyupcheck"
+Issues = "https://github.com/AgbaDev/pyupcheck/issues"
+
+[tool.setuptools.packages.find]
+include = ["depshift*"]
