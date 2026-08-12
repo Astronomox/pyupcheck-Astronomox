@@ -231,3 +231,34 @@ class _SurfaceVisitor(ast.NodeVisitor):
         self.names.add(node.name)
 
 
+def extract_surface(package: str, version: str) -> Optional[APISurface]:
+    """Download a version and extract its public API surface (cached)."""
+    key = f"surface:{package}:{version}"
+    cached = cache_get(key)
+    if cached is not None:
+        surf = APISurface(version=version)
+        surf.modules = set(cached["modules"])
+        surf.classes = set(cached["classes"])
+        surf.names = set(cached["names"])
+        surf.functions = {
+            k: FuncSig(**v) for k, v in cached["functions"].items()
+        }
+        return surf
+
+    dist = _find_sdist_or_wheel_url(package, version)
+    if not dist:
+        return None
+    url, kind = dist
+    data = _download(url)
+    if not data:
+        return None
+
+    if kind == "wheel":
+        files = _extract_py_files_from_wheel(data, package)
+    else:
+        files = _extract_py_files_from_sdist(data, package)
+
+    if not files:
+        return None
+
+    surface = APISurface(version=version)
