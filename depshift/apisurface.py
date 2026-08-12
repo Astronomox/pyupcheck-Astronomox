@@ -302,3 +302,59 @@ def _is_public_api(dotted: str) -> bool:
     return True
 
 
+def diff_surfaces(old: APISurface, new: APISurface) -> List[APIChange]:
+    """Compute precise API changes from old to new surface.
+
+    Only public API is reported — private modules and underscore-prefixed
+    names are internal and users shouldn't depend on them.
+    """
+    changes: List[APIChange] = []
+
+    # removed modules
+    for mod in old.modules - new.modules:
+        if not _is_public_api(mod):
+            continue
+        changes.append(APIChange(
+            kind="removed_module", api=mod,
+            detail=f"Module '{mod}' was removed in {new.version}",
+        ))
+
+    # removed classes
+    for cls in old.classes - new.classes:
+        if not _is_public_api(cls):
+            continue
+        mod = cls.rsplit(".", 1)[0]
+        if mod in new.modules or mod not in (old.modules - new.modules):
+            changes.append(APIChange(
+                kind="removed_class", api=cls,
+                detail=f"Class '{cls}' was removed in {new.version}",
+            ))
+
+    # functions removed or changed
+    for fname, old_sig in old.functions.items():
+        if not _is_public_api(fname):
+            continue
+        new_sig = new.functions.get(fname)
+        if new_sig is None:
+            mod = fname.rsplit(".", 1)[0]
+            if mod in new.modules:
+                changes.append(APIChange(
+                    kind="removed_function", api=fname,
+                    detail=f"'{fname}()' was removed in {new.version}",
+                ))
+            continue
+
+        # parameter removals (ignore if new sig accepts **kwargs)
+        old_params = set(old_sig.params) - {"self", "cls"}
+        new_params = set(new_sig.params) - {"self", "cls"}
+        removed_params = old_params - new_params
+        if removed_params and not new_sig.has_kwargs:
+            for p in sorted(removed_params):
+                changes.append(APIChange(
+                    kind="removed_param", api=fname, param=p,
+                    detail=f"Parameter '{p}' removed from '{fname}()' in {new.version}",
+                ))
+
+    return changes
+
+
