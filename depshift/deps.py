@@ -88,3 +88,35 @@ def parse_pyproject_toml(path: str) -> List[Dependency]:
     return deps
 
 
+def parse_setup_cfg(path: str) -> List[Dependency]:
+    """Parse dependencies from setup.cfg [options] install_requires."""
+    if configparser is None:
+        return []
+    deps = []
+    try:
+        cfg = configparser.ConfigParser()
+        cfg.read(path, encoding="utf-8")
+        sections = {
+            "options": ["install_requires", "setup_requires"],
+            "options.extras_require": None,
+        }
+        raw_lines: List[str] = []
+        for section, keys in sections.items():
+            if not cfg.has_section(section):
+                continue
+            if keys is None:
+                for key in cfg.options(section):
+                    raw_lines.extend(cfg.get(section, key).splitlines())
+            else:
+                for key in keys:
+                    if cfg.has_option(section, key):
+                        raw_lines.extend(cfg.get(section, key).splitlines())
+        for line in raw_lines:
+            d = parse_requirement_line(line, source="setup.cfg")
+            if d:
+                deps.append(d)
+    except Exception:
+        pass
+    return deps
+
+
