@@ -7,3 +7,4 @@ from typing import List, Optional, Tuple
 import httpx
 
 
+@dataclass
