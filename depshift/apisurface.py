@@ -20,3 +20,4 @@ from depshift.cache import cache_get, cache_set
 from depshift.changelog import get_pypi_info
 
 
+@dataclass
