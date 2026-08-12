@@ -31,3 +31,12 @@ class FuncSig:
 
 
 @dataclass
+class APISurface:
+    """The extracted public API of one version of a package."""
+    version: str
+    modules: Set[str] = field(default_factory=set)       # importable module paths
+    classes: Set[str] = field(default_factory=set)       # dotted class names
+    functions: Dict[str, FuncSig] = field(default_factory=dict)  # dotted name -> sig
+    names: Set[str] = field(default_factory=set)          # all top-level public names
+
+
