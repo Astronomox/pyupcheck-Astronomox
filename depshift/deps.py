@@ -160,3 +160,62 @@ def parse_setup_py(path: str) -> List[Dependency]:
     return deps
 
 
+def parse_conda_env(path: str) -> List[Dependency]:
+    """Parse conda environment.yml for pip dependencies."""
+    deps = []
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            lines = f.readlines()
+        in_pip = False
+        pip_indent = None
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            indent = len(line) - len(line.lstrip(" \t"))
+            if stripped == "- pip:":
+                in_pip = True
+                pip_indent = indent
+                continue
+            if in_pip:
+                # Only lines indented deeper than "- pip:" belong to the pip list.
+                if indent > pip_indent and stripped.startswith("-"):
+                    raw = stripped.lstrip("- ").strip()
+                    d = parse_requirement_line(raw, "environment.yml")
+                    if d:
+                        deps.append(d)
+                else:
+                    in_pip = False
+    except OSError:
+        pass
+    return deps
+
+
+def discover_dependencies(directory: str) -> List[Dependency]:
+    """Find and parse all dependency files in a directory."""
+    deps: List[Dependency] = []
+    seen = set()
+
+    parsers = [
+        ("requirements.txt", parse_requirements_txt),
+        ("requirements-dev.txt", parse_requirements_txt),
+        ("requirements/base.txt", parse_requirements_txt),
+        ("requirements/dev.txt", parse_requirements_txt),
+        ("pyproject.toml", parse_pyproject_toml),
+        ("setup.cfg", parse_setup_cfg),
+        ("setup.py", parse_setup_py),
+        ("environment.yml", parse_conda_env),
+        ("environment.yaml", parse_conda_env),
+    ]
+
+    for rel, parser in parsers:
+        path = os.path.join(directory, rel)
+        if not os.path.isfile(path):
+            continue
+        found = parser(path)
+        for d in found:
+            if d.name not in seen:
+                seen.add(d.name)
+                deps.append(d)
+    return deps
+
