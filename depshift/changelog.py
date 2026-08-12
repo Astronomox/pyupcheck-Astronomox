@@ -25,3 +25,17 @@ GITHUB_TAGS_API = "https://api.github.com/repos/{owner}/{repo}/tags"
 from depshift.cache import cache_get, cache_set
 
 
+def get_pypi_info(package: str) -> dict:
+    """Fetch full package info from PyPI (cached)."""
+    key = f"pypi:{package}"
+    cached = cache_get(key)
+    if cached is not None:
+        return cached
+    url = PYPI_API.format(package=package)
+    resp = httpx.get(url, timeout=15, follow_redirects=True)
+    resp.raise_for_status()
+    data = resp.json()
+    cache_set(key, data)
+    return data
+
+
