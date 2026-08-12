@@ -53,3 +53,9 @@ def get_pypi_version_info(package: str, version: str) -> dict:
     return data
 
 
+def get_available_versions(package: str) -> List[str]:
+    """Get all available versions for a package."""
+    info = get_pypi_info(package)
+    return list(info.get("releases", {}).keys())
+
+
