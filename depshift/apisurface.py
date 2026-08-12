@@ -100,3 +100,23 @@ def _download(url: str) -> Optional[bytes]:
         return None
 
 
+def _extract_py_files_from_wheel(data: bytes, package: str) -> Dict[str, str]:
+    """Return {module_path: source} for .py files in a wheel."""
+    out = {}
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            for name in zf.namelist():
+                if not name.endswith(".py"):
+                    continue
+                if ".dist-info/" in name or ".data/" in name:
+                    continue
+                try:
+                    src = zf.read(name).decode("utf-8", errors="ignore")
+                    out[name] = src
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return out
+
+
