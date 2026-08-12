@@ -11,3 +11,9 @@ try:
 except ImportError:
     tomllib = None
 
+try:
+    import configparser
+except ImportError:
+    configparser = None
+
+
