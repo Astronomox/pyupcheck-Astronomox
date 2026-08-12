@@ -40,3 +40,4 @@ class APISurface:
     names: Set[str] = field(default_factory=set)          # all top-level public names
 
 
+@dataclass
