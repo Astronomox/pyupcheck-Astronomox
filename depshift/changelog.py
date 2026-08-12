@@ -16,3 +16,4 @@ class ChangeEntry:
     version: str  # version where this change happened
 
 
+PYPI_API = "https://pypi.org/pypi/{package}/json"
