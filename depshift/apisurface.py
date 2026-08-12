@@ -41,3 +41,12 @@ class APISurface:
 
 
 @dataclass
+class APIChange:
+    """A precise difference between two API surfaces."""
+    kind: str  # "removed_function", "removed_class", "removed_module",
+               # "removed_param", "signature_changed"
+    api: str   # dotted path
+    detail: str
+    param: Optional[str] = None
+
+
