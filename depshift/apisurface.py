@@ -155,3 +155,25 @@ def _extract_py_files_from_sdist(data: bytes, package: str) -> Dict[str, str]:
     return out
 
 
+def _module_path_from_file(filepath: str, package: str) -> Optional[str]:
+    """Convert a file path inside the archive to a dotted module path."""
+    parts = filepath.replace("\\", "/").split("/")
+    if package not in parts:
+        # find the package root by locating an __init__.py chain; fall back
+        if package + "/" not in filepath and not filepath.startswith(package):
+            return None
+        idx = 0
+    else:
+        idx = parts.index(package)
+    rel = parts[idx:]
+    if not rel:
+        return None
+    if rel[-1] == "__init__.py":
+        rel = rel[:-1]
+    elif rel[-1].endswith(".py"):
+        rel[-1] = rel[-1][:-3]
+    else:
+        return None
+    return ".".join(rel)
+
+
