@@ -191,3 +191,10 @@ def parse_changelog_text(text: str, version: str) -> List[ChangeEntry]:
     return entries
 
 
+CHANGELOG_FILENAMES = [
+    "CHANGES.rst", "CHANGELOG.rst", "CHANGELOG.md", "CHANGES.md",
+    "CHANGES", "CHANGELOG", "HISTORY.rst", "HISTORY.md",
+    "RELEASE_NOTES.md", "NEWS.rst", "NEWS.md",
+]
+
+
