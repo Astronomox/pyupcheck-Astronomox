@@ -118,3 +118,76 @@ def fetch_github_releases(owner: str, repo: str, token: Optional[str] = None) ->
     return releases
 
 
+def parse_changelog_text(text: str, version: str) -> List[ChangeEntry]:
+    """Parse a changelog/release notes body for breaking/deprecated changes."""
+    entries: List[ChangeEntry] = []
+    if not text:
+        return entries
+
+    lines = text.splitlines()
+
+    # patterns that signal breaking/deprecation info
+    breaking_patterns = [
+        re.compile(r"remov(ed?|ing|al)\b", re.IGNORECASE),
+        re.compile(r"delet(ed?|ing)\b", re.IGNORECASE),
+        re.compile(r"drop(ped|ping)?\b", re.IGNORECASE),
+        re.compile(r"break(ing|s)?\b", re.IGNORECASE),
+        re.compile(r"backwards?\s*incompatible", re.IGNORECASE),
+        re.compile(r"no\s*longer\s*(support|available|accept)", re.IGNORECASE),
+    ]
+    deprecation_patterns = [
+        re.compile(r"deprecat(ed?|ing|ion)\b", re.IGNORECASE),
+        re.compile(r"will\s*be\s*removed", re.IGNORECASE),
+        re.compile(r"use\s+\S+\s+instead", re.IGNORECASE),
+    ]
+    rename_patterns = [
+        re.compile(r"renam(ed?|ing)\b", re.IGNORECASE),
+        re.compile(r"moved?\s*(to|from)\b", re.IGNORECASE),
+    ]
+
+    # try to extract python identifiers from a line
+    api_pattern = re.compile(r"`([a-zA-Z_][\w.]*(?:\(\))?)`")
+    fallback_api_pattern = re.compile(r"(?:^|\s)([a-zA-Z_][\w]*\.[a-zA-Z_][\w.]*(?:\(\))?)")
+
+    for line in lines:
+        line_stripped = line.strip().lstrip("-*• ")
+        if not line_stripped:
+            continue
+
+        kind = None
+        for p in breaking_patterns:
+            if p.search(line_stripped):
+                kind = "removed"
+                break
+        if not kind:
+            for p in deprecation_patterns:
+                if p.search(line_stripped):
+                    kind = "deprecated"
+                    break
+        if not kind:
+            for p in rename_patterns:
+                if p.search(line_stripped):
+                    kind = "renamed"
+                    break
+
+        if not kind:
+            continue
+
+        # extract API references
+        apis = api_pattern.findall(line_stripped)
+        if not apis:
+            apis = fallback_api_pattern.findall(line_stripped)
+
+        api_str = apis[0] if apis else "unknown"
+        api_str = api_str.rstrip("()")
+
+        entries.append(ChangeEntry(
+            kind=kind,
+            api=api_str,
+            description=line_stripped[:200],
+            version=version,
+        ))
+
+    return entries
+
+
