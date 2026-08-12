@@ -198,3 +198,28 @@ CHANGELOG_FILENAMES = [
 ]
 
 
+def fetch_raw_changelog(owner: str, repo: str, token: Optional[str] = None) -> Optional[str]:
+    """Try to fetch the raw changelog file from GitHub (cached)."""
+    key = f"gh-changelog:{owner}/{repo}"
+    cached = cache_get(key)
+    if cached is not None:
+        return cached or None
+
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    for branch in ["main", "master"]:
+        for fname in CHANGELOG_FILENAMES:
+            url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{fname}"
+            try:
+                resp = httpx.get(url, headers=headers, timeout=10, follow_redirects=True)
+                if resp.status_code == 200 and len(resp.text) > 50:
+                    cache_set(key, resp.text)
+                    return resp.text
+            except Exception:
+                continue
+    cache_set(key, "")
+    return None
+
+
