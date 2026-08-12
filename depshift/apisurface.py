@@ -262,3 +262,35 @@ def extract_surface(package: str, version: str) -> Optional[APISurface]:
         return None
 
     surface = APISurface(version=version)
+    for filepath, src in files.items():
+        module_path = _module_path_from_file(filepath, package)
+        if not module_path:
+            continue
+        surface.modules.add(module_path)
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:
+            continue
+        visitor = _SurfaceVisitor(module_path)
+        visitor.visit(tree)
+        for cls in visitor.classes:
+            surface.classes.add(f"{module_path}.{cls}")
+        for fname, sig in visitor.functions.items():
+            full = f"{module_path}.{fname}"
+            sig.name = full
+            surface.functions[full] = sig
+        surface.names.update(visitor.names)
+
+    cache_set(key, {
+        "modules": list(surface.modules),
+        "classes": list(surface.classes),
+        "names": list(surface.names),
+        "functions": {
+            k: {"name": v.name, "params": v.params, "has_varargs": v.has_varargs,
+                "has_kwargs": v.has_kwargs, "is_async": v.is_async}
+            for k, v in surface.functions.items()
+        },
+    })
+    return surface
+
+
