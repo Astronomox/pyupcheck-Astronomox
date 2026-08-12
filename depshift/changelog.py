@@ -19,3 +19,9 @@ class ChangeEntry:
 PYPI_API = "https://pypi.org/pypi/{package}/json"
 PYPI_VERSION_API = "https://pypi.org/pypi/{package}/{version}/json"
 GITHUB_RELEASES_API = "https://api.github.com/repos/{owner}/{repo}/releases"
+GITHUB_TAGS_API = "https://api.github.com/repos/{owner}/{repo}/tags"
+
+
+from depshift.cache import cache_get, cache_set
+
+
