@@ -294,3 +294,11 @@ def extract_surface(package: str, version: str) -> Optional[APISurface]:
     return surface
 
 
+def _is_public_api(dotted: str) -> bool:
+    """True if no segment of the dotted path is private (underscore-prefixed)."""
+    for seg in dotted.split("."):
+        if seg.startswith("_") and not (seg.startswith("__") and seg.endswith("__")):
+            return False
+    return True
+
+
