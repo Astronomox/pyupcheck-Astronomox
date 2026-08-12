@@ -17,3 +17,4 @@ class ChangeEntry:
 
 
 PYPI_API = "https://pypi.org/pypi/{package}/json"
+PYPI_VERSION_API = "https://pypi.org/pypi/{package}/{version}/json"
