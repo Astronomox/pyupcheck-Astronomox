@@ -42,3 +42,16 @@ def parse_requirement_line(line: str, source: str) -> Optional[Dependency]:
     return Dependency(name=name.lower(), pinned_version=pinned, raw=line, source=source)
 
 
+def parse_requirements_txt(path: str) -> List[Dependency]:
+    deps = []
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                d = parse_requirement_line(line, source=os.path.basename(path))
+                if d:
+                    deps.append(d)
+    except OSError:
+        pass
+    return deps
+
+
