@@ -18,3 +18,10 @@ except ImportError:
 
 
 @dataclass
+class Dependency:
+    name: str
+    pinned_version: Optional[str]  # exact version if pinned with ==
+    raw: str
+    source: str  # which file it came from
+
+
