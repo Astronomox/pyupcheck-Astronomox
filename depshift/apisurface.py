@@ -50,3 +50,6 @@ class APIChange:
     param: Optional[str] = None
 
 
+PYPI_FILES_API = "https://pypi.org/pypi/{package}/{version}/json"
+
+
