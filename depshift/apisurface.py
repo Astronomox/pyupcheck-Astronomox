@@ -120,3 +120,38 @@ def _extract_py_files_from_wheel(data: bytes, package: str) -> Dict[str, str]:
     return out
 
 
+def _extract_py_files_from_sdist(data: bytes, package: str) -> Dict[str, str]:
+    """Return {module_path: source} for .py files in an sdist tarball or zip."""
+    out = {}
+    # try tar.gz
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as tf:
+            for member in tf.getmembers():
+                if not member.name.endswith(".py"):
+                    continue
+                if "/test" in member.name or "/docs" in member.name:
+                    continue
+                try:
+                    f = tf.extractfile(member)
+                    if f:
+                        out[member.name] = f.read().decode("utf-8", errors="ignore")
+                except Exception:
+                    continue
+        if out:
+            return out
+    except Exception:
+        pass
+    # try zip
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            for name in zf.namelist():
+                if name.endswith(".py") and "/test" not in name and "/docs" not in name:
+                    try:
+                        out[name] = zf.read(name).decode("utf-8", errors="ignore")
+                    except Exception:
+                        continue
+    except Exception:
+        pass
+    return out
+
+
