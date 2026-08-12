@@ -177,3 +177,57 @@ def _module_path_from_file(filepath: str, package: str) -> Optional[str]:
     return ".".join(rel)
 
 
+class _SurfaceVisitor(ast.NodeVisitor):
+    """Extract public classes and functions with signatures from a module AST."""
+
+    def __init__(self, module_path: str):
+        self.module = module_path
+        self.classes: Set[str] = set()
+        self.functions: Dict[str, FuncSig] = {}
+        self.names: Set[str] = set()
+        self._class_stack: List[str] = []
+
+    def _public(self, name: str) -> bool:
+        return not name.startswith("_") or (name.startswith("__") and name.endswith("__"))
+
+    def visit_ClassDef(self, node: ast.ClassDef):
+        if not self._public(node.name):
+            return
+        dotted = ".".join(self._class_stack + [node.name])
+        self.classes.add(dotted)
+        self.names.add(node.name)
+        self._class_stack.append(node.name)
+        for item in node.body:
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                self._add_func(item)
+        self._class_stack.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef):
+        if not self._class_stack:
+            self._add_func(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef):
+        if not self._class_stack:
+            self._add_func(node)
+
+    def _add_func(self, node):
+        if not self._public(node.name):
+            return
+        dotted = ".".join(self._class_stack + [node.name])
+        args = node.args
+        params = []
+        for a in args.posonlyargs + args.args:
+            params.append(a.arg)
+        for a in args.kwonlyargs:
+            params.append(a.arg)
+        sig = FuncSig(
+            name=dotted,
+            params=params,
+            has_varargs=args.vararg is not None,
+            has_kwargs=args.kwarg is not None,
+            is_async=isinstance(node, ast.AsyncFunctionDef),
+        )
+        self.functions[dotted] = sig
+        self.names.add(node.name)
+
+
