@@ -17,3 +17,4 @@ except ImportError:
     configparser = None
 
 
+@dataclass
