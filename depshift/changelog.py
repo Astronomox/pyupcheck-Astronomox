@@ -65,3 +65,28 @@ def get_current_version(package: str) -> str:
     return info["info"]["version"]
 
 
+def extract_github_repo(pypi_info: dict) -> Optional[Tuple[str, str]]:
+    """Try to find the GitHub owner/repo from PyPI metadata."""
+    info = pypi_info.get("info", {})
+    urls = []
+
+    project_urls = info.get("project_urls") or {}
+    for key, val in project_urls.items():
+        if val:
+            urls.append(val)
+
+    home = info.get("home_page")
+    if home:
+        urls.append(home)
+
+    pattern = re.compile(r"github\.com/([^/]+)/([^/\s#?]+)")
+    for url in urls:
+        m = pattern.search(url)
+        if m:
+            owner, repo = m.group(1), m.group(2)
+            if repo.endswith(".git"):
+                repo = repo[: -len(".git")]
+            return owner, repo
+    return None
+
+
