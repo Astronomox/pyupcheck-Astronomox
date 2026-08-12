@@ -8,3 +8,11 @@ import httpx
 
 
 @dataclass
+class ChangeEntry:
+    """A single breaking or deprecated API change."""
+    kind: str  # "removed", "deprecated", "changed", "renamed"
+    api: str  # the affected API path, e.g. "requests.get.verify"
+    description: str
+    version: str  # version where this change happened
+
+
