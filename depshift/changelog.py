@@ -248,3 +248,71 @@ def parse_sectioned_changelog(text: str, package: str) -> List[ChangeEntry]:
     return entries
 
 
+def get_changes_between(package: str, current_version: str, target_version: str,
+                        github_token: Optional[str] = None) -> List[ChangeEntry]:
+    """Get all breaking/deprecated changes between two versions."""
+    pypi_info = get_pypi_info(package)
+
+    repo_info = extract_github_repo(pypi_info)
+    all_entries: List[ChangeEntry] = []
+
+    if repo_info:
+        owner, repo = repo_info
+
+        # try github releases API first
+        try:
+            releases = fetch_github_releases(owner, repo, token=github_token)
+            for rel in releases:
+                tag = rel.get("tag_name", "")
+                body = rel.get("body", "") or ""
+                ver = tag.lstrip("vV")
+                entries = parse_changelog_text(body, ver)
+                all_entries.extend(entries)
+        except Exception:
+            pass
+
+        # if releases gave us nothing, try raw changelog file
+        if not all_entries:
+            try:
+                raw = fetch_raw_changelog(owner, repo, token=github_token)
+                if raw:
+                    all_entries = parse_sectioned_changelog(raw, package)
+            except Exception:
+                pass
+
+    # also check the PyPI description for the target version
+    try:
+        ver_info = get_pypi_version_info(package, target_version)
+        desc = ver_info.get("info", {}).get("description", "")
+        if desc:
+            entries = parse_sectioned_changelog(desc, package)
+            all_entries.extend(entries)
+    except Exception:
+        pass
+
+    # filter to only changes relevant between current and target
+    from packaging.version import Version, InvalidVersion
+
+    try:
+        v_current = Version(current_version)
+        v_target = Version(target_version)
+    except InvalidVersion:
+        return all_entries
+
+    filtered = []
+    seen = set()
+    for entry in all_entries:
+        try:
+            v_entry = Version(entry.version)
+            if v_current < v_entry <= v_target:
+                key = (entry.kind, entry.api, entry.version)
+                if key not in seen:
+                    seen.add(key)
+                    filtered.append(entry)
+        except InvalidVersion:
+            key = (entry.kind, entry.api, entry.version)
+            if key not in seen:
+                seen.add(key)
+                filtered.append(entry)
+
+    return filtered
