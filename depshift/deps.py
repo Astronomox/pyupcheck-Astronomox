@@ -120,3 +120,43 @@ def parse_setup_cfg(path: str) -> List[Dependency]:
     return deps
 
 
+def parse_setup_py(path: str) -> List[Dependency]:
+    """Best-effort AST parse of setup.py to extract install_requires."""
+    deps = []
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            source = f.read()
+        tree = ast.parse(source)
+    except Exception:
+        return []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        is_setup = (isinstance(func, ast.Name) and func.id == "setup") or \
+                   (isinstance(func, ast.Attribute) and func.attr == "setup")
+        if not is_setup:
+            continue
+        for kw in node.keywords:
+            if kw.arg not in ("install_requires", "setup_requires", "extras_require"):
+                continue
+            target = kw.value
+            # flatten extras_require dict values
+            if isinstance(target, ast.Dict):
+                for v in target.values:
+                    if isinstance(v, ast.List):
+                        for elt in v.elts:
+                            if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                                d = parse_requirement_line(elt.value, "setup.py")
+                                if d:
+                                    deps.append(d)
+            elif isinstance(target, ast.List):
+                for elt in target.elts:
+                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                        d = parse_requirement_line(elt.value, "setup.py")
+                        if d:
+                            deps.append(d)
+    return deps
+
+
