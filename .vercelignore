@@ -1,0 +1,12 @@
+depshift/
+tests/
+examples/
+bump.py
+upload.bat
+pyproject.toml
+setup.cfg
+setup.py
+*.egg-info
+dist/
+build/
+.pytest_cache/

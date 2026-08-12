@@ -28,8 +28,9 @@ dependencies = [
 pyupcheck = "depshift.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/AgbaDev/pyupcheck"
-Issues = "https://github.com/AgbaDev/pyupcheck/issues"
+Homepage = "https://astronomox.github.io/pyupcheck-Astronomox/"
+Repository = "https://github.com/Astronomox/pyupcheck-Astronomox"
+Issues = "https://github.com/Astronomox/pyupcheck-Astronomox/issues"
 
 [tool.setuptools.packages.find]
 include = ["depshift*"]
