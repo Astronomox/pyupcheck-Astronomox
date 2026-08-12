@@ -358,3 +358,10 @@ def diff_surfaces(old: APISurface, new: APISurface) -> List[APIChange]:
     return changes
 
 
+def get_api_changes(package: str, from_version: str, to_version: str) -> Optional[List[APIChange]]:
+    """Extract both surfaces and diff them. Returns None if extraction fails."""
+    old = extract_surface(package, from_version)
+    new = extract_surface(package, to_version)
+    if old is None or new is None:
+        return None
+    return diff_surfaces(old, new)
