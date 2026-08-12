@@ -59,3 +59,9 @@ def get_available_versions(package: str) -> List[str]:
     return list(info.get("releases", {}).keys())
 
 
+def get_current_version(package: str) -> str:
+    """Get the latest version of a package on PyPI."""
+    info = get_pypi_info(package)
+    return info["info"]["version"]
+
+
