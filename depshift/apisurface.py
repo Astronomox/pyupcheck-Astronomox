@@ -91,3 +91,12 @@ def _find_sdist_or_wheel_url(package: str, version: str) -> Optional[Tuple[str, 
     return result
 
 
+def _download(url: str) -> Optional[bytes]:
+    try:
+        resp = httpx.get(url, timeout=30, follow_redirects=True)
+        resp.raise_for_status()
+        return resp.content
+    except Exception:
+        return None
+
+
