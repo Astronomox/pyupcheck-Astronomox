@@ -30,3 +30,15 @@ _REQ_LINE = re.compile(
 )
 
 
+def parse_requirement_line(line: str, source: str) -> Optional[Dependency]:
+    line = line.split("#")[0].strip()
+    if not line or line.startswith(("-", "git+", "http://", "https://", "./", "file:")):
+        return None
+    m = _REQ_LINE.match(line)
+    if not m:
+        return None
+    name, op, ver = m.group(1), m.group(2), m.group(3)
+    pinned = ver if op == "==" else None
+    return Dependency(name=name.lower(), pinned_version=pinned, raw=line, source=source)
+
+
