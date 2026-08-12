@@ -39,3 +39,17 @@ def get_pypi_info(package: str) -> dict:
     return data
 
 
+def get_pypi_version_info(package: str, version: str) -> dict:
+    """Fetch info for a specific version (cached)."""
+    key = f"pypi:{package}:{version}"
+    cached = cache_get(key)
+    if cached is not None:
+        return cached
+    url = PYPI_VERSION_API.format(package=package, version=version)
+    resp = httpx.get(url, timeout=15, follow_redirects=True)
+    resp.raise_for_status()
+    data = resp.json()
+    cache_set(key, data)
+    return data
+
+
