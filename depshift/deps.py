@@ -6,3 +6,8 @@ import re
 from dataclasses import dataclass
 from typing import List, Optional
 
+try:
+    import tomllib  # py311+
+except ImportError:
+    tomllib = None
+
