@@ -24,14 +24,14 @@
   --shadow-sm:4px 4px 0 var(--black);--radius:14px;
   --display:'Space Grotesk',sans-serif;--body:'Sora',sans-serif;
 }
-html,body{width:100%;height:100%;height:100dvh;overflow:hidden;font-family:var(--body);background:var(--black)}
-.panel{position:absolute;width:100vw;height:100vh;height:100dvh;overflow:hidden;will-change:transform;transition:transform 0.9s cubic-bezier(0.76,0,0.24,1),opacity 0.5s}
+html,body{width:100%;height:100%;overflow:hidden;font-family:var(--body);background:var(--black)}
+.panel{position:absolute;width:100vw;height:100vh;overflow:hidden;will-change:transform;transition:transform 0.9s cubic-bezier(0.76,0,0.24,1),opacity 0.5s}
 #p1{background:var(--cream)}
 #p2{background:#fff5fb}
 #p3{background:#f0eaff}
 #p4{background:#fffbea}
 #p5{background:#eafff0}
-.panel-inner{width:100%;height:100%;position:relative;display:flex;align-items:center;justify-content:center;padding:32px 48px}
+.panel-inner{width:100%;height:100%;position:relative;display:flex;align-items:center;justify-content:center;padding:32px 48px;overflow:hidden}
 
 /* nav */
 #dots{position:fixed;right:18px;top:50%;transform:translateY(-50%);z-index:200;display:flex;flex-direction:column;gap:10px}
@@ -134,7 +134,43 @@ html,body{width:100%;height:100%;height:100dvh;overflow:hidden;font-family:var(-
 .sn{font-family:var(--display);font-size:34px;font-weight:700;line-height:1}
 .sl{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.12em;color:#444;margin-top:3px}
 
-@media(max-width:600px){.c{transform:scale(.65)!important}.stk{font-size:10px}}
+@media(max-width:700px){
+  .feat-grid{grid-template-columns:1fr 1fr}
+  .cmd-grid{grid-template-columns:1fr 1fr}
+  .stats{gap:8px}
+  .sc{padding:14px 16px}
+  .sn{font-size:26px}
+}
+@media(max-width:500px){
+  /* hide cartoons on very small screens - they break layout */
+  .c{display:none}
+  .stk{display:none}
+  /* single column everything */
+  .feat-grid{grid-template-columns:1fr}
+  .cmd-grid{grid-template-columns:1fr 1fr}
+  .panel-inner{padding:20px 16px;align-items:flex-start;padding-top:70px;overflow-y:auto}
+  .hero{max-width:100%}
+  .hero-banner{max-width:100%}
+  .hero h1{font-size:clamp(36px,10vw,56px)}
+  .hero-sub{font-size:14px;max-width:100%}
+  .install-box{font-size:13px;padding:12px 18px}
+  .p-title{font-size:22px;margin-bottom:18px}
+  .feat-wrap,.cmd-wrap,.cta{max-width:100%}
+  .fc{padding:14px}
+  .fc h3{font-size:13px}
+  .cp{padding:10px 12px}
+  .cp-name{font-size:12px}
+  .cta h2{font-size:clamp(32px,10vw,52px)}
+  .cta-btns{flex-direction:column;align-items:center}
+  .nb-btn{width:100%;justify-content:center;font-size:13px;padding:12px 20px}
+  .stats{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .sc{padding:12px 14px}
+  .sn{font-size:24px}
+  #dots{right:10px}
+  #dir-hint{font-size:10px;padding:6px 14px}
+  .term-wrap{width:100%}
+  .term-body{font-size:11px;padding:14px 14px 20px;min-height:180px}
+}
 @media(prefers-reduced-motion:reduce){.bob,.bob2,.bob3,.wig,.wig2,.spin,.pulse{animation:none}.tc{animation:none}}
 </style>
 </head>
