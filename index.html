@@ -557,7 +557,7 @@ const hint = document.getElementById('hint');
 
 // Direction for transition FROM panel i TO panel i+1
 // right = next comes from right, up = next comes from below, down = next comes from above
-const DIR = ['right','right','right','right'];
+const DIR = ['right','down','up','right'];
 const HINTS = ['swipe \u2192','swipe \u2192','swipe \u2192','swipe \u2192'];
 
 let cur = 0, moving = false;
@@ -664,9 +664,7 @@ let wheelAcc = 0, wheelTimer;
 window.addEventListener('wheel', e => {
   e.preventDefault();
   clearTimeout(wheelTimer);
-  // map both axes to horizontal navigation
-  const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
-  wheelAcc += delta;
+  wheelAcc += e.deltaY + e.deltaX;
   wheelTimer = setTimeout(() => { wheelAcc = 0; }, 200);
   if (Math.abs(wheelAcc) > 60) {
     const dir = wheelAcc > 0 ? 1 : -1;
@@ -676,8 +674,8 @@ window.addEventListener('wheel', e => {
 }, { passive: false });
 
 window.addEventListener('keydown', e => {
-  if (e.key === 'ArrowRight') goTo(cur + 1);
-  if (e.key === 'ArrowLeft')  goTo(cur - 1);
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') goTo(cur + 1);
+  if (e.key === 'ArrowLeft'  || e.key === 'ArrowUp')   goTo(cur - 1);
 });
 
 let tx = 0, ty = 0, tStart = 0;
@@ -692,6 +690,7 @@ window.addEventListener('touchend', e => {
   const dx = tx - e.changedTouches[0].clientX;
   const dy = ty - e.changedTouches[0].clientY;
   const THRESH = 44;
+  // always use horizontal swipe gesture regardless of panel transition direction
   if (Math.abs(dx) > THRESH && Math.abs(dx) > Math.abs(dy)) {
     goTo(cur + (dx > 0 ? 1 : -1));
   }
