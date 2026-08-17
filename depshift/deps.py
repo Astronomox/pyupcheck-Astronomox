@@ -6,10 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import List, Optional
 
-try:
-    import tomllib  # py311+
-except ImportError:
-    tomllib = None
+from ._toml import MISSING_TOML_HINT, tomllib
 
 try:
     import configparser
@@ -57,12 +54,24 @@ def parse_requirements_txt(path: str) -> List[Dependency]:
 
 def parse_pyproject_toml(path: str) -> List[Dependency]:
     if tomllib is None:
+        import warnings
+
+        warnings.warn(
+            "Skipping {}: dependencies cannot be read. {}".format(path, MISSING_TOML_HINT),
+            RuntimeWarning,
+            stacklevel=2,
+        )
         return []
     deps = []
     try:
         with open(path, "rb") as f:
             data = tomllib.load(f)
-    except Exception:
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        import warnings
+
+        warnings.warn(
+            "Could not parse {}: {}".format(path, exc), RuntimeWarning, stacklevel=2
+        )
         return []
 
     raw_deps: List[str] = []
