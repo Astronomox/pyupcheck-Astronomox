@@ -30,7 +30,7 @@ jobs:
           mkdir -p _site
           cp index.html _site/index.html
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: _site
 
