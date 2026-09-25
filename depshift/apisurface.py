@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Set, Tuple
 import httpx
 
 from depshift.cache import cache_get, cache_set
-from depshift.changelog import get_pypi_info
+from depshift.changelog import get_pypi_info, get_pypi_version_info
 
 
 @dataclass
@@ -50,40 +50,74 @@ class APIChange:
     param: Optional[str] = None
 
 
-PYPI_FILES_API = "https://pypi.org/pypi/{package}/{version}/json"
+MAX_DOWNLOAD_BYTES = 300 * 1024 * 1024  # skip absurdly large distributions
+
+_SDIST_SUFFIXES = (".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".zip")
+_SOURCE_SUFFIXES = (".py", ".pyi")
+_EXT_SUFFIXES = (".so", ".pyd")
+# directories inside an sdist that are never part of the importable package
+_SDIST_SKIP_DIRS = {"test", "tests", "testing", "docs", "doc", "examples", "example",
+                    "benchmarks", "benchmark", "scripts", "tools", "ci", ".github"}
+
+
+def _wheel_score(filename: str) -> int:
+    """Rank wheels: pure-python first, then CPython 3 / manylinux, then anything."""
+    fn = filename.lower()
+    if fn.endswith(("-py3-none-any.whl", "-py2.py3-none-any.whl", "-py3.py2-none-any.whl")):
+        return 0
+    if "-none-any.whl" in fn:
+        return 1
+    if "cp3" in fn and ("manylinux" in fn and "x86_64" in fn):
+        return 2
+    if "cp3" in fn:
+        return 3
+    return 4
 
 
 def _find_sdist_or_wheel_url(package: str, version: str) -> Optional[Tuple[str, str]]:
-    """Return (url, kind) for a downloadable wheel or sdist for this version."""
-    key = f"disturl:{package}:{version}"
+    """Return (url, kind) for a downloadable wheel or sdist for this version.
+
+    Wheels are preferred because their layout maps directly onto import paths.
+    Any wheel works (including platform-specific ones) since only the
+    Python sources and extension module names are read, never executed.
+    """
+    key = f"disturl2:{package}:{version}"
     cached = cache_get(key)
     if cached is not None:
         return tuple(cached) if cached else None
 
+    files = []
     try:
-        info = get_pypi_info(package)
+        files = get_pypi_version_info(package, version).get("urls", []) or []
     except Exception:
-        cache_set(key, [])
-        return None
+        files = []
+    if not files:
+        try:
+            files = get_pypi_info(package).get("releases", {}).get(version, []) or []
+        except Exception:
+            files = []
 
-    releases = info.get("releases", {})
-    files = releases.get(version, [])
-
-    # prefer a pure-python wheel, then any wheel, then sdist
-    wheel = None
+    wheels = []
     sdist = None
     for f in files:
+        if f.get("yanked"):
+            continue
         fn = f.get("filename", "")
         url = f.get("url", "")
-        if fn.endswith("-py3-none-any.whl") or fn.endswith("-py2.py3-none-any.whl"):
-            wheel = (url, "wheel")
-            break
-        if fn.endswith(".whl") and wheel is None:
-            wheel = (url, "wheel")
-        if (fn.endswith(".tar.gz") or fn.endswith(".zip")) and sdist is None:
+        size = f.get("size") or 0
+        if size and size > MAX_DOWNLOAD_BYTES:
+            continue
+        if fn.endswith(".whl"):
+            wheels.append((_wheel_score(fn), url))
+        elif fn.lower().endswith(_SDIST_SUFFIXES) and sdist is None:
             sdist = (url, "sdist")
 
-    result = wheel or sdist
+    result = None
+    if wheels:
+        wheels.sort(key=lambda w: w[0])
+        result = (wheels[0][1], "wheel")
+    elif sdist:
+        result = sdist
     # Cache a "not found" result as [] rather than None: cache_get() cannot
     # distinguish a cached None from a cache miss, so None here would defeat
     # negative caching and re-trigger a network fetch on every call.
@@ -93,26 +127,88 @@ def _find_sdist_or_wheel_url(package: str, version: str) -> Optional[Tuple[str, 
 
 def _download(url: str) -> Optional[bytes]:
     try:
-        resp = httpx.get(url, timeout=30, follow_redirects=True)
+        resp = httpx.get(url, timeout=120, follow_redirects=True)
         resp.raise_for_status()
         return resp.content
     except Exception:
         return None
 
 
-def _extract_py_files_from_wheel(data: bytes, package: str) -> Dict[str, str]:
-    """Return {module_path: source} for .py files in a wheel."""
-    out = {}
+def _wheel_rel_path(name: str) -> Optional[str]:
+    """Path of a wheel member relative to the install root, or None to skip."""
+    parts = name.replace("\\", "/").split("/")
+    if parts[0].endswith(".dist-info"):
+        return None
+    if parts[0].endswith(".data"):
+        # only purelib/platlib end up importable
+        if len(parts) > 2 and parts[1] in ("purelib", "platlib"):
+            return "/".join(parts[2:])
+        return None
+    return "/".join(parts)
+
+
+def _sdist_rel_path(name: str) -> Optional[str]:
+    """Path of an sdist member relative to its import root, or None to skip."""
+    parts = [p for p in name.replace("\\", "/").split("/") if p not in ("", ".")]
+    if len(parts) < 2:
+        return None
+    parts = parts[1:]  # drop the "name-version/" top directory
+    if parts[0] in ("src", "lib", "python") and len(parts) > 1:
+        parts = parts[1:]
+    if len(parts) == 1 and parts[0] in ("setup.py", "conftest.py", "noxfile.py",
+                                        "tasks.py", "fabfile.py", "versioneer.py"):
+        return None
+    if any(p in _SDIST_SKIP_DIRS for p in parts[:-1]):
+        return None
+    return "/".join(parts)
+
+
+def _module_path(rel: str) -> Optional[str]:
+    """Convert 'pkg/sub/mod.py' (or .pyi/.so/.pyd) to 'pkg.sub.mod'."""
+    parts = rel.split("/")
+    last = parts[-1]
+    if last.endswith(_SOURCE_SUFFIXES):
+        stem = last.rsplit(".", 1)[0]
+    elif last.endswith(_EXT_SUFFIXES):
+        stem = last.split(".", 1)[0]  # foo.cpython-311-x86_64-linux-gnu.so -> foo
+    else:
+        return None
+    parts = parts[:-1] if stem == "__init__" else parts[:-1] + [stem]
+    if not parts or not all(p.isidentifier() for p in parts):
+        return None
+    return ".".join(parts)
+
+
+def _collect(members: List[Tuple[str, bytes]]) -> Tuple[Dict[str, List[str]], Set[str]]:
+    """Return ({module_path: [sources]}, {compiled extension module paths})."""
+    sources: Dict[str, List[str]] = {}
+    extensions: Set[str] = set()
+    for rel, raw in members:
+        mod = _module_path(rel)
+        if not mod:
+            continue
+        if rel.endswith(_EXT_SUFFIXES):
+            extensions.add(mod)
+            continue
+        sources.setdefault(mod, []).append(raw.decode("utf-8", errors="ignore"))
+    return sources, extensions
+
+
+def _wanted(rel: Optional[str]) -> bool:
+    return bool(rel) and rel.endswith(_SOURCE_SUFFIXES + _EXT_SUFFIXES)
+
+
+def _read_wheel(data: bytes) -> List[Tuple[str, bytes]]:
+    out = []
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             for name in zf.namelist():
-                if not name.endswith(".py"):
-                    continue
-                if ".dist-info/" in name or ".data/" in name:
+                rel = _wheel_rel_path(name)
+                if not _wanted(rel):
                     continue
                 try:
-                    src = zf.read(name).decode("utf-8", errors="ignore")
-                    out[name] = src
+                    raw = b"" if rel.endswith(_EXT_SUFFIXES) else zf.read(name)
+                    out.append((rel, raw))
                 except Exception:
                     continue
     except Exception:
@@ -120,61 +216,39 @@ def _extract_py_files_from_wheel(data: bytes, package: str) -> Dict[str, str]:
     return out
 
 
-def _extract_py_files_from_sdist(data: bytes, package: str) -> Dict[str, str]:
-    """Return {module_path: source} for .py files in an sdist tarball or zip."""
-    out = {}
-    # try tar.gz
+def _read_sdist(data: bytes) -> List[Tuple[str, bytes]]:
+    out = []
     try:
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as tf:
             for member in tf.getmembers():
-                if not member.name.endswith(".py"):
+                if not member.isfile():
                     continue
-                if "/test" in member.name or "/docs" in member.name:
+                rel = _sdist_rel_path(member.name)
+                if not _wanted(rel):
                     continue
                 try:
                     f = tf.extractfile(member)
                     if f:
-                        out[member.name] = f.read().decode("utf-8", errors="ignore")
+                        out.append((rel, f.read()))
                 except Exception:
                     continue
         if out:
             return out
     except Exception:
         pass
-    # try zip
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             for name in zf.namelist():
-                if name.endswith(".py") and "/test" not in name and "/docs" not in name:
-                    try:
-                        out[name] = zf.read(name).decode("utf-8", errors="ignore")
-                    except Exception:
-                        continue
+                rel = _sdist_rel_path(name)
+                if not _wanted(rel):
+                    continue
+                try:
+                    out.append((rel, zf.read(name)))
+                except Exception:
+                    continue
     except Exception:
         pass
     return out
-
-
-def _module_path_from_file(filepath: str, package: str) -> Optional[str]:
-    """Convert a file path inside the archive to a dotted module path."""
-    parts = filepath.replace("\\", "/").split("/")
-    if package not in parts:
-        # find the package root by locating an __init__.py chain; fall back
-        if package + "/" not in filepath and not filepath.startswith(package):
-            return None
-        idx = 0
-    else:
-        idx = parts.index(package)
-    rel = parts[idx:]
-    if not rel:
-        return None
-    if rel[-1] == "__init__.py":
-        rel = rel[:-1]
-    elif rel[-1].endswith(".py"):
-        rel[-1] = rel[-1][:-3]
-    else:
-        return None
-    return ".".join(rel)
 
 
 class _SurfaceVisitor(ast.NodeVisitor):
@@ -233,7 +307,7 @@ class _SurfaceVisitor(ast.NodeVisitor):
 
 def extract_surface(package: str, version: str) -> Optional[APISurface]:
     """Download a version and extract its public API surface (cached)."""
-    key = f"surface:{package}:{version}"
+    key = f"surface2:{package}:{version}"
     cached = cache_get(key)
     if cached is not None:
         surf = APISurface(version=version)
@@ -253,33 +327,38 @@ def extract_surface(package: str, version: str) -> Optional[APISurface]:
     if not data:
         return None
 
-    if kind == "wheel":
-        files = _extract_py_files_from_wheel(data, package)
-    else:
-        files = _extract_py_files_from_sdist(data, package)
-
-    if not files:
+    members = _read_wheel(data) if kind == "wheel" else _read_sdist(data)
+    sources, extensions = _collect(members)
+    if not sources and not extensions:
         return None
 
     surface = APISurface(version=version)
-    for filepath, src in files.items():
-        module_path = _module_path_from_file(filepath, package)
-        if not module_path:
-            continue
+    surface.modules.update(extensions)
+    for module_path, srcs in sources.items():
         surface.modules.add(module_path)
-        try:
-            tree = ast.parse(src)
-        except SyntaxError:
-            continue
-        visitor = _SurfaceVisitor(module_path)
-        visitor.visit(tree)
-        for cls in visitor.classes:
-            surface.classes.add(f"{module_path}.{cls}")
-        for fname, sig in visitor.functions.items():
-            full = f"{module_path}.{fname}"
-            sig.name = full
-            surface.functions[full] = sig
-        surface.names.update(visitor.names)
+        for src in srcs:  # a module may have both a .py and a .pyi stub
+            try:
+                tree = ast.parse(src)
+            except (SyntaxError, ValueError):
+                continue  # e.g. Python 2-only sources
+            visitor = _SurfaceVisitor(module_path)
+            visitor.visit(tree)
+            for cls in visitor.classes:
+                surface.classes.add(f"{module_path}.{cls}")
+            for fname, sig in visitor.functions.items():
+                full = f"{module_path}.{fname}"
+                sig.name = full
+                existing = surface.functions.get(full)
+                if existing is not None:
+                    # merge overloads / stub+impl: union of params, most permissive flags
+                    for p in sig.params:
+                        if p not in existing.params:
+                            existing.params.append(p)
+                    existing.has_varargs = existing.has_varargs or sig.has_varargs
+                    existing.has_kwargs = existing.has_kwargs or sig.has_kwargs
+                else:
+                    surface.functions[full] = sig
+            surface.names.update(visitor.names)
 
     cache_set(key, {
         "modules": list(surface.modules),
@@ -336,8 +415,12 @@ def diff_surfaces(old: APISurface, new: APISurface) -> List[APIChange]:
             continue
         new_sig = new.functions.get(fname)
         if new_sig is None:
-            mod = fname.rsplit(".", 1)[0]
-            if mod in new.modules:
+            parent, short = fname.rsplit(".", 1)
+            if short.startswith("__") and short.endswith("__"):
+                continue  # dunders (module __getattr__, __repr__, ...) are not API calls
+            # report only if the enclosing module/class still exists; otherwise the
+            # removal of the parent is the finding
+            if parent in new.modules or parent in new.classes:
                 changes.append(APIChange(
                     kind="removed_function", api=fname,
                     detail=f"'{fname}()' was removed in {new.version}",

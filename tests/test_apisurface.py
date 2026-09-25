@@ -132,3 +132,51 @@ def test_diff_skips_private():
     new = make_surface("2.0", {})
     changes = diff_surfaces(old, new)
     assert len(changes) == 0
+
+
+# ── archive layout -> module paths ───────────────────────────────────────────
+
+from depshift.apisurface import _module_path, _sdist_rel_path, _wheel_rel_path, _collect
+
+
+def test_wheel_paths_use_real_import_name():
+    # PyYAML ships `yaml/`, not `pyyaml/`
+    assert _module_path(_wheel_rel_path("yaml/__init__.py")) == "yaml"
+    assert _module_path(_wheel_rel_path("yaml/loader.py")) == "yaml.loader"
+    assert _wheel_rel_path("PyYAML-6.0.dist-info/RECORD") is None
+
+
+def test_wheel_data_purelib():
+    assert _wheel_rel_path("pkg-1.0.data/purelib/pkg/a.py") == "pkg/a.py"
+    assert _wheel_rel_path("pkg-1.0.data/scripts/tool") is None
+
+
+def test_single_module_distribution():
+    assert _module_path("six.py") == "six"
+
+
+def test_extension_modules_and_stubs():
+    assert _module_path("_yaml.cpython-311-x86_64-linux-gnu.so") == "_yaml"
+    assert _module_path("pkg/core.pyi") == "pkg.core"
+    sources, exts = _collect([("pkg/fast.cp311-win_amd64.pyd", b""), ("pkg/__init__.pyi", b"def f(): ...")])
+    assert "pkg.fast" in exts and "pkg" in sources
+
+
+def test_sdist_src_layout_and_skips():
+    assert _sdist_rel_path("foo-1.0/src/foo/api.py") == "foo/api.py"
+    assert _sdist_rel_path("foo-1.0/foo/api.py") == "foo/api.py"
+    assert _sdist_rel_path("foo-1.0/setup.py") is None
+    assert _sdist_rel_path("foo-1.0/tests/test_api.py") is None
+
+
+def test_diff_removed_method_on_surviving_class():
+    old = make_surface("1.0", {"pkg.Draw.textsize": ["self", "text"]}, classes=["pkg.Draw"])
+    new = make_surface("2.0", {}, classes=["pkg.Draw"])
+    changes = diff_surfaces(old, new)
+    assert [c.api for c in changes if c.kind == "removed_function"] == ["pkg.Draw.textsize"]
+
+
+def test_diff_ignores_removed_dunder():
+    old = make_surface("1.0", {"pkg.__getattr__": ["name"]})
+    new = make_surface("2.0", {})
+    assert diff_surfaces(old, new) == []

@@ -35,12 +35,15 @@ pyupcheck check flask              # against latest
 
 ### `check-all` - check every dependency
 
-Reads `requirements.txt` and `pyproject.toml` (PEP 621 and Poetry), checks every dependency against its latest version.
+Reads every `requirements*.txt` (following `-r` includes), `pyproject.toml` (PEP 621, PEP 735 dependency groups, Poetry, PDM, uv), `Pipfile`, `setup.cfg`, `setup.py` and `environment.yml`, and checks every dependency against its latest version.
 
 ```bash
 pyupcheck check-all
+pyupcheck check-all --deep          # fact-based API diff for every dependency
 pyupcheck check-all --format html -o report.html
 ```
+
+Install names and import names don't have to match: `pyyaml` is scanned as `yaml`, `Pillow` as `PIL`, `scikit-learn` as `sklearn`, `protobuf` as `google.protobuf`. Names come from the installed package's metadata when available, then a built-in table of known mismatches.
 
 ### `outdated` - list stale dependencies
 
@@ -156,7 +159,8 @@ These findings are marked `[FACT]` in the output because they come from the real
 - Jupyter notebook (`.ipynb`) and type stub (`.pyi`) scanning
 - Dynamic import detection (`importlib.import_module`, `__import__`)
 - Changelog sources: GitHub releases, raw changelog files, PyPI descriptions
-- Parses requirements.txt, pyproject.toml, setup.cfg, setup.py, environment.yml
+- Works for any PyPI package: resolves import names (`pyyaml` -> `yaml`), namespace packages, C extensions, `src/` layouts
+- Parses requirements*.txt, pyproject.toml, Pipfile, setup.cfg, setup.py, environment.yml
 - 24h response cache (`--no-cache` to bypass, `cache-clear` to wipe)
 - Severity filtering with `--min-severity`
 - Quiet mode (`-q`) for hooks and scripts
@@ -173,7 +177,7 @@ Contributions are welcome. Here is how to get started:
 
 ```bash
 git clone https://github.com/Astronomox/pyupcheck-Astronomox.git
-cd pyupcheck
+cd pyupcheck-Astronomox
 pip install -e "."
 ```
 

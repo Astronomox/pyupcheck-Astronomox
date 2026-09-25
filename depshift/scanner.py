@@ -3,7 +3,7 @@
 import ast
 import os
 from dataclasses import dataclass
-from typing import List, Optional, Set
+from typing import Dict, Iterable, List, Optional, Set, Union
 
 
 @dataclass
@@ -26,14 +26,20 @@ class PackageVisitor(ast.NodeVisitor):
         self.lines = source_lines
         self.filepath = filepath
         self.usages: List[Usage] = []
-        self.aliases: dict[str, str] = {}  # alias -> real dotted name
-        self.from_imports: dict[str, str] = {}  # local name -> full dotted name
+        self.aliases: Dict[str, str] = {}  # alias -> real dotted name
+        self.from_imports: Dict[str, str] = {}  # local name -> full dotted name
 
     def visit_Import(self, node: ast.Import):
         for alias in node.names:
-            if alias.name == self.package or alias.name.startswith(f"{self.package}."):
-                local = alias.asname or alias.name
-                self.aliases[local] = alias.name
+            if self._is_package_ref(alias.name) or self.package.startswith(f"{alias.name}."):
+                if alias.asname:
+                    self.aliases[alias.asname] = alias.name
+                else:
+                    # `import a.b.c` binds the name `a`
+                    first = alias.name.split(".")[0]
+                    self.aliases[first] = first
+                if not self._is_package_ref(alias.name):
+                    continue  # parent of a namespace package, e.g. `import google`
                 self.usages.append(Usage(
                     file=self.filepath,
                     line=node.lineno,
@@ -45,10 +51,21 @@ class PackageVisitor(ast.NodeVisitor):
 
     def visit_ImportFrom(self, node: ast.ImportFrom):
         module = node.module or ""
-        if module == self.package or module.startswith(f"{self.package}."):
-            for alias in node.names:
+        if node.level:
+            return  # relative imports never refer to a third-party package
+        for alias in node.names:
+            if alias.name == "*":
+                if self._is_package_ref(module):
+                    self.usages.append(Usage(
+                        file=self.filepath, line=node.lineno,
+                        code=self.lines[node.lineno - 1].strip(),
+                        attr_chain=module, usage_type="import",
+                    ))
+                continue
+            full = f"{module}.{alias.name}"
+            # `from google import protobuf` for package "google.protobuf"
+            if self._is_package_ref(module) or self._is_package_ref(full):
                 local = alias.asname or alias.name
-                full = f"{module}.{alias.name}"
                 self.from_imports[local] = full
                 self.usages.append(Usage(
                     file=self.filepath,
@@ -132,23 +149,38 @@ class PackageVisitor(ast.NodeVisitor):
         return chain == self.package or chain.startswith(f"{self.package}.")
 
 
-def scan_file(filepath: str, package_name: str) -> List[Usage]:
-    """Scan a single Python file for usages of package_name."""
+PackageNames = Union[str, Iterable[str]]
+
+
+def _as_names(package_name: PackageNames) -> List[str]:
+    if isinstance(package_name, str):
+        return [package_name]
+    return [n for n in package_name if n]
+
+
+def scan_file(filepath: str, package_name: PackageNames) -> List[Usage]:
+    """Scan a single Python file for usages of package_name.
+
+    package_name may be one import name or several (e.g. ``["attr", "attrs"]``).
+    """
     try:
         with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
             source = f.read()
         lines = source.splitlines()
         tree = ast.parse(source, filename=filepath)
-    except (SyntaxError, UnicodeDecodeError):
+    except (SyntaxError, UnicodeDecodeError, ValueError, OSError):
         return []
 
-    visitor = PackageVisitor(package_name, lines, filepath)
-    visitor.visit(tree)
+    found: List[Usage] = []
+    for name in _as_names(package_name):
+        visitor = PackageVisitor(name, lines, filepath)
+        visitor.visit(tree)
+        found.extend(visitor.usages)
 
     # dedupe by (file, line, attr_chain)
     seen: Set[tuple] = set()
     deduped: List[Usage] = []
-    for u in visitor.usages:
+    for u in found:
         key = (u.file, u.line, u.attr_chain)
         if key not in seen:
             seen.add(key)
@@ -156,7 +188,7 @@ def scan_file(filepath: str, package_name: str) -> List[Usage]:
     return deduped
 
 
-def scan_notebook(filepath: str, package_name: str) -> List[Usage]:
+def scan_notebook(filepath: str, package_name: PackageNames) -> List[Usage]:
     """Scan a Jupyter notebook's code cells for usages of package_name."""
     import json as _json
     try:
@@ -180,29 +212,31 @@ def scan_notebook(filepath: str, package_name: str) -> List[Usage]:
             tree = ast.parse(cleaned)
         except SyntaxError:
             continue
-        visitor = PackageVisitor(package_name, lines, filepath)
-        visitor.visit(tree)
-        for u in visitor.usages:
-            u.line = u.line  # line within cell
-            u.code = f"[cell {i + 1}] {u.code}"
-            usages.append(u)
+        for name in _as_names(package_name):
+            visitor = PackageVisitor(name, lines, filepath)
+            visitor.visit(tree)
+            for u in visitor.usages:
+                # u.line stays relative to the cell; the cell number goes in code
+                u.code = f"[cell {i + 1}] {u.code}"
+                usages.append(u)
 
     seen: Set[tuple] = set()
     deduped: List[Usage] = []
     for u in usages:
-        key = (u.file, u.code, u.attr_chain)
+        key = (u.file, u.code, u.line, u.attr_chain)
         if key not in seen:
             seen.add(key)
             deduped.append(u)
     return deduped
 
 
-def scan_directory(directory: str, package_name: str, exclude_dirs: Optional[Set[str]] = None,
+def scan_directory(directory: str, package_name: PackageNames, exclude_dirs: Optional[Set[str]] = None,
                    include_notebooks: bool = True) -> List[Usage]:
     """Recursively scan a directory for usages of package_name."""
     default_excludes = {".venv", "venv", "env", ".env", "node_modules", "__pycache__",
                         ".git", ".tox", ".mypy_cache", ".pytest_cache", "dist", "build",
-                        ".eggs", ".ipynb_checkpoints"}
+                        ".eggs", ".ipynb_checkpoints", ".nox", ".hg", ".svn",
+                        "site-packages", "__pypackages__", ".ruff_cache"}
     if exclude_dirs:
         default_excludes = default_excludes | set(exclude_dirs)
     exclude_dirs = default_excludes
