@@ -136,9 +136,20 @@ def parse_pyproject_toml(path: str) -> List[Dependency]:
     for group in (project.get("optional-dependencies", {}) or {}).values():
         add_list(group)
 
-    # PEP 735 dependency groups
-    for group in (data.get("dependency-groups", {}) or {}).values():
-        add_list(group)
+    # PEP 735 dependency groups, following {include-group = "..."} entries
+    groups = data.get("dependency-groups", {}) or {}
+
+    def expand_group(name, stack):
+        if name in stack:
+            return  # include cycle
+        for item in groups.get(name, []) or []:
+            if isinstance(item, str):
+                raw_deps.append(item)
+            elif isinstance(item, dict) and isinstance(item.get("include-group"), str):
+                expand_group(item["include-group"], stack | {name})
+
+    for group_name in groups:
+        expand_group(group_name, frozenset())
 
     tool = data.get("tool", {}) or {}
 

@@ -233,3 +233,14 @@ def test_conda_level_packages():
         deps = {dep.name: dep for dep in discover_dependencies(d)}
         assert deps["numpy"].pinned_version == "1.26.0"
         assert "flask" in deps and "python" not in deps and "pip" not in deps
+
+
+def test_pep735_include_group_resolved_with_cycle_guard():
+    with tempfile.TemporaryDirectory() as d:
+        write(os.path.join(d, "pyproject.toml"), """
+[dependency-groups]
+all = [{include-group = "test"}]
+test = ["pytest", {include-group = "all"}]
+""")
+        names = [dep.name for dep in discover_dependencies(d)]
+        assert names == ["pytest"]

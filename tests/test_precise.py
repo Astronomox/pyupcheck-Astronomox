@@ -141,3 +141,12 @@ def test_removed_module_matches_by_prefix_only():
     miss = make_usage("requests.utils.compat")
     risks = match_precise([hit, miss], [change], "requests")
     assert [r.usage.attr_chain for r in risks] == ["requests.compat.urlparse"]
+
+
+def test_namespace_packages_are_separate():
+    # google.protobuf's removal must not match a google.cloud usage
+    usage = make_usage("google.cloud.storage.Message")
+    change = make_change("removed_class", "google.protobuf.Message")
+    assert match_precise([usage], [change], ["google.protobuf"]) == []
+    hit = make_usage("google.protobuf.Message")
+    assert len(match_precise([hit], [change], ["google.protobuf"])) == 1

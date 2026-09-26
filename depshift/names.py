@@ -104,8 +104,39 @@ def normalize_dist_name(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
+# keys are written as projects spell them; look them up by normalized name
+KNOWN_IMPORT_NAMES = {normalize_dist_name(k): v for k, v in KNOWN_IMPORT_NAMES.items()}
+
+
+def _namespace_expand(top: str, files: List[str]) -> List[str]:
+    """Expand a namespace package root into the packages it actually ships.
+
+    ``google`` (no ``google/__init__.py``) with files under
+    ``google/protobuf/`` becomes ``google.protobuf``. Regular packages and
+    modules are returned unchanged.
+    """
+    prefix = top.replace(".", "/") + "/"
+    if f"{prefix}__init__.py" in files or not any(f.startswith(prefix) for f in files):
+        return [top]
+    children: List[str] = []
+    for f in files:
+        if not f.startswith(prefix):
+            continue
+        child = f[len(prefix):].split("/", 1)[0]
+        if child.endswith((".py", ".pyi")):
+            child = child.rsplit(".", 1)[0]
+        elif child.endswith((".so", ".pyd")):
+            child = child.split(".", 1)[0]
+        if child.isidentifier() and child != "__pycache__" and f"{top}.{child}" not in children:
+            children.append(f"{top}.{child}")
+    out: List[str] = []
+    for c in children:
+        out.extend(_namespace_expand(c, files))
+    return out or [top]
+
+
 def _from_installed_metadata(dist_name: str) -> List[str]:
-    """Top-level import names declared by an installed distribution."""
+    """Import names shipped by an installed distribution (namespace-aware)."""
     try:
         from importlib import metadata
     except ImportError:  # pragma: no cover
@@ -114,6 +145,8 @@ def _from_installed_metadata(dist_name: str) -> List[str]:
         dist = metadata.distribution(dist_name)
     except Exception:
         return []
+
+    files = [str(f).replace("\\", "/") for f in (dist.files or [])]
 
     names: List[str] = []
     try:
@@ -125,9 +158,8 @@ def _from_installed_metadata(dist_name: str) -> List[str]:
 
     if not names:
         # derive from the installed file list (RECORD)
-        seen = set()
-        for f in dist.files or []:
-            parts = str(f).replace("\\", "/").split("/")
+        for f in files:
+            parts = f.split("/")
             first = parts[0]
             if first.endswith((".dist-info", ".egg-info", ".data")) or first in ("..", "__pycache__"):
                 continue
@@ -140,11 +172,24 @@ def _from_installed_metadata(dist_name: str) -> List[str]:
                     continue
             else:
                 mod = first
-            if mod.isidentifier() and mod not in seen:
-                seen.add(mod)
+            if mod.isidentifier() and mod not in names:
                 names.append(mod)
 
-    return [n for n in names if n and not n.startswith("_")] or names
+    expanded: List[str] = []
+    for n in names:
+        for e in _namespace_expand(n, files):
+            if e not in expanded:
+                expanded.append(e)
+    return [n for n in expanded if n and not n.startswith("_")] or expanded
+
+
+def _drop_namespace_parents(names: List[str]) -> List[str]:
+    """Remove a bare parent (``google``) when a child (``google.protobuf``) is known.
+
+    Scanning the parent would attribute every ``google.*`` import to this one
+    distribution.
+    """
+    return [n for n in names if not any(o.startswith(n + ".") for o in names)]
 
 
 def import_names_for(dist_name: str) -> List[str]:
@@ -163,6 +208,8 @@ def import_names_for(dist_name: str) -> List[str]:
         if n not in names:
             names.append(n)
 
+    names = _drop_namespace_parents(names)
+
     guess = re.sub(r"[-.]", "_", dist_name)
     if not names:
         names.append(guess)
@@ -173,10 +220,14 @@ def import_names_for(dist_name: str) -> List[str]:
 
 
 def import_names_from_archive(paths: List[str]) -> List[str]:
-    """Guess top-level import names from module paths inside a wheel/sdist."""
+    """Guess top-level import names from archive paths (``yaml/loader.py``)
+    or dotted module paths (``yaml.loader``)."""
     out: List[str] = []
     for p in paths:
-        top = p.split(".", 1)[0]
+        p = p.replace("\\", "/")
+        if p.endswith((".py", ".pyi")):
+            p = p.rsplit(".", 1)[0]
+        top = p.replace("/", ".").split(".", 1)[0]
         if top and top.isidentifier() and top not in out:
             out.append(top)
     return out

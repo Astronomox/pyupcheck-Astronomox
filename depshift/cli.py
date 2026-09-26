@@ -143,7 +143,7 @@ def _run_single_check(package: str, target_version: Optional[str], directory: st
         except Exception:
             api_changes = None
         if api_changes:
-            precise = match_precise(usages, api_changes, import_names[0])
+            precise = match_precise(usages, api_changes, import_names)
             # dedupe against changelog risks by (file, line, api)
             existing_keys = {(r.usage.file, r.usage.line, r.usage.attr_chain) for r in risks}
             for pr in precise:
@@ -425,7 +425,7 @@ def fix(directory, dry_run, no_cache):
     ignored = {normalize_name(p) for p in cfg.ignore_packages}
     deps = [d for d in discover_dependencies(directory) if d.name not in ignored]
 
-    req_files = [p for p in requirement_files(directory) if p.endswith(".txt")]
+    req_files = requirement_files(directory)  # .txt and pip-tools .in sources
 
     if not req_files:
         console.print("[yellow]No requirements.txt files found to fix.[/]")
