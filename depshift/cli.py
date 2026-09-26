@@ -22,12 +22,13 @@ from depshift.changelog import (
     get_pypi_info,
 )
 from depshift.analyzer import analyze
-from depshift.deps import discover_dependencies
+from depshift.deps import discover_dependencies, normalize_name, requirement_files
 from depshift.config import load_config
 from depshift import cache as cache_mod
 from depshift.report import render_markdown, render_html
 from depshift.apisurface import get_api_changes
 from depshift.precise import match_precise
+from depshift.names import import_names_for
 
 
 console = Console()
@@ -76,10 +77,23 @@ def _filter_by_since(changes, since_str: str, package: str):
     return filtered
 
 
+def _pinned_version(directory: str, package: str) -> Optional[str]:
+    """The ==pinned version of package in the project's dependency files, if any."""
+    target = normalize_name(package)
+    for dep in discover_dependencies(directory):
+        if dep.name == target and dep.pinned_version:
+            return dep.pinned_version
+    return None
+
+
 def _run_single_check(package: str, target_version: Optional[str], directory: str,
                       github_token: Optional[str], cfg, suppress_errors: bool = False,
-                      since: Optional[str] = None, deep: bool = False) -> Optional[dict]:
+                      since: Optional[str] = None, deep: bool = False,
+                      pinned: Optional[str] = None) -> Optional[dict]:
     installed = get_installed_version(package)
+    if not installed:
+        # not installed here (e.g. CI without deps): use the version pinned in the project
+        installed = pinned or _pinned_version(directory, package)
 
     if not target_version:
         try:
@@ -98,13 +112,14 @@ def _run_single_check(package: str, target_version: Optional[str], directory: st
         }
 
     current = installed or "0.0.0"
-    usages = scan_directory(directory, package, exclude_dirs=cfg.exclude_dirs)
+    import_names = import_names_for(package)
+    usages = scan_directory(directory, import_names, exclude_dirs=cfg.exclude_dirs)
     if not usages:
         return {
             "package": package, "current_version": current,
             "target_version": target_version, "risks": [],
             "safe_count": 0, "breaking_count": 0, "deprecated_count": 0,
-            "no_usages": True,
+            "no_usages": True, "import_names": import_names,
         }
 
     try:
@@ -115,7 +130,7 @@ def _run_single_check(package: str, target_version: Optional[str], directory: st
     if since and changes:
         changes = _filter_by_since(changes, since, package)
 
-    risks, safe = analyze(usages, changes, package)
+    risks, safe = analyze(usages, changes, import_names)
 
     min_rank = SEVERITY_RANK.get(cfg.min_severity, 2)
     risks = [r for r in risks if SEVERITY_RANK.get(r.severity, 2) <= min_rank]
@@ -128,7 +143,7 @@ def _run_single_check(package: str, target_version: Optional[str], directory: st
         except Exception:
             api_changes = None
         if api_changes:
-            precise = match_precise(usages, api_changes, package)
+            precise = match_precise(usages, api_changes, import_names)
             # dedupe against changelog risks by (file, line, api)
             existing_keys = {(r.usage.file, r.usage.line, r.usage.attr_chain) for r in risks}
             for pr in precise:
@@ -247,8 +262,13 @@ def _print_terminal_result(r: dict, quiet: bool):
 def main(ctx):
     """pyupcheck - Check if upgrading a Python dependency will break your code."""
     if ctx.invoked_subcommand is not None and ctx.invoked_subcommand != "banner":
-        from depshift.welcome import show_if_first_run
-        show_if_first_run(console)
+        # Only greet humans: never in CI, pipes, or machine-readable output.
+        argv = sys.argv[1:]
+        machine = any(a in ("-q", "--quiet", "-f", "--format") or a.startswith("--format=")
+                      for a in argv)
+        if sys.stdout.isatty() and not os.environ.get("CI") and not machine:
+            from depshift.welcome import show_if_first_run
+            show_if_first_run(console)
 
 
 @main.command("banner")
@@ -312,7 +332,8 @@ def check(package, target_version, directory, github_token, fmt, output, fail_on
 @click.option("--no-cache", is_flag=True)
 @click.option("--quiet", "-q", is_flag=True)
 @click.option("--since", default=None, metavar="YYYY-MM-DD")
-def check_all(directory, github_token, fmt, output, fail_on, min_severity, exclude, no_cache, quiet, since):
+@click.option("--deep", is_flag=True, help="Deep mode: diff real API surfaces for every dependency (slower)")
+def check_all(directory, github_token, fmt, output, fail_on, min_severity, exclude, no_cache, quiet, since, deep):
     """Check ALL dependencies found in requirements.txt / pyproject.toml / setup.cfg / setup.py / environment.yml."""
     directory = os.path.abspath(directory)
     cfg = load_config(directory)
@@ -325,10 +346,12 @@ def check_all(directory, github_token, fmt, output, fail_on, min_severity, exclu
         cache_mod.disable_cache()
 
     deps = discover_dependencies(directory)
-    deps = [d for d in deps if d.name not in cfg.ignore_packages]
+    ignored = {normalize_name(p) for p in cfg.ignore_packages}
+    deps = [d for d in deps if d.name not in ignored]
 
     if not deps:
-        console.print("[yellow]No dependency files found[/] (looked for requirements.txt, pyproject.toml, setup.cfg, setup.py, environment.yml)")
+        console.print("[yellow]No dependency files found[/] (looked for requirements*.txt, "
+                      "pyproject.toml, Pipfile, setup.cfg, setup.py, environment.yml)")
         sys.exit(2)
 
     if not quiet:
@@ -349,7 +372,8 @@ def check_all(directory, github_token, fmt, output, fail_on, min_severity, exclu
         for dep in deps:
             progress.update(task, description=f"Checking [bold]{dep.name}[/]...")
             r = _run_single_check(dep.name, None, directory, github_token, cfg,
-                                  suppress_errors=True, since=since)
+                                  suppress_errors=True, since=since, pinned=dep.pinned_version,
+                                  deep=deep)
             if r:
                 results.append(r)
             progress.advance(task)
@@ -398,13 +422,10 @@ def fix(directory, dry_run, no_cache):
 
     directory = os.path.abspath(directory)
     cfg = load_config(directory)
-    deps = discover_dependencies(directory)
+    ignored = {normalize_name(p) for p in cfg.ignore_packages}
+    deps = [d for d in discover_dependencies(directory) if d.name not in ignored]
 
-    req_files = []
-    for rel in ["requirements.txt", "requirements-dev.txt", "requirements/base.txt", "requirements/dev.txt"]:
-        path = os.path.join(directory, rel)
-        if os.path.isfile(path):
-            req_files.append(path)
+    req_files = requirement_files(directory)  # .txt and pip-tools .in sources
 
     if not req_files:
         console.print("[yellow]No requirements.txt files found to fix.[/]")
@@ -443,8 +464,9 @@ def fix(directory, dry_run, no_cache):
             except Exception:
                 changes = []
 
-            usages = scan_directory(directory, dep.name, exclude_dirs=cfg.exclude_dirs)
-            risks, _ = analyze(usages, changes, dep.name)
+            names = import_names_for(dep.name)
+            usages = scan_directory(directory, names, exclude_dirs=cfg.exclude_dirs)
+            risks, _ = analyze(usages, changes, names)
             breaking = [r for r in risks if r.severity == "breaking"]
 
             if not breaking:
@@ -474,8 +496,10 @@ def fix(directory, dry_run, no_cache):
             with open(req_path, "r", encoding="utf-8") as f:
                 content = f.read()
             for u in updates:
+                # match any spelling of the name: Foo_Bar, foo-bar, foo.bar
+                name_pat = "[-_.]+".join(re.escape(p) for p in re.split(r"[-_.]+", u["name"]))
                 content = re.sub(
-                    rf"(?i)({re.escape(u['name'])}\s*==\s*){re.escape(u['old'])}",
+                    rf"(?im)^(\s*{name_pat}\s*(?:\[[^\]]*\])?\s*==\s*){re.escape(u['old'])}(?![\w.])",
                     rf"\g<1>{u['new']}",
                     content,
                 )
@@ -696,11 +720,12 @@ def scan(package, directory, exclude):
     cfg = load_config(directory)
     cfg.exclude_dirs.update(exclude)
 
+    names = import_names_for(package)
     with console.status(f"Scanning for usages of [bold]{package}[/]..."):
-        usages = scan_directory(directory, package, exclude_dirs=cfg.exclude_dirs)
+        usages = scan_directory(directory, names, exclude_dirs=cfg.exclude_dirs)
 
     if not usages:
-        console.print(f"[yellow]No usages of {package} found.[/]")
+        console.print(f"[yellow]No usages of {package} found[/] (looked for imports of: {', '.join(names)})")
         sys.exit(0)
 
     table = Table(title=f"Usages of {package}")

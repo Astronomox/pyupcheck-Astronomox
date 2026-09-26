@@ -1,7 +1,7 @@
 """Cross-reference code usages against changelog changes."""
 
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Iterable, List, Optional, Union
 
 from depshift.scanner import Usage
 from depshift.changelog import ChangeEntry
@@ -24,8 +24,24 @@ def normalize_api(api: str, package: str) -> str:
     return api.lower()
 
 
-def match_usage_to_change(usage: Usage, change: ChangeEntry, package: str) -> Optional[Risk]:
-    """Check if a usage is affected by a change."""
+def _root_for(usage: Usage, package: Union[str, Iterable[str]]) -> str:
+    """Pick the import name this usage belongs to (longest match wins)."""
+    if isinstance(package, str):
+        return package
+    names = sorted(package, key=len, reverse=True)
+    for n in names:
+        if usage.attr_chain == n or usage.attr_chain.startswith(f"{n}."):
+            return n
+    return names[0] if names else ""
+
+
+def match_usage_to_change(usage: Usage, change: ChangeEntry,
+                          package: Union[str, Iterable[str]]) -> Optional[Risk]:
+    """Check if a usage is affected by a change.
+
+    package is the import name (or names) the usage was scanned for.
+    """
+    package = _root_for(usage, package)
     usage_api = normalize_api(usage.attr_chain, package)
     change_api = normalize_api(change.api, package)
 
@@ -48,11 +64,14 @@ def match_usage_to_change(usage: Usage, change: ChangeEntry, package: str) -> Op
     return None
 
 
-def analyze(usages: List[Usage], changes: List[ChangeEntry], package: str) -> tuple:
+def analyze(usages: List[Usage], changes: List[ChangeEntry],
+            package: Union[str, Iterable[str]]) -> tuple:
     """
     Cross-reference usages against changes.
     Returns (risks, safe_usages).
     """
+    if not isinstance(package, str):
+        package = list(package)
     risks: List[Risk] = []
     matched_usage_keys = set()
 

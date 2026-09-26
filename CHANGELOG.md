@@ -2,6 +2,27 @@
 
 All notable changes to pyupcheck are documented here.
 
+## [0.5.0] - 2026-09-25
+
+### Added
+- Works with any PyPI package whose import name differs from its install name (`pyyaml` -> `yaml`, `Pillow` -> `PIL`, `scikit-learn` -> `sklearn`, `protobuf` -> `google.protobuf`, ...). Import names come from installed metadata, a table of known mismatches, then a normalized-name fallback
+- Namespace packages (`google.*`, `azure.*`) and packages with several top-level modules (`attrs` -> `attr` + `attrs`)
+- Dependency discovery: every `requirements*.txt`/`requirements/*.txt`/`*.in`, `-r`/`-c` includes, line continuations, `--hash` options, environment markers, `#egg=` VCS requirements, `Pipfile`, PEP 735 `[dependency-groups]`, Poetry groups, PDM/uv dev dependencies, and conda-level packages in `environment.yml`
+- `check-all --deep`
+- When a package isn't installed, `check`/`check-all` use the version pinned in your dependency files instead of `0.0.0`
+
+### Fixed
+- `--deep` extraction now works for any wheel or sdist layout: import names that differ from the project name, `src/` layouts, single-module distributions, `.data/purelib`, `.pyi` stubs, and compiled extension modules
+- `--deep` now reports methods removed from classes that still exist (e.g. Pillow 10's `ImageDraw.textsize`)
+- `--deep` no longer matches a removed name against a same-named API in a different package, or a removed module by its last segment
+- `import a.b.c` now tracks later `a.b.c.x` attribute use; relative imports are no longer mistaken for the package
+- Package names are PEP 503 normalized, so `Flask_SQLAlchemy` and `flask-sqlalchemy` are one dependency and `ignore` matches either spelling
+- `fix` rewrites every requirements file, matches any spelling of a name, and honours `ignore`
+- First-run banner no longer prints in CI, pipes, `--quiet` or `--format` runs (it corrupted JSON output)
+- Scanner crashed on Python 3.8 (`dict[str, str]` annotation)
+- `packaging` is now a declared dependency; package and module versions agree
+- Removed a PyPI token that was hardcoded in `upload.bat`
+
 ## [0.4.2] - 2026-08-13
 
 ### Fixed

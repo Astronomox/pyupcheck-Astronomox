@@ -5,7 +5,7 @@ setlocal
 :: Usage: upload.bat YOUR_PYPI_TOKEN
 
 if "%~1"=="" (
-    echo Usage: upload.bat AgEIcHlwaS5vcmcCJDQzYjM5ZjZkLTAwMDktNDdlZi1iZTVlLTZjNThjOTk4NDBlYgACKlszLCIwZGNkMmQzNi1iNDIzLTQ2NGEtODQyYS1hNzU5Y2YzMDA1MTAiXQAABiCFs9GFf-n7tTDfphSH_mFRsEyIC50PvedKao0_gMoR5A
+    echo Usage: upload.bat YOUR_PYPI_TOKEN
     exit /b 1
 )
 

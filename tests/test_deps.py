@@ -157,3 +157,90 @@ def test_discover_deduplicates():
         deps = discover_dependencies(d)
         flask_count = sum(1 for d in deps if d.name == "flask")
         assert flask_count == 1
+
+
+# ── wider format coverage ────────────────────────────────────────────────────
+
+def test_names_are_pep503_normalized():
+    from depshift.deps import parse_requirement_line
+    assert parse_requirement_line("Flask_SQLAlchemy==3.0", "r").name == "flask-sqlalchemy"
+
+
+def test_markers_hashes_and_extras():
+    from depshift.deps import parse_requirement_line
+    d = parse_requirement_line('requests[socks]==2.31.0 ; python_version >= "3.8" --hash=sha256:ab', "r")
+    assert d.name == "requests" and d.pinned_version == "2.31.0"
+
+
+def test_vcs_egg_fragment():
+    from depshift.deps import parse_requirement_line
+    d = parse_requirement_line("git+https://github.com/org/repo.git#egg=MyPkg", "r")
+    assert d.name == "mypkg"
+
+
+def test_requirements_include_and_glob():
+    with tempfile.TemporaryDirectory() as d:
+        write(os.path.join(d, "requirements.txt"), "-r requirements-base.txt\nflask==2.3.3\n")
+        write(os.path.join(d, "requirements-base.txt"), "pyyaml==6.0\n")
+        write(os.path.join(d, "requirements-test.txt"), "pytest\n")
+        names = [dep.name for dep in discover_dependencies(d)]
+        assert {"flask", "pyyaml", "pytest"} <= set(names)
+
+
+def test_backslash_continuation():
+    with tempfile.TemporaryDirectory() as d:
+        write(os.path.join(d, "requirements.txt"), "flask==2.3.3 \\\n    --hash=sha256:abc\n")
+        deps = discover_dependencies(d)
+        assert deps[0].name == "flask" and deps[0].pinned_version == "2.3.3"
+
+
+def test_pyproject_groups_and_poetry():
+    with tempfile.TemporaryDirectory() as d:
+        write(os.path.join(d, "pyproject.toml"), """
+[project]
+dependencies = ["httpx>=0.24"]
+
+[dependency-groups]
+test = ["pytest>=8", {include-group = "lint"}]
+lint = ["ruff"]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+django = "^4.2"
+numpy = {version = "1.26.0", optional = true}
+
+[tool.poetry.group.dev.dependencies]
+black = "*"
+""")
+        deps = {dep.name: dep for dep in discover_dependencies(d)}
+        assert {"httpx", "pytest", "ruff", "django", "numpy", "black"} <= set(deps)
+        assert deps["numpy"].pinned_version == "1.26.0"
+
+
+def test_pipfile():
+    with tempfile.TemporaryDirectory() as d:
+        write(os.path.join(d, "Pipfile"), '[packages]\nrequests = "==2.31.0"\nflask = "*"\n'
+                                          '[dev-packages]\npytest = {version = ">=8"}\n')
+        deps = {dep.name: dep for dep in discover_dependencies(d)}
+        assert deps["requests"].pinned_version == "2.31.0"
+        assert {"flask", "pytest"} <= set(deps)
+
+
+def test_conda_level_packages():
+    with tempfile.TemporaryDirectory() as d:
+        write(os.path.join(d, "environment.yml"),
+              "dependencies:\n  - python=3.11\n  - conda-forge::numpy=1.26.0\n  - pip\n  - pip:\n    - flask\n")
+        deps = {dep.name: dep for dep in discover_dependencies(d)}
+        assert deps["numpy"].pinned_version == "1.26.0"
+        assert "flask" in deps and "python" not in deps and "pip" not in deps
+
+
+def test_pep735_include_group_resolved_with_cycle_guard():
+    with tempfile.TemporaryDirectory() as d:
+        write(os.path.join(d, "pyproject.toml"), """
+[dependency-groups]
+all = [{include-group = "test"}]
+test = ["pytest", {include-group = "all"}]
+""")
+        names = [dep.name for dep in discover_dependencies(d)]
+        assert names == ["pytest"]

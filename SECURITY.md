@@ -28,5 +28,6 @@ pyupcheck is a local CLI tool. It downloads package metadata from PyPI and GitHu
 - `https://pypi.org/pypi/` — package metadata
 - `https://raw.githubusercontent.com/` — changelog files
 - `https://api.github.com/` — release data (unauthenticated or with user-supplied token)
+- `https://files.pythonhosted.org/` — package wheels/sdists downloaded in `--deep` mode (read and parsed, never installed or executed)
 
 If you discover that pyupcheck is making unexpected outbound requests or handling user data in a way that creates a security risk, that is in scope.

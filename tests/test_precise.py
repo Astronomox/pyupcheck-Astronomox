@@ -120,3 +120,33 @@ def test_no_usages_no_risks():
     changes = [make_change("removed_function", "requests.get")]
     risks = match_precise([], changes, "requests")
     assert len(risks) == 0
+
+
+def test_short_name_does_not_cross_packages():
+    usage = make_usage("flask.get")
+    change = make_change("removed_function", "requests.get")
+    assert match_precise([usage], [change], "flask") == []
+
+
+def test_reexported_name_matches_within_package():
+    # requests.get is defined in requests.api
+    usage = make_usage("requests.get")
+    change = make_change("removed_function", "requests.api.get")
+    assert len(match_precise([usage], [change], "requests")) == 1
+
+
+def test_removed_module_matches_by_prefix_only():
+    change = make_change("removed_module", "requests.compat")
+    hit = make_usage("requests.compat.urlparse")
+    miss = make_usage("requests.utils.compat")
+    risks = match_precise([hit, miss], [change], "requests")
+    assert [r.usage.attr_chain for r in risks] == ["requests.compat.urlparse"]
+
+
+def test_namespace_packages_are_separate():
+    # google.protobuf's removal must not match a google.cloud usage
+    usage = make_usage("google.cloud.storage.Message")
+    change = make_change("removed_class", "google.protobuf.Message")
+    assert match_precise([usage], [change], ["google.protobuf"]) == []
+    hit = make_usage("google.protobuf.Message")
+    assert len(match_precise([hit], [change], ["google.protobuf"])) == 1

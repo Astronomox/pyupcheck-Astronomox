@@ -153,3 +153,51 @@ def test_scan_directory_excludes_venv():
             f.write("import requests\n")
         usages = scan_directory(d, "requests")
         assert len(usages) == 0
+
+
+# ── import names that differ from the distribution ───────────────────────────
+
+def test_scan_multiple_import_names():
+    path = write_temp("import attr\nimport attrs\nattr.s()\nattrs.define()\n")
+    try:
+        apis = {u.attr_chain for u in scan_file(path, ["attr", "attrs"])}
+        assert {"attr.s", "attrs.define"} <= apis
+    finally:
+        cleanup(path)
+
+
+def test_dotted_import_binds_top_name():
+    path = write_temp("import yaml.constructor\nyaml.safe_load('a: 1')\n")
+    try:
+        apis = [u.attr_chain for u in scan_file(path, "yaml")]
+        assert "yaml.safe_load" in apis
+    finally:
+        cleanup(path)
+
+
+def test_namespace_package_import():
+    path = write_temp("import google.protobuf.message\n"
+                      "from google.protobuf import json_format\n"
+                      "json_format.MessageToDict(x)\n")
+    try:
+        apis = [u.attr_chain for u in scan_file(path, "google.protobuf")]
+        assert "google.protobuf.message" in apis
+        assert "google.protobuf.json_format.MessageToDict" in apis
+    finally:
+        cleanup(path)
+
+
+def test_relative_import_ignored():
+    path = write_temp("from .yaml import load\n")
+    try:
+        assert scan_file(path, "yaml") == []
+    finally:
+        cleanup(path)
+
+
+def test_star_import_recorded():
+    path = write_temp("from yaml import *\n")
+    try:
+        assert [u.attr_chain for u in scan_file(path, "yaml")] == ["yaml"]
+    finally:
+        cleanup(path)
