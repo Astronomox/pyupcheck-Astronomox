@@ -174,7 +174,9 @@ These findings are marked `[FACT]` in the output because they come from the real
 
 ## Accuracy
 
-`benchmarks/` holds real upgrades with known breaking changes (Flask 3, NumPy 2, pandas 2, SQLAlchemy 2, Pillow 10 and more). On the current set, `--deep` catches 100% of breaking lines with no false alarms; changelog-only mode catches 45.5%, also with no false alarms. Run it with `make bench`.
+`benchmarks/` holds 16 real upgrades with known breaking changes (Django 4, Flask 3, NumPy 2, pandas 2, Pydantic 2, SQLAlchemy 2, SciPy 1.14, Pillow 10 and more). On the current set, `--deep` catches 100% of breaking lines with no false alarms; changelog-only mode catches 70.6%, also with no false alarms. Run it with `make bench`.
+
+Changelogs are read from GitHub releases, root CHANGES files, and per-version release notes in project docs (NumPy, SciPy, pandas, Pillow, Django, SQLAlchemy layouts).
 
 ## Limitations
 

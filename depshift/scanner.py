@@ -30,6 +30,7 @@ class PackageVisitor(ast.NodeVisitor):
         self.from_imports: Dict[str, str] = {}  # local name -> full dotted name
         # variable -> package class it holds an instance of, e.g. s -> requests.Session
         self.instances: Dict[str, str] = {}
+        self._call_funcs: Set[int] = set()  # Name nodes already recorded as calls
 
     # ── light type tracking ──────────────────────────────────────────────────
 
@@ -146,6 +147,11 @@ class PackageVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Attribute(self, node: ast.Attribute):
+        root = node
+        while isinstance(root, ast.Attribute):
+            root = root.value
+        if isinstance(root, ast.Name):
+            self._call_funcs.add(id(root))  # part of a longer chain, recorded there
         chain = self._resolve_attr_chain(node)
         if chain and self._is_package_ref(chain):
             self.usages.append(Usage(
@@ -157,7 +163,21 @@ class PackageVisitor(ast.NodeVisitor):
             ))
         self.generic_visit(node)
 
+    def visit_Name(self, node: ast.Name):
+        """A from-imported name used on its own: a base class, an argument,
+        a decorator, a value (``class S(BaseSettings)``, ``f(Markup)``)."""
+        if not isinstance(node.ctx, ast.Load) or id(node) in self._call_funcs:
+            return
+        full = self.from_imports.get(node.id)
+        if full and self._is_package_ref(full):
+            self.usages.append(Usage(
+                file=self.filepath, line=node.lineno,
+                code=self.lines[node.lineno - 1].strip(),
+                attr_chain=full, usage_type="attribute_access",
+            ))
+
     def visit_Call(self, node: ast.Call):
+        self._call_funcs.add(id(node.func))
         chain = self._resolve_attr_chain(node.func)
         if chain and self._is_package_ref(chain):
             kwargs = [kw.arg for kw in node.keywords if kw.arg]

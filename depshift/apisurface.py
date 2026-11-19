@@ -288,6 +288,8 @@ class _SurfaceVisitor(ast.NodeVisitor):
         self._depth = 0  # >0 would mean inside a function body (never visited)
         self._literals: Dict[str, Set[str]] = {}  # module-level NAME = [..]/{..} string literals
         self._deferred: Set[str] = set()          # names __getattr__ checks `in` (resolved later)
+        self.star_imports: List[Tuple[int, str]] = []  # (relative level, module) of `from x import *`
+        self.all_names: Optional[Set[str]] = None      # __all__, when the module defines one
 
     def finalize(self):
         """Resolve names a module ``__getattr__`` serves from module-level literals."""
@@ -366,6 +368,7 @@ class _SurfaceVisitor(ast.NodeVisitor):
             return
         for a in node.names:
             if a.name == "*":
+                self.star_imports.append((node.level or 0, node.module or ""))
                 continue
             local = a.asname or a.name
             if self._public(local):
@@ -388,9 +391,11 @@ class _SurfaceVisitor(ast.NodeVisitor):
                 if n.id == "__all__" and not self._class_stack:
                     val = getattr(node, "value", None)
                     if isinstance(val, (ast.List, ast.Tuple)):
+                        self.all_names = set(self.all_names or ())
                         for el in val.elts:
                             if isinstance(el, ast.Constant) and isinstance(el.value, str):
                                 self.exports.add(el.value)
+                                self.all_names.add(el.value)
                     continue
                 if not self._class_stack:
                     lit = _string_literals(getattr(node, "value", None))
@@ -487,6 +492,8 @@ def build_surface(version: str, sources: Dict[str, List[str]],
                   extensions: Optional[Set[str]] = None) -> APISurface:
     """Build an API surface from module sources ({dotted module: [source, ...]})."""
     extensions = extensions or set()
+    stars: Dict[str, List[Tuple[int, str]]] = {}
+    all_of: Dict[str, Set[str]] = {}
     surface = APISurface(version=version)
     surface.modules.update(extensions)
     for module_path, srcs in sources.items():
@@ -499,6 +506,10 @@ def build_surface(version: str, sources: Dict[str, List[str]],
             visitor = _SurfaceVisitor(module_path)
             visitor.visit(tree)
             visitor.finalize()
+            if visitor.star_imports:
+                stars.setdefault(module_path, []).extend(visitor.star_imports)
+            if visitor.all_names is not None:
+                all_of[module_path] = visitor.all_names
             if visitor.exports:
                 surface.exports.setdefault(module_path, set()).update(visitor.exports)
             for cls, bases in visitor.bases.items():
@@ -525,12 +536,61 @@ def build_surface(version: str, sources: Dict[str, List[str]],
                     surface.functions[full] = sig
             surface.names.update(visitor.names)
 
+    _resolve_star_imports(surface, stars, all_of)
     return surface
+
+
+def _resolve_star_imports(surface: APISurface, stars: Dict[str, List[Tuple[int, str]]],
+                          all_of: Dict[str, Set[str]]):
+    """``from ._quadrature import *`` in scipy/integrate/__init__.py makes
+    every public name of _quadrature importable from scipy.integrate."""
+    if not stars:
+        return
+    by_module: Dict[str, Set[str]] = {}
+    for coll in (surface.functions, surface.classes, surface.attributes):
+        for dotted in coll:
+            mod, _, name = dotted.rpartition(".")
+            by_module.setdefault(mod, set()).add(name)
+
+    def public_names(mod: str) -> Set[str]:
+        if mod in all_of:
+            return set(all_of[mod])
+        names = by_module.get(mod, set()) | surface.exports.get(mod, set())
+        return {n for n in names if not n.startswith("_")}
+
+    def resolve(mod: str, level: int, target: str) -> Optional[str]:
+        if level == 0:
+            return target if target in surface.modules else None
+        # a package's __init__ is stored under the package name, so try the
+        # module itself as the package first, then its parent
+        for base in (mod, mod.rsplit(".", 1)[0] if "." in mod else ""):
+            parts = base.split(".") if base else []
+            if level > 1:
+                parts = parts[:len(parts) - (level - 1)]
+            cand = ".".join(parts + ([target] if target else []))
+            if cand in surface.modules:
+                return cand
+        return None
+
+    for _ in range(5):  # chains: a imports * from b which imports * from c
+        changed = False
+        for mod, imports in stars.items():
+            have = surface.exports.setdefault(mod, set())
+            for level, target in imports:
+                src = resolve(mod, level, target)
+                if not src or src == mod:
+                    continue
+                new_names = public_names(src) - have
+                if new_names:
+                    have.update(new_names)
+                    changed = True
+        if not changed:
+            break
 
 
 def extract_surface(package: str, version: str) -> Optional[APISurface]:
     """Download a version and extract its public API surface (cached)."""
-    key = f"surface5:{package}:{version}"
+    key = f"surface6:{package}:{version}"
     cached = cache_get(key)
     if cached is not None:
         surf = APISurface(version=version)
@@ -629,6 +689,15 @@ def _inherited(surface: APISurface, cls: str, member: str,
             if found:
                 return found
     return None
+
+
+def _positional_index(sig: FuncSig, param: str) -> Optional[int]:
+    """Index of param among positional arguments a caller passes (self/cls
+    excluded); None when it can only be passed by keyword."""
+    positional = [p for p in sig.params if p not in sig.kwonly]
+    if positional and positional[0] in ("self", "cls"):
+        positional = positional[1:]
+    return positional.index(param) if param in positional else None
 
 
 def _member_of(surface: APISurface, dotted: str) -> Optional[str]:
@@ -734,8 +803,18 @@ def diff_surfaces(old: APISurface, new: APISurface) -> List[APIChange]:
                 continue
             changes.append(APIChange(
                 kind="added_required_param", api=fname, param=p,
+                position=_positional_index(new_sig, p),
                 detail=f"'{fname}()' now requires a '{p}' argument ({new.version})",
             ))
+
+        # a parameter that had a default and no longer does (yaml.load's Loader)
+        for p in new_sig.required:
+            if p in old_params and p not in old_sig.required and p not in ("self", "cls"):
+                changes.append(APIChange(
+                    kind="added_required_param", api=fname, param=p,
+                    position=_positional_index(new_sig, p),
+                    detail=f"'{p}' is now a required argument of '{fname}()' ({new.version})",
+                ))
 
         # a parameter that used to be positional is now keyword-only
         old_positional = [x for x in old_sig.params if x not in old_sig.kwonly]

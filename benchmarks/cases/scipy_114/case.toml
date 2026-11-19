@@ -1,0 +1,4 @@
+package = "scipy"
+from = "1.11.4"
+to = "1.14.0"
+source = "SciPy 1.14.0 release notes, expired deprecations: integrate.simps, trapz, cumtrapz removed"

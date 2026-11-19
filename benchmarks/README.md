@@ -28,10 +28,12 @@ Only mark a line `# BREAK` when an upstream source says so.
 
 | Mode | Recall | Precision |
 |---|---|---|
-| changelog (default) | 45.5% | 100% |
+| changelog (default) | 70.6% | 100% |
 | `--deep` | 100% | 100% |
 
-10 cases, 22 breaking lines: click 8.1, Flask 3, Jinja 3.1, NumPy 2,
-pandas 2, Pillow 10, SQLAlchemy 2, urllib3 2, Werkzeug 3, plus a
-requests negative control. Changelog misses are mostly projects whose release
-notes live in their docs rather than a root CHANGES file.
+16 cases, 34 breaking lines: click 8.1, Django 4.0, Flask 3, Jinja 3.1,
+Matplotlib 3.9, NumPy 2, pandas 2, Pillow 10, Pydantic 2, PyYAML 6,
+SciPy 1.14, SQLAlchemy 2, urllib3 2, Werkzeug 3, plus two negative controls
+(requests, a Flask patch release). Changelog misses are mostly changes worded
+loosely ("should be imported from MarkupSafe") or described in migration
+guides rather than release notes.

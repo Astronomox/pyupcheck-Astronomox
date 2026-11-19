@@ -129,7 +129,7 @@ def fetch_github_releases(owner: str, repo: str, token: Optional[str] = None) ->
 
 # headings that classify the bullet points beneath them
 _BREAKING_HEADING = re.compile(
-    r"\b(breaking|backwards?[- ]incompatible|incompatible|removals?|removed|"
+    r"\b(breaking|backwards?[- ]incompatible|incompatible|removals?|removed|expired|"
     r"api changes|migration|upgrade notes?)\b", re.IGNORECASE)
 _DEPRECATION_HEADING = re.compile(r"\bdeprecat", re.IGNORECASE)
 _BENIGN_HEADING = re.compile(
@@ -172,6 +172,10 @@ _REPLACEMENT = re.compile(
     r"`{0,2}:?(?:\w+:)*`?~?\.?([a-zA-Z_][\w.]*)", re.IGNORECASE)
 
 _RANK = {"low": 0, "medium": 1, "high": 2}
+_PARAM_OF = re.compile(
+    r"`{1,2}([a-zA-Z_]\w*)`{1,2}\s+(?:option|param|parameter|argument|arg|kwarg|keyword argument|keyword)s?"
+    r"\s+(?:of|to|in|for|from)\s+(?:the\s+)?(?::\w+:)?`{1,2}~?\.?([a-zA-Z_][\w.]*(?:\(\))?)`{1,2}",
+    re.IGNORECASE)
 _PARAM_OWNER = re.compile(
     r"`{1,2}:?(?:\w+:)*`?~?\.?([a-zA-Z_][\w.]*(?:\(\))?)`{1,2}(?:'s)?\s+"
     r"(?:option|param|parameter|argument|arg|kwarg|keyword argument|keyword)s?\b", re.IGNORECASE)
@@ -211,17 +215,32 @@ def _extract_apis(line: str) -> List[str]:
 _BULLET = re.compile(r"^(\s*)(?:[-*\u2022+]|\d+[.)])\s+")
 
 
+_TABLE_BORDER = re.compile(r"^\s*=+(?:\s+=+)+\s*$")
+
+
 def _items(text: str) -> List[Tuple[Optional[str], str]]:
     """Split release notes into (section kind, item text) pairs.
 
     A bullet plus its wrapped continuation lines is one item; so is a plain
-    paragraph. Headings set the section for the items below them.
+    paragraph, and so is each row of a reST simple table ("old name | use
+    instead"). Headings set the section for the items below them; a
+    sub-heading the classifier doesn't recognise ("Constants") inherits its
+    parent's section ("Backwards incompatible changes").
     """
     lines = text.splitlines()
     out: List[Tuple[Optional[str], str]] = []
-    section: Optional[str] = None
+    stack: List[Tuple[int, Optional[str]]] = []   # (level, section kind)
+    rst_levels: List[str] = []                    # underline chars in order seen
     cur: List[str] = []
     cur_section: Optional[str] = None
+    cur_indent: Optional[int] = None  # indent of the bullet that started the item
+    table_borders = 0
+
+    def section() -> Optional[str]:
+        for _, kind in reversed(stack):
+            if kind is not None:
+                return kind
+        return None
 
     def flush():
         if cur:
@@ -233,26 +252,68 @@ def _items(text: str) -> List[Tuple[Optional[str], str]]:
         if skip_next:
             skip_next = False
             continue
-        heading = _heading_text(lines, i)
+        if _TABLE_BORDER.match(raw):
+            flush()
+            table_borders += 1
+            continue
+        heading = None if _in_table(table_borders) else _heading_text(lines, i)
         if heading is not None:
             flush()
-            section = _section_kind(heading)
-            if i + 1 < len(lines) and _RST_UNDERLINE.match(lines[i + 1]):
+            md = _MD_HEADING.match(raw)
+            if md:
+                level = len(raw.strip()) - len(raw.strip().lstrip("#"))
+            elif i + 1 < len(lines) and _RST_UNDERLINE.match(lines[i + 1]):
+                ch = lines[i + 1].strip()[0]
+                if ch not in rst_levels:
+                    rst_levels.append(ch)
+                level = rst_levels.index(ch) + 1
                 skip_next = True
+            else:
+                level = (stack[-1][0] + 1) if stack else 1
+            while stack and stack[-1][0] >= level:
+                stack.pop()
+            stack.append((level, _section_kind(heading)))
             continue
-        if _RST_UNDERLINE.match(raw) or not raw.strip():
+        if _in_table(table_borders):
+            # one row = one item: first column is the API, the rest says what
+            # replaces it
+            row = raw.strip()
+            if row and table_borders % 3 != 1:   # skip the header row
+                cols = re.split(r"\s{2,}", row, maxsplit=1)
+                text_row = cols[0] + (f" replaced by {cols[1]}" if len(cols) > 1 else "")
+                out.append((section(), text_row))
+            continue
+        if not raw.strip():
+            nxt = next((ln for ln in lines[i + 1:] if ln.strip()), "")
+            nb = _BULLET.match(nxt)
+            if cur and cur_indent is not None and nb and len(nb.group(1)) > cur_indent:
+                continue  # blank line before a nested list stays inside the item
             flush()
             continue
-        if _BULLET.match(raw):
+        if _RST_UNDERLINE.match(raw):
             flush()
-            cur_section = section
+            continue
+        bullet = _BULLET.match(raw)
+        if bullet and cur and cur_indent is not None and len(bullet.group(1)) > cur_indent:
+            # nested bullet: part of its parent item ("Affected functions are:")
+            cur.append(_BULLET.sub("", raw, count=1).strip())
+        elif bullet:
+            flush()
+            cur_section = section()
+            cur_indent = len(bullet.group(1))
             cur.append(_BULLET.sub("", raw, count=1).strip())
         else:
             if not cur:
-                cur_section = section
+                cur_section = section()
+                cur_indent = None
             cur.append(raw.strip())
     flush()
     return out
+
+
+def _in_table(borders: int) -> bool:
+    """reST simple tables have three borders: top, under the header, bottom."""
+    return borders % 3 in (1, 2)
 
 
 def _classify_item(line: str, section: Optional[str], version: str) -> List[ChangeEntry]:
@@ -269,6 +330,16 @@ def _classify_item(line: str, section: Optional[str], version: str) -> List[Chan
             break
 
     apis = _extract_apis(line)
+    # everything named after "in favor of" / "use" / "replaced by" is a
+    # replacement, not something that changed
+    repl_at = _REPLACEMENT.search(line)
+    replacements: List[str] = []
+    if repl_at:
+        replacements = _extract_apis(line[repl_at.start():])
+        if repl_at.group(0).lower().startswith(("renam", "mov")):
+            # "Renamed ``a`` to ``b``": the phrase itself contains the old name
+            replacements = replacements[1:]
+        apis = [a for a in apis if a not in replacements] or apis
 
     if section == "removed":
         # everything under a "Breaking changes" heading breaks, except explicit
@@ -299,7 +370,11 @@ def _classify_item(line: str, section: Optional[str], version: str) -> List[Chan
     repl = _REPLACEMENT.search(line)
     replacement = repl.group(1).rstrip(".") if repl else None
     targets = [a for a in apis if a != replacement] or (apis[:1] if apis else ["unknown"])
-    owner = _PARAM_OWNER.search(line)
+    param_of = _PARAM_OF.search(line)
+    if param_of:
+        # "The ``even`` argument of ``simpson`` has been removed": simpson.even
+        targets = [f"{param_of.group(2).rstrip('()')}.{param_of.group(1)}"]
+    owner = None if param_of else _PARAM_OWNER.search(line)
     if owner:
         # "Removed ``Retry`` options ``method_whitelist``": the parameters are
         # what changed, not ``Retry`` itself
@@ -317,11 +392,32 @@ def _classify_item(line: str, section: Optional[str], version: str) -> List[Chan
         if api in seen:
             continue
         seen.add(api)
+        c = conf
+        if api != "unknown" and kind in ("removed", "changed", "deprecated", "renamed") \
+                and not _is_subject(line, api.rsplit(".", 1)[-1]):
+            # the item mentions the API but isn't about removing it
+            # ("Passing dtype=... to ``DataFrame`` now raises"): a behaviour
+            # change worth a warning, not proof the call breaks
+            c = "low"
         entries.append(ChangeEntry(
             kind=kind, api=api, description=line[:200], version=version,
-            confidence=conf, replacement=replacement if replacement != api else None,
+            confidence=c, replacement=replacement if replacement != api else None,
         ))
     return entries
+
+
+_CHANGE_VERB = r"(?:remov|delet|drop|deprecat|renam|expir|replac|supersed)\w*"
+
+
+def _is_subject(line: str, name: str) -> bool:
+    """Is ``name`` what the item removes/deprecates/renames, rather than
+    something it merely mentions?"""
+    n = re.escape(name)
+    before = re.compile(_CHANGE_VERB + r"\b(?:\s+\S+){0,3}?\s+\S*" + n + r"\b", re.IGNORECASE)
+    after = re.compile(r"\b" + n + r"\S*(?:\s+\S+){0,6}?\s+(?:\S+\s+)?(?:" + _CHANGE_VERB +
+                       r"|no\s+longer\s+(?:support|available|accept|exist|export|import|provid|work))\w*\b",
+                       re.IGNORECASE)
+    return bool(before.search(line) or after.search(line))
 
 
 def parse_changelog_text(text: str, version: str) -> List[ChangeEntry]:
@@ -380,6 +476,137 @@ def fetch_raw_changelog(owner: str, repo: str, token: Optional[str] = None) -> O
         raise RuntimeError(f"{errors} changelog fetches failed")
     cache_set(key, "")
     return None
+
+
+# Projects that keep one release-notes file per version in their docs.
+# {v} is the full version (2.0.0); sectioned files covering a whole series
+# use {major}{minor}. Probed in order; the first that exists is remembered.
+DOCS_NOTES_PATTERNS = [
+    "doc/source/release/{v}-notes.rst",      # numpy, scipy
+    "doc/release/{v}-notes.rst",
+    "doc/source/whatsnew/v{v}.rst",          # pandas
+    "docs/releasenotes/{v}.rst",             # Pillow
+    "docs/release-notes/{v}.md",
+    "docs/release-notes/{v}.rst",
+    "docs/changelog/{v}.md",
+    "docs/whatsnew/{v}.rst",
+    "docs/releases/{v}.txt",                 # Django (two-part names for x.y.0)
+    "docs/releases/{v}.rst",
+]
+DOCS_SERIES_PATTERNS = [
+    "doc/build/changelog/changelog_{major}{minor}.rst",  # SQLAlchemy
+]
+DOCS_CHANGELOG_FILES = [
+    "docs/changelog.md", "docs/changelog.rst", "docs/changes.rst", "docs/changes.md",
+    "docs/history.rst", "docs/history.md", "docs/news.rst", "docs/release-notes.md",
+    "docs/release_notes.md", "docs/source/changelog.rst", "doc/changelog.rst",
+    "docs/CHANGELOG.md", "doc/source/changelog.rst",
+]
+
+
+def _raw(owner: str, repo: str, path: str, branch: str = "main") -> Optional[str]:
+    """Fetch a public file from GitHub; None if it doesn't exist. Raises on
+    network errors so callers can report them."""
+    url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
+    resp = httpx.get(url, timeout=10, follow_redirects=True)
+    if resp.status_code == 200 and len(resp.text) > 50:
+        return resp.text
+    if resp.status_code in (404, 400):
+        return None
+    resp.raise_for_status()
+    return None
+
+
+def _versions_between(pypi_info: dict, current: str, target: str) -> List[str]:
+    """Final releases in (current, target], oldest first."""
+    from packaging.version import Version, InvalidVersion
+    try:
+        lo, hi = Version(current), Version(target)
+    except InvalidVersion:
+        return []
+    out = []
+    for ver in (pypi_info.get("releases") or {}):
+        try:
+            v = Version(ver)
+        except InvalidVersion:
+            continue
+        if not v.is_prerelease and not v.is_devrelease and lo < v <= hi:
+            out.append(v)
+    return [str(v) for v in sorted(out)]
+
+
+def _three_part(v: str) -> str:
+    parts = v.split(".")
+    while len(parts) < 3:
+        parts.append("0")
+    return ".".join(parts[:3]) if all(p.isdigit() for p in parts[:3]) else v
+
+
+def _short_version(v: str) -> str:
+    """4.0.0 -> 4.0 (Django names x.y.0 notes 'x.y'); other versions unchanged."""
+    parts = v.split(".")
+    return ".".join(parts[:2]) if len(parts) >= 3 and parts[2] == "0" else v
+
+
+def fetch_docs_release_notes(owner: str, repo: str, versions: List[str],
+                             max_files: int = 40) -> Optional[List[ChangeEntry]]:
+    """Release notes kept in the project's docs instead of a root CHANGES file.
+
+    Returns None when the project has no recognised docs layout.
+    """
+    if not versions:
+        return None
+    key = f"docs-layout2:{owner}/{repo}"
+    layout = cache_get(key)
+    probe = _three_part(versions[-1])
+    if layout is None:
+        layout = ""
+        from packaging.version import Version
+        tv = Version(versions[-1])
+        short = _short_version(versions[-1])
+        candidates = [("version", p, p.format(v=form)) for p in DOCS_NOTES_PATTERNS
+                      for form in dict.fromkeys([probe, short])]
+        candidates += [("series", p, p.format(major=tv.major, minor=tv.minor)) for p in DOCS_SERIES_PATTERNS]
+        candidates += [("file", p, p) for p in DOCS_CHANGELOG_FILES]
+        for kind, pattern, path in candidates:
+            if _raw(owner, repo, path) is not None:
+                layout = f"{kind}|{pattern}"
+                break
+        cache_set(key, layout)
+    if not layout:
+        return None
+
+    kind, pattern = layout.split("|", 1)
+    entries: List[ChangeEntry] = []
+    if kind == "version":
+        for v in versions[-max_files:]:
+            for form in dict.fromkeys([_three_part(v), _short_version(v)]):
+                text = _cached_raw(owner, repo, pattern.format(v=form))
+                if text:
+                    entries.extend(parse_changelog_text(text, v))
+                    break
+    elif kind == "series":
+        from packaging.version import Version
+        series = sorted({(Version(v).major, Version(v).minor) for v in versions})
+        for major, minor in series[-max_files:]:
+            text = _cached_raw(owner, repo, pattern.format(major=major, minor=minor))
+            if text:
+                entries.extend(parse_sectioned_changelog(text, repo))
+    else:
+        text = _cached_raw(owner, repo, pattern)
+        if text:
+            entries.extend(parse_sectioned_changelog(text, repo))
+    return entries
+
+
+def _cached_raw(owner: str, repo: str, path: str) -> Optional[str]:
+    key = f"gh-raw:{owner}/{repo}/{path}"
+    cached = cache_get(key)
+    if cached is not None:
+        return cached or None
+    text = _raw(owner, repo, path)
+    cache_set(key, text or "")
+    return text
 
 
 def parse_sectioned_changelog(text: str, package: str) -> List[ChangeEntry]:
@@ -484,6 +711,18 @@ def collect_changes(package: str, current_version: str, target_version: str,
             except Exception as e:
                 failed.append(f"changelog file ({_short_err(e)})")
 
+        if True:
+            # release notes in docs/ are often far more detailed than the root
+            # CHANGES file (Pillow, NumPy, pandas), so read them too
+            try:
+                docs = fetch_docs_release_notes(
+                    owner, repo, _versions_between(pypi_info, current_version, target_version))
+                if docs is not None:
+                    ok.append("docs release notes")
+                    all_entries.extend(docs)
+            except Exception as e:
+                failed.append(f"docs release notes ({_short_err(e)})")
+
     try:
         ver_info = get_pypi_version_info(package, target_version)
         desc = ver_info.get("info", {}).get("description", "")
@@ -523,6 +762,21 @@ def collect_changes(package: str, current_version: str, target_version: str,
     return ChangeReport(filtered, ok, failed, skipped)
 
 
+def _has_in_range(entries: List[ChangeEntry], current: str, target: str) -> bool:
+    from packaging.version import Version, InvalidVersion
+    try:
+        lo, hi = Version(current), Version(target)
+    except InvalidVersion:
+        return bool(entries)
+    for e in entries:
+        try:
+            if lo < Version(e.version) <= hi:
+                return True
+        except InvalidVersion:
+            continue
+    return False
+
+
 _SWEEP = re.compile(r"\bremov\w*\b.*\b(previously|all|the)\s+deprecated\b|"
                     r"\bdeprecated\b.*\b(?:have been|are|were)\s+removed\b", re.IGNORECASE)
 
@@ -557,7 +811,8 @@ def _promote_swept_deprecations(entries: List[ChangeEntry], v_current, v_target)
         if later:
             sweep_v = min(later)
             out.append(ChangeEntry(
-                kind="removed", api=e.api, version=str(sweep_v), confidence="medium",
+                kind="removed", api=e.api, version=str(sweep_v),
+                confidence="low" if e.confidence == "low" else "medium",
                 description=f"Removed in {sweep_v} (deprecated in {e.version}: {e.description[:120]})",
                 replacement=e.replacement,
             ))

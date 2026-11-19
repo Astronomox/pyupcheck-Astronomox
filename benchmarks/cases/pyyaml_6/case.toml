@@ -1,0 +1,4 @@
+package = "pyyaml"
+from = "5.4.1"
+to = "6.0"
+source = "PyYAML 6.0 changelog: yaml.load() requires an explicit Loader"

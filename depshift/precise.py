@@ -204,9 +204,12 @@ def match_precise(usages: List[Usage], changes: List[APIChange],
                     add(usage, ch, f"You pass '{param}=' but it was removed: {ch.detail}")
 
         # a new required argument: the call as written no longer works
+        npos = positional_count(usage)
         for ch in required_params.get(callable_name, []):
             if ch.param in (usage.kwargs or []):
                 continue
+            if ch.position is not None and npos > ch.position:
+                continue  # passed positionally
             if pick([ch], usage) is ch:
                 add(usage, ch, ch.detail)
 

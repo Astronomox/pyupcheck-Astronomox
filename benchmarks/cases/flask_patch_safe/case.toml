@@ -1,0 +1,4 @@
+package = "flask"
+from = "3.0.0"
+to = "3.0.3"
+source = "Negative control: patch releases, no breaking changes for this usage"
