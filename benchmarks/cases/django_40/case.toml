@@ -1,0 +1,4 @@
+package = "django"
+from = "3.2.25"
+to = "4.0"
+source = "Django 4.0 release notes, 'Features removed in 4.0': force_text, smart_text, ugettext*, django.conf.urls.url"

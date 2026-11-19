@@ -15,13 +15,26 @@ class Risk:
     severity: str  # "breaking", "deprecated", "warning"
 
 
+# conventional import aliases used in changelogs: "np.NaN" means numpy.NaN
+COMMON_ALIASES = {
+    "np": "numpy", "pd": "pandas", "sa": "sqlalchemy", "tf": "tensorflow",
+    "plt": "matplotlib.pyplot", "mpl": "matplotlib", "nx": "networkx",
+    "xr": "xarray", "pl": "polars", "jnp": "jax.numpy", "sns": "seaborn",
+    "dd": "dask.dataframe", "da": "dask.array", "sp": "scipy",
+}
+
+
 def normalize_api(api: str, package: str) -> str:
     """Normalize an API string for comparison."""
     api = api.strip().rstrip("()")
+    head, _, rest = api.partition(".")
+    full = COMMON_ALIASES.get(head)
+    if full and (full == package or full.startswith(package + ".")):
+        api = f"{full}.{rest}" if rest else full
     # ensure it starts with package name
     if not api.startswith(f"{package}.") and api != package:
         api = f"{package}.{api}"
-    return api.lower()
+    return api  # case-sensitive, like Python: numpy.NaN is not numpy.nan
 
 
 def _root_for(usage: Usage, package: Union[str, Iterable[str]]) -> str:
@@ -44,7 +57,7 @@ def match_usage_to_change(usage: Usage, change: ChangeEntry,
     package = _root_for(usage, package)
     usage_api = normalize_api(usage.attr_chain, package)
     change_api = normalize_api(change.api, package)
-    if change_api == package.lower() or change.api == "unknown":
+    if change_api == package or change.api == "unknown":
         # "Import X from flask instead" names the package itself, which is
         # not a change to every usage of it
         return None
@@ -60,16 +73,24 @@ def match_usage_to_change(usage: Usage, change: ChangeEntry,
             severity = "breaking" if change.kind in ("removed", "changed") else "deprecated"
             return Risk(usage=usage, change=change, severity=severity)
 
+    def sev() -> str:
+        if getattr(change, "confidence", "medium") == "low":
+            return "warning"  # mentioned, not shown to be removed
+        return "breaking" if change.kind in ("removed", "changed") else "deprecated"
+
     # direct match
     if usage_api == change_api:
-        severity = "breaking" if change.kind in ("removed", "changed") else "deprecated"
-        return Risk(usage=usage, change=change, severity=severity)
+        return Risk(usage=usage, change=change, severity=sev())
 
     # usage is a child of the changed API (e.g. change affects requests.Session,
     # usage is requests.Session.get)
     if usage_api.startswith(f"{change_api}."):
-        severity = "breaking" if change.kind in ("removed", "changed") else "deprecated"
-        return Risk(usage=usage, change=change, severity=severity)
+        return Risk(usage=usage, change=change, severity=sev())
+
+    if usage_api == package:
+        # a bare `import numpy` touches every change in the package; listing
+        # them all on the import line is noise
+        return None
 
     # change is a child of something the usage touches
     if change_api.startswith(f"{usage_api}."):

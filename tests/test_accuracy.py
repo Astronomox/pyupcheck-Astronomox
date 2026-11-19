@@ -52,7 +52,34 @@ def test_breaking_section_without_keywords():
     assert len(entries) == 1
     assert entries[0].kind == "removed"
     assert entries[0].api == "pkg.connect"
-    assert entries[0].confidence == "high"
+    # in a breaking section, but the item changes behaviour rather than
+    # removing pkg.connect: reported, at warning strength
+    assert entries[0].confidence == "low"
+
+
+def test_subject_vs_mention():
+    removed = parse_changelog_text("- ``pkg.old`` has been removed.", "2.0")
+    mention = parse_changelog_text("- Removed a crash when passing None to ``pkg.DataFrame``.", "2.0")
+    behaviour = parse_changelog_text(
+        "## Backwards incompatible API changes\n- Passing ``dtype`` to ``pkg.DataFrame`` now raises.", "2.0")
+    assert removed[0].confidence != "low"
+    assert all(e.confidence == "low" for e in mention + behaviour)
+
+
+def test_alias_in_changelog_matches():
+    from depshift.analyzer import analyze
+    entries = parse_changelog_text("- ``np.NaN`` has been removed, use ``np.nan``.", "2.0.0")
+    u = Usage(file="a.py", line=1, code="", attr_chain="numpy.NaN", usage_type="attribute_access")
+    ok = Usage(file="a.py", line=2, code="", attr_chain="numpy.nan", usage_type="attribute_access")
+    risks, _ = analyze([u, ok], entries, "numpy")
+    assert [(r.usage.line, r.severity) for r in risks] == [(1, "breaking")]
+
+
+def test_bare_import_gets_no_warning_spam():
+    from depshift.analyzer import analyze
+    entries = parse_changelog_text("- ``numpy.fft.helper`` was renamed to ``numpy.fft._helper``.", "2.0.0")
+    u = Usage(file="a.py", line=1, code="import numpy", attr_chain="numpy", usage_type="import")
+    assert analyze([u], entries, "numpy")[0] == []
 
 
 def test_rst_section_headings():
@@ -488,3 +515,94 @@ def test_changelog_kwarg_match():
     risks, _ = analyze([bad, good], entries, "urllib3")
     assert [r.usage.line for r in risks] == [1]
     assert risks[0].severity == "breaking"
+
+
+def test_subheading_inherits_breaking_section_and_rst_table():
+    text = textwrap.dedent("""\
+        Backwards incompatible changes
+        ==============================
+
+        Constants
+        ^^^^^^^^^
+
+        =====================  ============================
+        Removed                Use instead
+        =====================  ============================
+        ``Image.ANTIALIAS``    ``Image.LANCZOS``
+        ``Image.LINEAR``       ``Image.BILINEAR``
+        =====================  ============================
+
+        Other changes
+        =============
+
+        Added things
+        ^^^^^^^^^^^^
+        - ``Image.foo`` was improved.
+        """)
+    entries = parse_changelog_text(text, "10.0.0")
+    removed = {e.api: e for e in entries if e.kind in ("removed", "changed")}
+    assert set(removed) == {"Image.ANTIALIAS", "Image.LINEAR"}
+    assert removed["Image.ANTIALIAS"].replacement == "Image.LANCZOS"
+    assert removed["Image.ANTIALIAS"].confidence != "low"
+    assert "Removed" not in removed  # header row skipped
+
+
+def test_no_longer_infers_is_not_removal():
+    text = "## Backwards incompatible\n- ``pkg.DataFrame`` aggregations no longer infer dtypes."
+    assert all(e.confidence == "low" for e in parse_changelog_text(text, "2.0"))
+
+
+def test_bare_name_usages_recorded_once():
+    us = scan("""
+        from pydantic import BaseSettings, BaseModel
+        class S(BaseSettings):
+            pass
+        m = BaseModel()
+        x = BaseModel.construct
+    """, pkg="pydantic")
+    lines = sorted((u.line, u.attr_chain, u.usage_type) for u in us if u.usage_type != "import")
+    assert lines == [
+        (3, "pydantic.BaseSettings", "attribute_access"),
+        (5, "pydantic.BaseModel", "function_call"),
+        (6, "pydantic.BaseModel.construct", "attribute_access"),
+    ]
+
+
+def test_star_import_reexports():
+    old = {"pkg": "from ._q import *", "pkg._q": "__all__ = ['simps', 'simpson']\ndef simps(y): pass\ndef simpson(y): pass"}
+    new = {"pkg": "from ._q import *", "pkg._q": "__all__ = ['simpson']\ndef simpson(y): pass"}
+    ch = diff(old, new)
+    assert match_precise([U("pkg.simps", pos=1)], ch, "pkg")
+    assert match_precise([U("pkg.simpson", pos=1)], ch, "pkg") == []
+
+
+def test_param_became_required():
+    ch = diff({"pkg": "def load(stream, Loader=None): pass"}, {"pkg": "def load(stream, Loader): pass"})
+    assert match_precise([U("pkg.load", pos=1)], ch, "pkg")
+    assert match_precise([U("pkg.load", pos=1, kwargs=["Loader"])], ch, "pkg") == []
+    assert match_precise([U("pkg.load", pos=2)], ch, "pkg") == []
+
+
+def test_param_of_phrase_and_multiple_replacements():
+    e = parse_changelog_text("- The ``even`` argument of `scipy.integrate.simpson` has been removed.", "1.14")
+    assert [x.api for x in e] == ["scipy.integrate.simpson.even"]
+    e = parse_changelog_text(
+        "- ``a.trapz`` and ``a.simps`` are deprecated in favor of ``a.trapezoid`` and ``a.simpson``.", "1.12")
+    assert {x.api for x in e} == {"a.trapz", "a.simps"}
+
+
+def test_nested_bullets_belong_to_parent():
+    text = textwrap.dedent("""\
+        Deprecated features
+        -------------------
+        - Positional use of some arguments is deprecated in these functions,
+          to be changed later. Affected functions are:
+
+          - ``integrate.simpson``
+          - ``special.comb``
+        - ``scipy.misc`` is deprecated.
+        """)
+    entries = parse_changelog_text(text, "1.12.0")
+    simpson = [e for e in entries if e.api == "integrate.simpson"]
+    assert simpson and all(e.confidence == "low" for e in simpson)
+    assert any(e.api == "scipy.misc" and e.confidence != "low" for e in entries)

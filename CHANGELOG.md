@@ -5,6 +5,20 @@ All notable changes to pyupcheck are documented here.
 ## [Unreleased]
 
 ### Added
+- Release notes kept in project docs are read: per-version files (NumPy/SciPy `doc/source/release/X-notes.rst`, pandas `whatsnew/vX.rst`, Pillow `docs/releasenotes/X.rst`, Django `docs/releases/X.txt`), series files (SQLAlchemy `changelog_XY.rst`) and `docs/changelog.*`
+- Changelog parsing understands reST tables ("removed | use instead"), sub-headings inside a "Backwards incompatible" section, nested bullet lists, "``x`` argument of ``f``", several replacements after "in favor of", and conventional aliases (`np.NaN` means `numpy.NaN`)
+- `--deep` follows `from .module import *` re-exports, and flags parameters that lost their default (PyYAML 6 `yaml.load(f)` needs `Loader`)
+- The scanner records from-imported names used without a call: base classes, decorators, arguments (`class Settings(BaseSettings)`)
+- Benchmark grown to 16 cases / 34 breaking lines (Django, SciPy, Matplotlib, PyYAML, Pydantic, Flask patch control)
+
+### Fixed
+- A changelog item that only mentions an API ("Passing dtype to ``DataFrame`` now raises") is reported as a warning, not as the API being removed
+- API names from changelogs are compared case-sensitively (`numpy.NaN` removed is not `numpy.nan`)
+- A bare `import numpy` no longer collects every change in the package as a warning
+
+## Previously merged (unreleased)
+
+### Added
 - Accuracy benchmark (`benchmarks/`, `make bench`): real upgrades with known breaks, scored for recall and precision. Runs weekly in CI
 - `--deep` sees names served by a module `__getattr__` (pandas `Int64Index`, Pillow `Image.ANTIALIAS`) and reports them when they disappear
 - `--deep` follows annotated return types: `engine = create_engine(...); engine.execute()` matches changes to `Engine.execute`
