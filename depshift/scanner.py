@@ -325,21 +325,54 @@ def scan_notebook(filepath: str, package_name: PackageNames) -> List[Usage]:
 def scan_directory(directory: str, package_name: PackageNames, exclude_dirs: Optional[Set[str]] = None,
                    include_notebooks: bool = True) -> List[Usage]:
     """Recursively scan a directory for usages of package_name."""
-    default_excludes = {".venv", "venv", "env", ".env", "node_modules", "__pycache__",
-                        ".git", ".tox", ".mypy_cache", ".pytest_cache", "dist", "build",
-                        ".eggs", ".ipynb_checkpoints", ".nox", ".hg", ".svn",
-                        "site-packages", "__pypackages__", ".ruff_cache"}
+    default_excludes = set(DEFAULT_EXCLUDES)
     if exclude_dirs:
         default_excludes = default_excludes | set(exclude_dirs)
     exclude_dirs = default_excludes
 
     usages: List[Usage] = []
+    for fpath in _source_files(directory, exclude_dirs, include_notebooks):
+        if fpath.endswith(".ipynb"):
+            usages.extend(scan_notebook(fpath, package_name))
+        else:
+            usages.extend(scan_file(fpath, package_name))
+    return usages
+
+
+DEFAULT_EXCLUDES = {".venv", "venv", "env", ".env", "node_modules", "__pycache__",
+                    ".git", ".tox", ".mypy_cache", ".pytest_cache", "dist", "build",
+                    ".eggs", ".ipynb_checkpoints", ".nox", ".hg", ".svn",
+                    "site-packages", "__pypackages__", ".ruff_cache"}
+
+
+def _source_files(directory: str, exclude_dirs: Set[str], include_notebooks: bool = True):
     for root, dirs, files in os.walk(directory):
         dirs[:] = [d for d in dirs if d not in exclude_dirs and not d.endswith(".egg-info")]
         for fname in files:
-            fpath = os.path.join(root, fname)
-            if fname.endswith(".py") or fname.endswith(".pyi"):
-                usages.extend(scan_file(fpath, package_name))
-            elif include_notebooks and fname.endswith(".ipynb"):
-                usages.extend(scan_notebook(fpath, package_name))
-    return usages
+            if fname.endswith((".py", ".pyi")) or (include_notebooks and fname.endswith(".ipynb")):
+                yield os.path.join(root, fname)
+
+
+def imported_top_modules(directory: str, exclude_dirs: Optional[Set[str]] = None) -> Set[str]:
+    """Top-level names of every absolute import in the project (``import a.b``
+    and ``from a.b import c`` both give ``a``), plus dotted prefixes so
+    namespace packages (``google.protobuf``) can be matched too."""
+    excludes = DEFAULT_EXCLUDES | set(exclude_dirs or ())
+    found: Set[str] = set()
+    for fpath in _source_files(directory, excludes, include_notebooks=False):
+        try:
+            with open(fpath, encoding="utf-8", errors="replace") as f:
+                tree = ast.parse(f.read())
+        except (SyntaxError, ValueError, OSError):
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                mods = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+                mods = [node.module]
+            else:
+                continue
+            for m in mods:
+                parts = m.split(".")
+                found.update(".".join(parts[:i]) for i in range(1, len(parts) + 1))
+    return found
