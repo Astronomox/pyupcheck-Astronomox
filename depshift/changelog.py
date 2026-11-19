@@ -176,6 +176,9 @@ _PARAM_OF = re.compile(
     r"`{1,2}([a-zA-Z_]\w*)`{1,2}\s+(?:option|param|parameter|argument|arg|kwarg|keyword argument|keyword)s?"
     r"\s+(?:of|to|in|for|from)\s+(?:the\s+)?(?::\w+:)?`{1,2}~?\.?([a-zA-Z_][\w.]*(?:\(\))?)`{1,2}",
     re.IGNORECASE)
+_KEYWORD_FROM = re.compile(
+    r"\b(?:option|param|parameter|argument|arg|kwarg|keyword argument|keyword)s?\s+"
+    r"`{1,2}([a-zA-Z_]\w*)`{1,2}\s+(?:from|of|in|to|for)\b", re.IGNORECASE)
 _PARAM_OWNER = re.compile(
     r"`{1,2}:?(?:\w+:)*`?~?\.?([a-zA-Z_][\w.]*(?:\(\))?)`{1,2}(?:'s)?\s+"
     r"(?:option|param|parameter|argument|arg|kwarg|keyword argument|keyword)s?\b", re.IGNORECASE)
@@ -371,10 +374,16 @@ def _classify_item(line: str, section: Optional[str], version: str) -> List[Chan
     replacement = repl.group(1).rstrip(".") if repl else None
     targets = [a for a in apis if a != replacement] or (apis[:1] if apis else ["unknown"])
     param_of = _PARAM_OF.search(line)
+    kw_from = None if param_of else _KEYWORD_FROM.search(line)
     if param_of:
         # "The ``even`` argument of ``simpson`` has been removed": simpson.even
         targets = [f"{param_of.group(2).rstrip('()')}.{param_of.group(1)}"]
-    owner = None if param_of else _PARAM_OWNER.search(line)
+    elif kw_from:
+        # "Remove keyword ``mangle_dupe_cols`` from ``read_csv`` and ``read_table``"
+        owners = [o for o in _extract_apis(line[kw_from.end():]) if o != kw_from.group(1)]
+        if owners:
+            targets = [f"{o}.{kw_from.group(1)}" for o in owners]
+    owner = None if (param_of or kw_from) else _PARAM_OWNER.search(line)
     if owner:
         # "Removed ``Retry`` options ``method_whitelist``": the parameters are
         # what changed, not ``Retry`` itself

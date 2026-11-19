@@ -162,7 +162,7 @@ These findings are marked `[FACT]` in the output because they come from the real
 
 - AST-based scanning: imports, from-imports, aliases, attribute chains, calls
 - Argument-level analysis: knows which keyword arguments you pass
-- Follows objects: `s = requests.Session(); s.get(...)`, `with ... as s`, and type-annotated parameters
+- Follows objects: `s = requests.Session(); s.get(...)`, `with ... as s`, type-annotated parameters, helper functions that return package objects, attributes on `self`, and chained calls
 - Respects your version constraints and never reports an unchecked package as safe
 - Real API surface diffing in `--deep` mode
 - Jupyter notebook (`.ipynb`) and type stub (`.pyi`) scanning
@@ -176,7 +176,7 @@ These findings are marked `[FACT]` in the output because they come from the real
 
 ## Accuracy
 
-`benchmarks/` holds 16 real upgrades with known breaking changes (Django 4, Flask 3, NumPy 2, pandas 2, Pydantic 2, SQLAlchemy 2, SciPy 1.14, Pillow 10 and more). On the current set, `--deep` catches 100% of breaking lines with no false alarms; changelog-only mode catches 70.6%, also with no false alarms. Run it with `make bench`.
+`benchmarks/` holds 18 real upgrades with known breaking changes (Django 4, Flask 3, NumPy 2, pandas 2, Pydantic 2, SQLAlchemy 2, SciPy 1.14, Pillow 10 and more). On the current set, `--deep` catches 100% of breaking lines with no false alarms; changelog-only mode catches 65.9%, also with no false alarms. Run it with `make bench`.
 
 Changelogs are read from GitHub releases, root CHANGES files, and per-version release notes in project docs (NumPy, SciPy, pandas, Pillow, Django, SQLAlchemy layouts).
 
