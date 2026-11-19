@@ -2,6 +2,28 @@
 
 All notable changes to pyupcheck are documented here.
 
+## [Unreleased]
+
+### Added
+- `--deep` detects new required parameters, parameters that became keyword-only or positional-only, removed module/class constants, and re-exports that can no longer be imported (e.g. Flask 3's `from flask import Markup`)
+- `--deep` suggests where a removed function or class now lives
+- The scanner follows objects: `s = requests.Session(); s.get(verify=False)` resolves to `requests.Session.get`, including `with ... as s` and type-annotated parameters (`def f(s: Optional[requests.Session])`)
+- Changelog parsing understands section headings (Markdown, reST, bold, `Heading:`): bullets under "Breaking changes"/"Removed" count without keywords, "Deprecations" sections are deprecations
+- Findings carry a confidence level and the suggested replacement API when the changelog names one
+- Release tags like `flask-3.0.1`, `release-2.0` and `Version 4.0` are mapped to versions
+- Each result lists which sources could not be read; packages where nothing could be read are reported as NOT CHECKED (terminal, Markdown and HTML) instead of OK
+
+### Fixed
+- An exact pin (`==2.25.0`) no longer stops a dependency from being checked against newer versions
+- The target version respects the project's constraint (`>=2,<3` is never checked against 3.x), skips pre-releases and yanked releases, and is never older than the current version
+- An installed version that falls outside the project's constraint is no longer used as the baseline; an unpinned range uses its lower bound. With no baseline the package is NOT CHECKED rather than compared against `0.0.0`
+- Keyword false positives: "Fixed crash when removing...", "dropdown", "outbreak", "breakpoint" and keyword hits under Bug fixes/Features headings are no longer reported as breaking
+- Changelog entries whose version can't be determined are dropped instead of always being reported
+- GitHub rate limits (403/429) are reported instead of silently yielding "no changes"
+- `--deep` no longer reports a function as removed when it is still importable through a re-export, `__all__`, or a base class
+- `--deep` no longer matches a removed method against a module-level function of the same name (`click.command` vs `Context.command`); constructor changes now match `pkg.Cls(...)` calls
+- `fix` no longer rewrites a pin when no changelog could be read
+
 ## [0.5.0] - 2026-09-25
 
 ### Added

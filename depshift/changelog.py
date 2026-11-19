@@ -14,6 +14,8 @@ class ChangeEntry:
     api: str  # the affected API path, e.g. "requests.get.verify"
     description: str
     version: str  # version where this change happened
+    confidence: str = "medium"  # "high" (explicit section / strong phrase), "medium", "low"
+    replacement: Optional[str] = None  # suggested replacement API, when the text names one
 
 
 PYPI_API = "https://pypi.org/pypi/{package}/json"
@@ -107,6 +109,9 @@ def fetch_github_releases(owner: str, repo: str, token: Optional[str] = None) ->
         url = f"{GITHUB_RELEASES_API.format(owner=owner, repo=repo)}?per_page=50&page={page}"
         resp = httpx.get(url, headers=headers, timeout=15, follow_redirects=True)
         if resp.status_code != 200:
+            if page == 1 and resp.status_code in (401, 403, 429):
+                # rate limited or bad token: say so rather than "no breaking changes"
+                resp.raise_for_status()
             break
         batch = resp.json()
         if not batch:
@@ -118,74 +123,171 @@ def fetch_github_releases(owner: str, repo: str, token: Optional[str] = None) ->
     return releases
 
 
+# headings that classify the bullet points beneath them
+_BREAKING_HEADING = re.compile(
+    r"\b(breaking|backwards?[- ]incompatible|incompatible|removals?|removed|"
+    r"api changes|migration|upgrade notes?)\b", re.IGNORECASE)
+_DEPRECATION_HEADING = re.compile(r"\bdeprecat", re.IGNORECASE)
+_BENIGN_HEADING = re.compile(
+    r"\b(bug ?fix(es)?|fixe[sd]|features?|added|new|enhancements?|improvements?|"
+    r"documentation|docs|internal|misc(ellaneous)?|performance|testing|tests|"
+    r"dependencies|build|ci|chores?|refactor(ing)?)\b", re.IGNORECASE)
+
+_MD_HEADING = re.compile(r"^\s*#{1,6}\s+(.*?)\s*#*\s*$")
+_BOLD_HEADING = re.compile(r"^\s*(?:\*\*|__)(.+?)(?:\*\*|__):?\s*$")
+_RST_UNDERLINE = re.compile(r"^\s*([=\-~^\"'`#*+])\1{2,}\s*$")
+_COLON_HEADING = re.compile(r"^\s*([A-Z][\w /&-]{2,40}):\s*$")
+
+_BREAKING_PATTERNS = [
+    (re.compile(r"\bremov(e|ed|es|ing|al)\b", re.IGNORECASE), "medium"),
+    (re.compile(r"\bdelet(e|ed|es|ing)\b", re.IGNORECASE), "low"),
+    (re.compile(r"\bdrop(ped|s|ping)?\s+(support|the|deprecated|python|compat)", re.IGNORECASE), "medium"),
+    (re.compile(r"\bbreaking\s+change", re.IGNORECASE), "high"),
+    (re.compile(r"\bbackwards?[- ]?incompatible", re.IGNORECASE), "high"),
+    (re.compile(r"\bno\s+longer\s+(support|available|accept|exist|provide|export)", re.IGNORECASE), "high"),
+    (re.compile(r"\b(now|is)\s+(required|mandatory|keyword[- ]only|positional[- ]only)\b", re.IGNORECASE), "medium"),
+    (re.compile(r"\bbreaks?\b", re.IGNORECASE), "low"),
+]
+_DEPRECATION_PATTERNS = [
+    (re.compile(r"\bdeprecat(e|ed|es|ing|ion)\b", re.IGNORECASE), "medium"),
+    (re.compile(r"\bwill\s+be\s+removed\b", re.IGNORECASE), "high"),
+    (re.compile(r"\buse\s+\S+\s+instead\b", re.IGNORECASE), "low"),
+]
+_RENAME_PATTERNS = [
+    (re.compile(r"\brenam(e|ed|es|ing)\b", re.IGNORECASE), "medium"),
+    (re.compile(r"\bmoved?\s+(to|from|into)\b", re.IGNORECASE), "low"),
+]
+# lines that describe a fix, not an API change ("Fixed crash when removing items")
+_FIX_LINE = re.compile(r"^(fix(e[sd])?|fixing|correct(ed|s)?|resolve[sd]?|prevent(ed|s)?)\b", re.IGNORECASE)
+
+_API_BACKTICK = re.compile(r"`{1,2}:?(?:\w+:)*`?~?\.?([a-zA-Z_][\w.]*(?:\(\))?)`{1,2}")
+_API_DOTTED = re.compile(r"(?:^|[\s(])([a-zA-Z_]\w*\.[a-zA-Z_][\w.]*(?:\(\))?)")
+_REPLACEMENT = re.compile(
+    r"(?:use|in favou?r of|replaced (?:by|with)|renamed to|moved to|instead,? use|"
+    r"(?:renam|mov)\w*\s+`{0,2}[\w.:~]+`{0,2}\s+(?:to|into))\s+"
+    r"`{0,2}:?(?:\w+:)*`?~?\.?([a-zA-Z_][\w.]*)", re.IGNORECASE)
+
+_RANK = {"low": 0, "medium": 1, "high": 2}
+
+
+def _heading_text(lines: List[str], i: int) -> Optional[str]:
+    """If lines[i] is a heading, return its text."""
+    line = lines[i]
+    m = _MD_HEADING.match(line) or _BOLD_HEADING.match(line) or _COLON_HEADING.match(line)
+    if m:
+        return m.group(1)
+    if i + 1 < len(lines) and line.strip() and _RST_UNDERLINE.match(lines[i + 1]) \
+            and not line.lstrip().startswith(("-", "*", "+")):
+        return line.strip()
+    return None
+
+
+def _section_kind(heading: str) -> Optional[str]:
+    if _BREAKING_HEADING.search(heading):
+        return "removed"
+    if _DEPRECATION_HEADING.search(heading):
+        return "deprecated"
+    if _BENIGN_HEADING.search(heading):
+        return "benign"
+    return None
+
+
+def _extract_apis(line: str) -> List[str]:
+    apis = [a.rstrip("()").strip(".") for a in _API_BACKTICK.findall(line)]
+    if not apis:
+        apis = [a.rstrip("()").strip(".") for a in _API_DOTTED.findall(line)]
+    # skip things that are clearly not APIs: versions, file names, urls
+    return [a for a in apis if a and not re.match(r"^v?\d", a)
+            and not re.search(r"\.(py|txt|md|rst|cfg|toml|json|yml|yaml|html)$", a)]
+
+
 def parse_changelog_text(text: str, version: str) -> List[ChangeEntry]:
-    """Parse a changelog/release notes body for breaking/deprecated changes."""
+    """Parse a changelog/release notes body for breaking/deprecated changes.
+
+    Understands section headings (Markdown, reST, bold, ``Heading:``): bullets
+    under "Breaking changes" / "Removed" are breaking even without keywords,
+    bullets under "Deprecations" are deprecations, and keyword matches under
+    benign sections (bug fixes, features, docs) are discarded unless the
+    wording is unambiguous.
+    """
     entries: List[ChangeEntry] = []
     if not text:
         return entries
 
     lines = text.splitlines()
+    section: Optional[str] = None
+    skip_next = False
 
-    # patterns that signal breaking/deprecation info
-    breaking_patterns = [
-        re.compile(r"remov(ed?|ing|al)\b", re.IGNORECASE),
-        re.compile(r"delet(ed?|ing)\b", re.IGNORECASE),
-        re.compile(r"drop(ped|ping)?\b", re.IGNORECASE),
-        re.compile(r"break(ing|s)?\b", re.IGNORECASE),
-        re.compile(r"backwards?\s*incompatible", re.IGNORECASE),
-        re.compile(r"no\s*longer\s*(support|available|accept)", re.IGNORECASE),
-    ]
-    deprecation_patterns = [
-        re.compile(r"deprecat(ed?|ing|ion)\b", re.IGNORECASE),
-        re.compile(r"will\s*be\s*removed", re.IGNORECASE),
-        re.compile(r"use\s+\S+\s+instead", re.IGNORECASE),
-    ]
-    rename_patterns = [
-        re.compile(r"renam(ed?|ing)\b", re.IGNORECASE),
-        re.compile(r"moved?\s*(to|from)\b", re.IGNORECASE),
-    ]
-
-    # try to extract python identifiers from a line
-    api_pattern = re.compile(r"`([a-zA-Z_][\w.]*(?:\(\))?)`")
-    fallback_api_pattern = re.compile(r"(?:^|\s)([a-zA-Z_][\w]*\.[a-zA-Z_][\w.]*(?:\(\))?)")
-
-    for line in lines:
-        line_stripped = line.strip().lstrip("-*• ")
-        if not line_stripped:
+    for i, raw in enumerate(lines):
+        if skip_next:
+            skip_next = False
+            continue
+        heading = _heading_text(lines, i)
+        if heading is not None:
+            section = _section_kind(heading)
+            if i + 1 < len(lines) and _RST_UNDERLINE.match(lines[i + 1]):
+                skip_next = True
+            continue
+        if _RST_UNDERLINE.match(raw):
             continue
 
-        kind = None
-        for p in breaking_patterns:
-            if p.search(line_stripped):
-                kind = "removed"
+        line = raw.strip().lstrip("-*•+ ").strip()
+        if not line:
+            continue
+
+        kind, conf = None, "low"
+        for patterns, k in ((_BREAKING_PATTERNS, "removed"),
+                            (_DEPRECATION_PATTERNS, "deprecated"),
+                            (_RENAME_PATTERNS, "renamed")):
+            for p, c in patterns:
+                if p.search(line):
+                    kind, conf = k, c
+                    break
+            if kind:
                 break
-        if not kind:
-            for p in deprecation_patterns:
-                if p.search(line_stripped):
-                    kind = "deprecated"
-                    break
-        if not kind:
-            for p in rename_patterns:
-                if p.search(line_stripped):
-                    kind = "renamed"
-                    break
 
-        if not kind:
+        apis = _extract_apis(line)
+
+        if section == "removed":
+            # everything under a "Breaking changes" heading breaks, except explicit
+            # deprecations; a rename there has no compatibility alias
+            if kind == "deprecated" and not re.search(r"\bremov", line, re.IGNORECASE):
+                pass
+            elif kind == "renamed":
+                kind = "changed"
+            else:
+                kind = "removed"
+            conf = "high"
+        elif section == "deprecated":
+            kind = "removed" if kind == "removed" and re.search(r"\bremoved\b", line, re.IGNORECASE) \
+                and not re.search(r"will be removed", line, re.IGNORECASE) else "deprecated"
+            conf = "high"
+        elif kind is None:
             continue
+        else:
+            fix_line = bool(_FIX_LINE.match(line))
+            if section == "benign" or fix_line:
+                # keyword hits under "Bug fixes"/"Features" are mostly noise
+                # ("Fixed crash when removing an item"); keep only strong wording
+                if _RANK[conf] < 2:
+                    continue
+                conf = "medium"
+            if not apis:
+                conf = "low"
 
-        # extract API references
-        apis = api_pattern.findall(line_stripped)
-        if not apis:
-            apis = fallback_api_pattern.findall(line_stripped)
-
+        repl = _REPLACEMENT.search(line)
+        replacement = repl.group(1).rstrip(".") if repl else None
         api_str = apis[0] if apis else "unknown"
-        api_str = api_str.rstrip("()")
+        if replacement and api_str == replacement and len(apis) > 1:
+            api_str = next(a for a in apis if a != replacement)
 
         entries.append(ChangeEntry(
             kind=kind,
             api=api_str,
-            description=line_stripped[:200],
+            description=line[:200],
             version=version,
+            confidence=conf,
+            replacement=replacement if replacement != api_str else None,
         ))
 
     return entries
@@ -248,71 +350,131 @@ def parse_sectioned_changelog(text: str, package: str) -> List[ChangeEntry]:
     return entries
 
 
-def get_changes_between(package: str, current_version: str, target_version: str,
-                        github_token: Optional[str] = None) -> List[ChangeEntry]:
-    """Get all breaking/deprecated changes between two versions."""
-    pypi_info = get_pypi_info(package)
+_TAG_VERSION = re.compile(r"(?<![\w.])v?(\d+(?:\.\d+)+(?:[._-]?(?:a|b|rc|alpha|beta|post|dev)\.?\d*)?)(?![\w])",
+                          re.IGNORECASE)
 
-    repo_info = extract_github_repo(pypi_info)
+
+def version_from_tag(tag: str, package: str = "") -> Optional[str]:
+    """Pull a PEP 440 version out of a release tag.
+
+    Handles ``v2.0.1``, ``2.0``, ``flask-3.0.1``, ``release-2.0``,
+    ``pkg==1.2`` and ``Version 4.0``. Returns None for tags with no version.
+    """
+    from packaging.version import Version, InvalidVersion
+    tag = (tag or "").strip()
+    if not tag:
+        return None
+    for m in _TAG_VERSION.finditer(tag):
+        try:
+            return str(Version(m.group(1)))
+        except InvalidVersion:
+            continue
+    return None
+
+
+@dataclass
+class ChangeReport:
+    """Changelog changes plus an honest account of where they came from."""
+    entries: List[ChangeEntry]
+    sources_ok: List[str]
+    sources_failed: List[str]
+    skipped_unversioned: int = 0
+
+    @property
+    def checked(self) -> bool:
+        """True if at least one source was actually read."""
+        return bool(self.sources_ok)
+
+
+def collect_changes(package: str, current_version: str, target_version: str,
+                    github_token: Optional[str] = None) -> ChangeReport:
+    """Get breaking/deprecated changes between two versions, reporting which
+    sources worked and which failed instead of silently returning nothing."""
+    ok: List[str] = []
+    failed: List[str] = []
     all_entries: List[ChangeEntry] = []
 
+    try:
+        pypi_info = get_pypi_info(package)
+    except Exception as e:
+        return ChangeReport([], [], [f"PyPI metadata ({_short_err(e)})"])
+
+    repo_info = extract_github_repo(pypi_info)
     if repo_info:
         owner, repo = repo_info
-
-        # try github releases API first
         try:
             releases = fetch_github_releases(owner, repo, token=github_token)
+            if releases:
+                ok.append("GitHub releases")
             for rel in releases:
-                tag = rel.get("tag_name", "")
+                tag = rel.get("tag_name", "") or rel.get("name", "")
+                ver = version_from_tag(tag, package) or version_from_tag(rel.get("name", ""), package)
                 body = rel.get("body", "") or ""
-                ver = tag.lstrip("vV")
-                entries = parse_changelog_text(body, ver)
-                all_entries.extend(entries)
-        except Exception:
-            pass
+                if ver is None:
+                    # sectioned bodies still carry their own version headers
+                    all_entries.extend(parse_sectioned_changelog(body, package))
+                    continue
+                all_entries.extend(parse_changelog_text(body, ver))
+        except Exception as e:
+            failed.append(f"GitHub releases ({_short_err(e)})")
 
-        # if releases gave us nothing, try raw changelog file
         if not all_entries:
             try:
                 raw = fetch_raw_changelog(owner, repo, token=github_token)
                 if raw:
+                    ok.append("changelog file")
                     all_entries = parse_sectioned_changelog(raw, package)
-            except Exception:
-                pass
+            except Exception as e:
+                failed.append(f"changelog file ({_short_err(e)})")
 
-    # also check the PyPI description for the target version
     try:
         ver_info = get_pypi_version_info(package, target_version)
         desc = ver_info.get("info", {}).get("description", "")
+        ok.append("PyPI description")
         if desc:
-            entries = parse_sectioned_changelog(desc, package)
-            all_entries.extend(entries)
-    except Exception:
-        pass
+            all_entries.extend(parse_sectioned_changelog(desc, package))
+    except Exception as e:
+        failed.append(f"PyPI description ({_short_err(e)})")
 
-    # filter to only changes relevant between current and target
     from packaging.version import Version, InvalidVersion
 
     try:
         v_current = Version(current_version)
         v_target = Version(target_version)
     except InvalidVersion:
-        return all_entries
+        failed.append(f"version range ({current_version} -> {target_version} not PEP 440)")
+        return ChangeReport([], ok, failed)
 
-    filtered = []
+    filtered: List[ChangeEntry] = []
     seen = set()
+    skipped = 0
     for entry in all_entries:
         try:
             v_entry = Version(entry.version)
-            if v_current < v_entry <= v_target:
-                key = (entry.kind, entry.api, entry.version)
-                if key not in seen:
-                    seen.add(key)
-                    filtered.append(entry)
         except InvalidVersion:
-            key = (entry.kind, entry.api, entry.version)
+            # unknown version: we can't tell if it's in range, so it's noise
+            skipped += 1
+            continue
+        if v_current < v_entry <= v_target:
+            key = (entry.kind, entry.api, entry.description)
             if key not in seen:
                 seen.add(key)
                 filtered.append(entry)
 
-    return filtered
+    return ChangeReport(filtered, ok, failed, skipped)
+
+
+def _short_err(e: Exception) -> str:
+    if isinstance(e, httpx.HTTPStatusError):
+        return f"HTTP {e.response.status_code}"
+    if isinstance(e, httpx.TimeoutException):
+        return "timeout"
+    if isinstance(e, httpx.HTTPError):
+        return "network error"
+    return type(e).__name__
+
+
+def get_changes_between(package: str, current_version: str, target_version: str,
+                        github_token: Optional[str] = None) -> List[ChangeEntry]:
+    """Get all breaking/deprecated changes between two versions."""
+    return collect_changes(package, current_version, target_version, github_token).entries

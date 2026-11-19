@@ -28,9 +28,15 @@ def render_markdown(results: List[dict]) -> str:
     lines.append("")
 
     for r in results:
-        status = "BREAKING" if r["breaking_count"] else ("DEPRECATED" if r["deprecated_count"] else "OK")
-        lines.append(f"## {r['package']} {r['current_version']} -> {r['target_version']} [{status}]")
+        status = "BREAKING" if r["breaking_count"] else ("DEPRECATED" if r["deprecated_count"] else
+                                                       ("NOT CHECKED" if r.get("unchecked") else "OK"))
+        lines.append(f"## {r['package']} {r.get('current_version') or '?'} -> {r['target_version']} [{status}]")
         lines.append("")
+        for w in r.get("warnings", []):
+            lines.append(f"> Note: {w}")
+            lines.append("")
+        if r.get("unchecked") and not r["risks"]:
+            continue
         if not r["risks"]:
             lines.append(f"All {r['safe_count']} usages safe.")
             lines.append("")
@@ -41,6 +47,8 @@ def render_markdown(results: List[dict]) -> str:
             loc = f"{_rel(risk['file'])}:{risk['line']}"
             code = risk["code"].replace("|", "\\|")[:60]
             desc = risk["change_description"].replace("|", "\\|")[:80]
+            if risk.get("replacement"):
+                desc += f" (use `{risk['replacement']}`)"
             lines.append(f"| {risk['severity']} | `{loc}` | `{code}` | {desc} |")
         lines.append("")
         lines.append(f"{r['safe_count']} other usages safe.")
@@ -77,6 +85,8 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     vertical-align: middle; }}
   .b-breaking {{ background: var(--breaking); color: #fff; }}
   .b-deprecated {{ background: var(--deprecated); color: #000; }}
+  .b-unchecked {{ background: #b46ee6; color: #fff; }}
+  .note {{ color: #b46ee6; font-size: 13px; margin-top: 8px; }}
   .b-ok {{ background: var(--ok); color: #fff; }}
   table {{ width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }}
   th, td {{ text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border);
@@ -110,6 +120,8 @@ def render_html(results: List[dict]) -> str:
             badge = '<span class="badge b-breaking">BREAKING</span>'
         elif r["deprecated_count"]:
             badge = '<span class="badge b-deprecated">DEPRECATED</span>'
+        elif r.get("unchecked"):
+            badge = '<span class="badge b-unchecked">NOT CHECKED</span>'
         else:
             badge = '<span class="badge b-ok">OK</span>'
 
@@ -118,6 +130,8 @@ def render_html(results: List[dict]) -> str:
             loc = html.escape(f"{_rel(risk['file'])}:{risk['line']}")
             code = html.escape(risk["code"][:70])
             desc = html.escape(risk["change_description"][:110])
+            if risk.get("replacement"):
+                desc += f' &rarr; use <code>{html.escape(risk["replacement"])}</code>' 
             sev = risk["severity"]
             rows += (f'<tr><td class="sev-{sev}">{sev}</td>'
                      f'<td><code>{loc}</code></td>'
@@ -129,8 +143,10 @@ def render_html(results: List[dict]) -> str:
 
         pkg_blocks.append(
             f'<div class="pkg"><h2>{html.escape(r["package"])} '
-            f'{html.escape(r["current_version"])} &rarr; {html.escape(r["target_version"])}{badge}</h2>'
-            f'{table}<div class="safe">{r["safe_count"]} usages safe</div></div>'
+            f'{html.escape(r.get("current_version") or "?")} &rarr; {html.escape(r["target_version"])}{badge}</h2>'
+            f'{table}'
+            + "".join(f'<div class="note">Note: {html.escape(w)}</div>' for w in r.get("warnings", []))
+            + f'<div class="safe">{r["safe_count"]} usages safe</div></div>'
         )
 
     return _HTML_TEMPLATE.format(

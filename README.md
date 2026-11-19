@@ -148,6 +148,11 @@ In deep mode, pyupcheck downloads both versions of the package, extracts their a
 - A function you call was removed
 - A class you import no longer exists
 - A keyword argument you pass (like `verify=False`) was removed from a function signature
+- A function now requires an argument you don't pass, or a parameter you pass positionally became keyword-only
+- A name you import from the package is no longer exported there (`from flask import Markup` in Flask 3)
+- A constant you use was removed
+
+Functions that moved but are still importable from the same place (re-exports, `__all__`, base classes) are not reported.
 
 These findings are marked `[FACT]` in the output because they come from the real code, not changelog prose. Deep mode is slower (it downloads and parses packages) but far more accurate.
 
@@ -155,6 +160,8 @@ These findings are marked `[FACT]` in the output because they come from the real
 
 - AST-based scanning: imports, from-imports, aliases, attribute chains, calls
 - Argument-level analysis: knows which keyword arguments you pass
+- Follows objects: `s = requests.Session(); s.get(...)`, `with ... as s`, and type-annotated parameters
+- Respects your version constraints and never reports an unchecked package as safe
 - Real API surface diffing in `--deep` mode
 - Jupyter notebook (`.ipynb`) and type stub (`.pyi`) scanning
 - Dynamic import detection (`importlib.import_module`, `__import__`)
