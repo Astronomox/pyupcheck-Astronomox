@@ -43,6 +43,8 @@ pyupcheck check-all --deep          # fact-based API diff for every dependency
 pyupcheck check-all --format html -o report.html
 ```
 
+If a lockfile is present (`uv.lock`, `poetry.lock`, `pdm.lock`, `pylock.toml`, `Pipfile.lock`), the locked versions are used as the starting point. Packages your code imports that are only in the lockfile because another dependency pulls them in (`urllib3` via `requests`) are checked too and marked **undeclared**: their version can change without you upgrading anything.
+
 Install names and import names don't have to match: `pyyaml` is scanned as `yaml`, `Pillow` as `PIL`, `scikit-learn` as `sklearn`, `protobuf` as `google.protobuf`. Names come from the installed package's metadata when available, then a built-in table of known mismatches.
 
 ### `outdated` - list stale dependencies
@@ -207,7 +209,7 @@ It cleans old builds, builds the package, uploads to PyPI, installs the new vers
 **Things that would genuinely improve the tool:**
 
 - Better changelog parsing for packages that use unconventional formats (Sphinx-based changelogs, HISTORY files)
-- `pip-tools` and `conda` lockfile support
+- `conda` lockfile support
 - A `--watch` mode that monitors your lockfile for changes and alerts on risky upgrades
 - Test coverage
 
@@ -271,7 +273,7 @@ No. pyupcheck needs to download the package from PyPI. Pre-release or private pa
 Items being actively considered for future versions:
 
 - `--watch` mode: monitor your lockfile and alert when a new version would break your code
-- pip-tools and conda-lock support
+- conda-lock support
 - VS Code extension: inline warnings on imports
 - Jupyter notebook deep scan (currently scans cells for imports, not API calls inside them)
 - `pyupcheck explain` with AI-assisted migration guidance

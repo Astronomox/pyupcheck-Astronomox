@@ -30,6 +30,8 @@ from depshift.report import render_markdown, render_html
 from depshift.apisurface import get_api_changes, get_return_types
 from depshift.precise import match_precise
 from depshift.names import import_names_for
+from depshift.lockfiles import locked_version, locked_versions
+from depshift.scanner import imported_top_modules
 
 
 console = Console()
@@ -159,6 +161,30 @@ def _lower_bound(spec: Optional[str]) -> Optional[str]:
     return None
 
 
+UNDECLARED = "(imported, not declared)"
+
+
+def _undeclared_imports(directory: str, deps, locks, ignored, exclude_dirs):
+    """Locked packages the code imports directly without declaring them.
+
+    They arrive transitively (``urllib3`` via ``requests``), so their version
+    can change without you choosing to upgrade them, and they break the same.
+    """
+    from depshift.deps import Dependency
+    if not locks:
+        return []
+    declared = {d.name for d in deps}
+    imported = imported_top_modules(directory, exclude_dirs)
+    out = []
+    for name, lock in sorted(locks.items()):
+        if name in declared or name in ignored:
+            continue
+        if any(n in imported for n in import_names_for(name)):
+            out.append(Dependency(name=name, pinned_version=lock.version, raw=name,
+                                  source=f"{lock.source} {UNDECLARED}"))
+    return out
+
+
 def _pinned_version(directory: str, package: str) -> Optional[str]:
     """The ==pinned version of package in the project's dependency files, if any."""
     target = normalize_name(package)
@@ -171,20 +197,27 @@ def _pinned_version(directory: str, package: str) -> Optional[str]:
 def _run_single_check(package: str, target_version: Optional[str], directory: str,
                       github_token: Optional[str], cfg, suppress_errors: bool = False,
                       since: Optional[str] = None, deep: bool = False,
-                      pinned: Optional[str] = None, spec: Optional[str] = None) -> Optional[dict]:
-    installed = get_installed_version(package)
-    current_source = "installed"
-    if installed and spec and not _satisfies(installed, spec):
-        # whatever is installed here isn't what the project uses
-        installed = None
+                      pinned: Optional[str] = None, spec: Optional[str] = None,
+                      locked: Optional[str] = "auto") -> Optional[dict]:
+    # Baseline, most trustworthy first: the lockfile (what the project runs),
+    # an exact pin, what's installed here (if it fits the project's
+    # constraint), then the lowest version the constraint allows.
+    if locked == "auto":
+        locked = locked_version(directory, package)
+    installed, current_source = None, None
+    if locked:
+        installed, current_source = locked, "lockfile"
     if not installed:
-        # not installed here (e.g. CI without deps): use the version pinned in the project
         installed = pinned or _pinned_version(directory, package)
-        current_source = "pinned"
+        current_source = "pinned" if installed else None
+    if not installed:
+        here = get_installed_version(package)
+        if here and not (spec and not _satisfies(here, spec)):
+            installed, current_source = here, "installed"
     if not installed and spec:
         # unpinned range: the oldest version it allows is the riskiest baseline
         installed = _lower_bound(spec)
-        current_source = "constraint lower bound"
+        current_source = "constraint lower bound" if installed else None
 
     if not target_version:
         try:
@@ -368,7 +401,9 @@ def _print_terminal_result(r: dict, quiet: bool):
             console.print(f"    [dim]{w}[/]")
         return
 
-    header = f"[bold]{r['package']}[/] {r['current_version']} -> {r['target_version']}"
+    via = " [dim](locked)[/]" if r.get("current_source") == "lockfile" else ""
+    undeclared = " [magenta](undeclared)[/]" if r.get("undeclared") else ""
+    header = f"[bold]{r['package']}[/]{undeclared} {r['current_version']}{via} -> {r['target_version']}"
     if r["breaking_count"]:
         console.print(f"{header}  [red bold]{r['breaking_count']} BREAKING[/]")
     elif r["deprecated_count"]:
@@ -492,6 +527,8 @@ def check_all(directory, github_token, fmt, output, fail_on, min_severity, exclu
     deps = discover_dependencies(directory)
     ignored = {normalize_name(p) for p in cfg.ignore_packages}
     deps = [d for d in deps if d.name not in ignored]
+    locks = locked_versions(directory)
+    deps += _undeclared_imports(directory, deps, locks, ignored, cfg.exclude_dirs)
 
     if not deps:
         console.print("[yellow]No dependency files found[/] (looked for requirements*.txt, "
@@ -515,10 +552,17 @@ def check_all(directory, github_token, fmt, output, fail_on, min_severity, exclu
         task = progress.add_task("Checking dependencies...", total=len(deps))
         for dep in deps:
             progress.update(task, description=f"Checking [bold]{dep.name}[/]...")
+            lock = locks.get(dep.name)
             r = _run_single_check(dep.name, None, directory, github_token, cfg,
                                   suppress_errors=True, since=since, pinned=dep.pinned_version,
-                                  deep=deep, spec=specifier_of(dep.raw))
+                                  deep=deep, spec=specifier_of(dep.raw),
+                                  locked=lock.version if lock else None)
             if r:
+                if dep.source.endswith(UNDECLARED):
+                    r["undeclared"] = True
+                    r.setdefault("warnings", []).append(
+                        f"imported by your code but not declared as a dependency "
+                        f"(only present via {lock.source if lock else 'another package'})")
                 results.append(r)
             progress.advance(task)
 
@@ -771,7 +815,8 @@ def outdated(directory, no_cache):
 
     table = Table(title="Outdated dependencies")
     table.add_column("Package", style="cyan")
-    table.add_column("Installed", style="dim")
+    locks = locked_versions(directory)
+    table.add_column("Locked" if locks else "Installed", style="dim")
     table.add_column("Latest", style="green")
     table.add_column("Status")
 
@@ -781,7 +826,8 @@ def outdated(directory, no_cache):
         task = progress.add_task("Checking versions...", total=len(deps))
         for dep in deps:
             progress.update(task, description=f"Checking [bold]{dep.name}[/]...")
-            installed = get_installed_version(dep.name)
+            lock = locks.get(dep.name)
+            installed = lock.version if lock else (dep.pinned_version or get_installed_version(dep.name))
             try:
                 latest = get_current_version(dep.name)
             except Exception:

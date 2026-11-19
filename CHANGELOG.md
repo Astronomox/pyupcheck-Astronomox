@@ -5,38 +5,19 @@ All notable changes to pyupcheck are documented here.
 ## [Unreleased]
 
 ### Added
+- Lockfiles: `uv.lock`, `poetry.lock`, `pdm.lock`, `pylock.toml` / `pylock.*.toml` (PEP 751) and `Pipfile.lock`. The locked version is the baseline for `check`, `check-all` and `outdated`
+- `check-all` also checks packages your code imports that are only in the lockfile because another dependency pulls them in (e.g. `urllib3` via `requests`), marked "undeclared"
 - Release notes kept in project docs are read: per-version files (NumPy/SciPy `doc/source/release/X-notes.rst`, pandas `whatsnew/vX.rst`, Pillow `docs/releasenotes/X.rst`, Django `docs/releases/X.txt`), series files (SQLAlchemy `changelog_XY.rst`) and `docs/changelog.*`
 - Changelog parsing understands reST tables ("removed | use instead"), sub-headings inside a "Backwards incompatible" section, nested bullet lists, "``x`` argument of ``f``", several replacements after "in favor of", and conventional aliases (`np.NaN` means `numpy.NaN`)
 - `--deep` follows `from .module import *` re-exports, and flags parameters that lost their default (PyYAML 6 `yaml.load(f)` needs `Loader`)
 - The scanner records from-imported names used without a call: base classes, decorators, arguments (`class Settings(BaseSettings)`)
 - Benchmark grown to 16 cases / 34 breaking lines (Django, SciPy, Matplotlib, PyYAML, Pydantic, Flask patch control)
-
-### Fixed
-- A changelog item that only mentions an API ("Passing dtype to ``DataFrame`` now raises") is reported as a warning, not as the API being removed
-- API names from changelogs are compared case-sensitively (`numpy.NaN` removed is not `numpy.nan`)
-- A bare `import numpy` no longer collects every change in the package as a warning
-
-## Previously merged (unreleased)
-
-### Added
 - Accuracy benchmark (`benchmarks/`, `make bench`): real upgrades with known breaks, scored for recall and precision. Runs weekly in CI
 - `--deep` sees names served by a module `__getattr__` (pandas `Int64Index`, Pillow `Image.ANTIALIAS`) and reports them when they disappear
 - `--deep` follows annotated return types: `engine = create_engine(...); engine.execute()` matches changes to `Engine.execute`
 - Changelog parsing treats a wrapped bullet as one item, reports every API an item names, and understands "``X`` options ``Y``" as parameters of `X`
 - Changelog matching checks the keyword arguments you pass (`Retry(method_whitelist=...)`)
 - "Remove previously deprecated code" entries promote every earlier deprecation to a removal
-
-### Fixed
-- An invalid or expired `GITHUB_TOKEN` no longer hides public changelogs (GitHub answers 404 for raw files sent with a bad token); requests fall back to anonymous
-- Network failures are no longer cached for 24h as "no changelog" / "no downloadable files"
-- `--deep` works for yanked releases when that exact version is requested
-- `--deep` no longer flags a name that is still available at the path you use (`np.nan` after NumPy 2 moved `numpy.core`)
-- A changelog entry naming the package itself ("import it from ``flask``") no longer flags every usage
-
-### Changed
-- Requires Python 3.10+ (3.8 and 3.9 are end-of-life and no longer available on CI runners); CI tests 3.10-3.14
-
-### Added
 - `--deep` detects new required parameters, parameters that became keyword-only or positional-only, removed module/class constants, and re-exports that can no longer be imported (e.g. Flask 3's `from flask import Markup`)
 - `--deep` suggests where a removed function or class now lives
 - The scanner follows objects: `s = requests.Session(); s.get(verify=False)` resolves to `requests.Session.get`, including `with ... as s` and type-annotated parameters (`def f(s: Optional[requests.Session])`)
@@ -45,7 +26,19 @@ All notable changes to pyupcheck are documented here.
 - Release tags like `flask-3.0.1`, `release-2.0` and `Version 4.0` are mapped to versions
 - Each result lists which sources could not be read; packages where nothing could be read are reported as NOT CHECKED (terminal, Markdown and HTML) instead of OK
 
+### Changed
+- Baseline order is now: lockfile, exact pin, installed version (if it satisfies the project's constraint), constraint lower bound. Previously the installed version came first
+- Requires Python 3.10+ (3.8 and 3.9 are end-of-life and no longer available on CI runners); CI tests 3.10-3.14
+
 ### Fixed
+- A changelog item that only mentions an API ("Passing dtype to ``DataFrame`` now raises") is reported as a warning, not as the API being removed
+- API names from changelogs are compared case-sensitively (`numpy.NaN` removed is not `numpy.nan`)
+- A bare `import numpy` no longer collects every change in the package as a warning
+- An invalid or expired `GITHUB_TOKEN` no longer hides public changelogs (GitHub answers 404 for raw files sent with a bad token); requests fall back to anonymous
+- Network failures are no longer cached for 24h as "no changelog" / "no downloadable files"
+- `--deep` works for yanked releases when that exact version is requested
+- `--deep` no longer flags a name that is still available at the path you use (`np.nan` after NumPy 2 moved `numpy.core`)
+- A changelog entry naming the package itself ("import it from ``flask``") no longer flags every usage
 - An exact pin (`==2.25.0`) no longer stops a dependency from being checked against newer versions
 - The target version respects the project's constraint (`>=2,<3` is never checked against 3.x), skips pre-releases and yanked releases, and is never older than the current version
 - An installed version that falls outside the project's constraint is no longer used as the baseline; an unpinned range uses its lower bound. With no baseline the package is NOT CHECKED rather than compared against `0.0.0`
