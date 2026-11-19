@@ -108,6 +108,10 @@ def fetch_github_releases(owner: str, repo: str, token: Optional[str] = None) ->
     while page <= 5:  # cap at 5 pages
         url = f"{GITHUB_RELEASES_API.format(owner=owner, repo=repo)}?per_page=50&page={page}"
         resp = httpx.get(url, headers=headers, timeout=15, follow_redirects=True)
+        if resp.status_code in (401, 403) and "Authorization" in headers:
+            # an expired/invalid token must not block a public repo: retry anonymously
+            headers.pop("Authorization")
+            resp = httpx.get(url, headers=headers, timeout=15, follow_redirects=True)
         if resp.status_code != 200:
             if page == 1 and resp.status_code in (401, 403, 429):
                 # rate limited or bad token: say so rather than "no breaking changes"
@@ -163,11 +167,14 @@ _FIX_LINE = re.compile(r"^(fix(e[sd])?|fixing|correct(ed|s)?|resolve[sd]?|preven
 _API_BACKTICK = re.compile(r"`{1,2}:?(?:\w+:)*`?~?\.?([a-zA-Z_][\w.]*(?:\(\))?)`{1,2}")
 _API_DOTTED = re.compile(r"(?:^|[\s(])([a-zA-Z_]\w*\.[a-zA-Z_][\w.]*(?:\(\))?)")
 _REPLACEMENT = re.compile(
-    r"(?:use|in favou?r of|replaced (?:by|with)|renamed to|moved to|instead,? use|"
+    r"(?:use|in favou?r of|replaced (?:by|with)|superseded by|renamed to|moved to|instead,? use|"
     r"(?:renam|mov)\w*\s+`{0,2}[\w.:~]+`{0,2}\s+(?:to|into))\s+"
     r"`{0,2}:?(?:\w+:)*`?~?\.?([a-zA-Z_][\w.]*)", re.IGNORECASE)
 
 _RANK = {"low": 0, "medium": 1, "high": 2}
+_PARAM_OWNER = re.compile(
+    r"`{1,2}:?(?:\w+:)*`?~?\.?([a-zA-Z_][\w.]*(?:\(\))?)`{1,2}(?:'s)?\s+"
+    r"(?:option|param|parameter|argument|arg|kwarg|keyword argument|keyword)s?\b", re.IGNORECASE)
 
 
 def _heading_text(lines: List[str], i: int) -> Optional[str]:
@@ -201,6 +208,122 @@ def _extract_apis(line: str) -> List[str]:
             and not re.search(r"\.(py|txt|md|rst|cfg|toml|json|yml|yaml|html)$", a)]
 
 
+_BULLET = re.compile(r"^(\s*)(?:[-*\u2022+]|\d+[.)])\s+")
+
+
+def _items(text: str) -> List[Tuple[Optional[str], str]]:
+    """Split release notes into (section kind, item text) pairs.
+
+    A bullet plus its wrapped continuation lines is one item; so is a plain
+    paragraph. Headings set the section for the items below them.
+    """
+    lines = text.splitlines()
+    out: List[Tuple[Optional[str], str]] = []
+    section: Optional[str] = None
+    cur: List[str] = []
+    cur_section: Optional[str] = None
+
+    def flush():
+        if cur:
+            out.append((cur_section, " ".join(cur)))
+            cur.clear()
+
+    skip_next = False
+    for i, raw in enumerate(lines):
+        if skip_next:
+            skip_next = False
+            continue
+        heading = _heading_text(lines, i)
+        if heading is not None:
+            flush()
+            section = _section_kind(heading)
+            if i + 1 < len(lines) and _RST_UNDERLINE.match(lines[i + 1]):
+                skip_next = True
+            continue
+        if _RST_UNDERLINE.match(raw) or not raw.strip():
+            flush()
+            continue
+        if _BULLET.match(raw):
+            flush()
+            cur_section = section
+            cur.append(_BULLET.sub("", raw, count=1).strip())
+        else:
+            if not cur:
+                cur_section = section
+            cur.append(raw.strip())
+    flush()
+    return out
+
+
+def _classify_item(line: str, section: Optional[str], version: str) -> List[ChangeEntry]:
+    """Turn one release-note item into change entries (one per API it names)."""
+    kind, conf = None, "low"
+    for patterns, k in ((_BREAKING_PATTERNS, "removed"),
+                        (_DEPRECATION_PATTERNS, "deprecated"),
+                        (_RENAME_PATTERNS, "renamed")):
+        for p, c in patterns:
+            if p.search(line):
+                kind, conf = k, c
+                break
+        if kind:
+            break
+
+    apis = _extract_apis(line)
+
+    if section == "removed":
+        # everything under a "Breaking changes" heading breaks, except explicit
+        # deprecations; a rename there has no compatibility alias
+        if kind == "deprecated" and not re.search(r"\bremov", line, re.IGNORECASE):
+            pass
+        elif kind == "renamed":
+            kind = "changed"
+        else:
+            kind = "removed"
+        conf = "high"
+    elif section == "deprecated":
+        kind = "removed" if kind == "removed" and re.search(r"\bremoved\b", line, re.IGNORECASE) \
+            and not re.search(r"will be removed", line, re.IGNORECASE) else "deprecated"
+        conf = "high"
+    elif kind is None:
+        return []
+    else:
+        if section == "benign" or _FIX_LINE.match(line):
+            # keyword hits under "Bug fixes"/"Features" are mostly noise
+            # ("Fixed crash when removing an item"); keep only strong wording
+            if _RANK[conf] < 2:
+                return []
+            conf = "medium"
+        if not apis:
+            conf = "low"
+
+    repl = _REPLACEMENT.search(line)
+    replacement = repl.group(1).rstrip(".") if repl else None
+    targets = [a for a in apis if a != replacement] or (apis[:1] if apis else ["unknown"])
+    owner = _PARAM_OWNER.search(line)
+    if owner:
+        # "Removed ``Retry`` options ``method_whitelist``": the parameters are
+        # what changed, not ``Retry`` itself
+        o = owner.group(1).rstrip("()")
+        params = [a for a in targets if a != o and "." not in a]
+        if params:
+            targets = [f"{o}.{a}" for a in params]
+    dotted = [a for a in targets if "." in a]
+    if dotted:
+        # "`pkg.connect` takes a `Config` object": the dotted names are the subject
+        targets = dotted
+    seen = set()
+    entries = []
+    for api in targets[:8]:
+        if api in seen:
+            continue
+        seen.add(api)
+        entries.append(ChangeEntry(
+            kind=kind, api=api, description=line[:200], version=version,
+            confidence=conf, replacement=replacement if replacement != api else None,
+        ))
+    return entries
+
+
 def parse_changelog_text(text: str, version: str) -> List[ChangeEntry]:
     """Parse a changelog/release notes body for breaking/deprecated changes.
 
@@ -213,83 +336,8 @@ def parse_changelog_text(text: str, version: str) -> List[ChangeEntry]:
     entries: List[ChangeEntry] = []
     if not text:
         return entries
-
-    lines = text.splitlines()
-    section: Optional[str] = None
-    skip_next = False
-
-    for i, raw in enumerate(lines):
-        if skip_next:
-            skip_next = False
-            continue
-        heading = _heading_text(lines, i)
-        if heading is not None:
-            section = _section_kind(heading)
-            if i + 1 < len(lines) and _RST_UNDERLINE.match(lines[i + 1]):
-                skip_next = True
-            continue
-        if _RST_UNDERLINE.match(raw):
-            continue
-
-        line = raw.strip().lstrip("-*•+ ").strip()
-        if not line:
-            continue
-
-        kind, conf = None, "low"
-        for patterns, k in ((_BREAKING_PATTERNS, "removed"),
-                            (_DEPRECATION_PATTERNS, "deprecated"),
-                            (_RENAME_PATTERNS, "renamed")):
-            for p, c in patterns:
-                if p.search(line):
-                    kind, conf = k, c
-                    break
-            if kind:
-                break
-
-        apis = _extract_apis(line)
-
-        if section == "removed":
-            # everything under a "Breaking changes" heading breaks, except explicit
-            # deprecations; a rename there has no compatibility alias
-            if kind == "deprecated" and not re.search(r"\bremov", line, re.IGNORECASE):
-                pass
-            elif kind == "renamed":
-                kind = "changed"
-            else:
-                kind = "removed"
-            conf = "high"
-        elif section == "deprecated":
-            kind = "removed" if kind == "removed" and re.search(r"\bremoved\b", line, re.IGNORECASE) \
-                and not re.search(r"will be removed", line, re.IGNORECASE) else "deprecated"
-            conf = "high"
-        elif kind is None:
-            continue
-        else:
-            fix_line = bool(_FIX_LINE.match(line))
-            if section == "benign" or fix_line:
-                # keyword hits under "Bug fixes"/"Features" are mostly noise
-                # ("Fixed crash when removing an item"); keep only strong wording
-                if _RANK[conf] < 2:
-                    continue
-                conf = "medium"
-            if not apis:
-                conf = "low"
-
-        repl = _REPLACEMENT.search(line)
-        replacement = repl.group(1).rstrip(".") if repl else None
-        api_str = apis[0] if apis else "unknown"
-        if replacement and api_str == replacement and len(apis) > 1:
-            api_str = next(a for a in apis if a != replacement)
-
-        entries.append(ChangeEntry(
-            kind=kind,
-            api=api_str,
-            description=line[:200],
-            version=version,
-            confidence=conf,
-            replacement=replacement if replacement != api_str else None,
-        ))
-
+    for section, item in _items(text):
+        entries.extend(_classify_item(item, section, version))
     return entries
 
 
@@ -307,20 +355,29 @@ def fetch_raw_changelog(owner: str, repo: str, token: Optional[str] = None) -> O
     if cached is not None:
         return cached or None
 
-    headers = {}
+    # Public files need no token, and a bad token turns them into 404s, so go
+    # anonymous first and only use the token as a fallback (private repos).
+    attempts = [{}]
     if token:
-        headers["Authorization"] = f"Bearer {token}"
+        attempts.append({"Authorization": f"Bearer {token}"})
 
-    for branch in ["main", "master"]:
-        for fname in CHANGELOG_FILENAMES:
-            url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{fname}"
-            try:
-                resp = httpx.get(url, headers=headers, timeout=10, follow_redirects=True)
-                if resp.status_code == 200 and len(resp.text) > 50:
-                    cache_set(key, resp.text)
-                    return resp.text
-            except Exception:
-                continue
+    errors = 0
+    for headers in attempts:
+        for branch in ["main", "master"]:
+            for fname in CHANGELOG_FILENAMES:
+                url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{fname}"
+                try:
+                    resp = httpx.get(url, headers=headers, timeout=10, follow_redirects=True)
+                    if resp.status_code == 200 and len(resp.text) > 50:
+                        cache_set(key, resp.text)
+                        return resp.text
+                    if resp.status_code not in (404, 400):
+                        errors += 1
+                except Exception:
+                    errors += 1
+    if errors:
+        # don't cache: a transient failure must not hide the changelog for 24h
+        raise RuntimeError(f"{errors} changelog fetches failed")
     cache_set(key, "")
     return None
 
@@ -445,6 +502,8 @@ def collect_changes(package: str, current_version: str, target_version: str,
         failed.append(f"version range ({current_version} -> {target_version} not PEP 440)")
         return ChangeReport([], ok, failed)
 
+    all_entries = _promote_swept_deprecations(all_entries, v_current, v_target)
+
     filtered: List[ChangeEntry] = []
     seen = set()
     skipped = 0
@@ -462,6 +521,47 @@ def collect_changes(package: str, current_version: str, target_version: str,
                 filtered.append(entry)
 
     return ChangeReport(filtered, ok, failed, skipped)
+
+
+_SWEEP = re.compile(r"\bremov\w*\b.*\b(previously|all|the)\s+deprecated\b|"
+                    r"\bdeprecated\b.*\b(?:have been|are|were)\s+removed\b", re.IGNORECASE)
+
+
+def _promote_swept_deprecations(entries: List[ChangeEntry], v_current, v_target) -> List[ChangeEntry]:
+    """Many projects remove deprecated APIs with a single line ("Remove
+    previously deprecated code.") instead of listing them. When such a sweep
+    falls inside the upgrade range, every API deprecated before it is gone."""
+    from packaging.version import Version, InvalidVersion
+
+    sweeps = []
+    for e in entries:
+        if e.kind == "removed" and e.api == "unknown" and _SWEEP.search(e.description):
+            try:
+                v = Version(e.version)
+            except InvalidVersion:
+                continue
+            if v_current < v <= v_target:
+                sweeps.append(v)
+    if not sweeps:
+        return entries
+
+    out = list(entries)
+    for e in entries:
+        if e.kind != "deprecated" or e.api == "unknown":
+            continue
+        try:
+            v_dep = Version(e.version)
+        except InvalidVersion:
+            continue
+        later = [v for v in sweeps if v > v_dep]
+        if later:
+            sweep_v = min(later)
+            out.append(ChangeEntry(
+                kind="removed", api=e.api, version=str(sweep_v), confidence="medium",
+                description=f"Removed in {sweep_v} (deprecated in {e.version}: {e.description[:120]})",
+                replacement=e.replacement,
+            ))
+    return out
 
 
 def _short_err(e: Exception) -> str:

@@ -1,0 +1,4 @@
+package = "sqlalchemy"
+from = "1.4.52"
+to = "2.0.0"
+source = "SQLAlchemy 2.0 migration: Engine.execute removed"

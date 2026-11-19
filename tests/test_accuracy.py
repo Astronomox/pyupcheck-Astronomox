@@ -419,3 +419,72 @@ def test_removed_internal_reexport_only_matches_exact_path():
     ch = diff(old, new)
     assert match_precise([U("pkg.Flask")], ch, "pkg") == []
     assert len(match_precise([U("pkg.bp.Flask")], ch, "pkg")) == 1
+
+
+# ── changelog: items, multiple APIs, deprecation sweeps ───────────────────────
+
+def test_wrapped_bullet_is_one_item():
+    text = ("- The ``JSONIFY_PRETTYPRINT_REGULAR`` config keys and the\n"
+            "  corresponding ``json.JSONEncoder`` classes are removed.\n")
+    entries = parse_changelog_text(text, "2.3.0")
+    assert {e.api for e in entries} == {"json.JSONEncoder"}
+    assert all(e.kind == "removed" for e in entries)
+
+
+def test_multiple_apis_in_one_item():
+    text = "- Importing ``escape`` and ``Markup`` from ``flask`` is deprecated.\n"
+    apis = {e.api for e in parse_changelog_text(text, "2.3.0")}
+    assert {"escape", "Markup"} <= apis
+
+
+def test_package_name_change_does_not_flag_everything():
+    from depshift.analyzer import analyze
+    entries = parse_changelog_text("- Importing ``escape`` from ``flask`` is deprecated.", "2.3")
+    usages = [Usage(file="a.py", line=1, code="", attr_chain="flask.Flask", usage_type="import")]
+    risks, _ = analyze(usages, entries, "flask")
+    assert risks == []
+
+
+def test_deprecation_sweep_promotes_to_removed(monkeypatch):
+    import depshift.changelog as cl
+    changelog = textwrap.dedent("""\
+        Version 3.0.0
+        -------------
+        - Remove previously deprecated code.
+
+        Version 2.3.0
+        -------------
+        - Importing ``escape`` from ``flask`` is deprecated.
+
+        Version 2.2.0
+        -------------
+        - ``old_thing`` is deprecated.
+        """)
+    monkeypatch.setattr(cl, "get_pypi_info", lambda p: {"info": {"project_urls": {
+        "Source": "https://github.com/o/r"}}})
+    monkeypatch.setattr(cl, "fetch_github_releases", lambda o, r, token=None: [])
+    monkeypatch.setattr(cl, "fetch_raw_changelog", lambda o, r, token=None: changelog)
+    monkeypatch.setattr(cl, "get_pypi_version_info", lambda p, v: {"info": {"description": ""}})
+    report = collect_changes("flask", "2.2.5", "3.0.0")
+    removed = {e.api for e in report.entries if e.kind == "removed"}
+    # escape: deprecated inside the range; old_thing: deprecated before it, swept in 3.0
+    assert {"escape", "old_thing"} <= removed
+
+
+def test_param_owner_phrase():
+    text = "- Removed deprecated ``Retry`` options ``method_whitelist``, ``DEFAULT_REDIRECT_HEADERS_BLACKLIST``."
+    apis = {e.api for e in parse_changelog_text(text, "2.0.0")}
+    assert "Retry" not in apis
+    assert "Retry.method_whitelist" in apis
+
+
+def test_changelog_kwarg_match():
+    from depshift.analyzer import analyze
+    entries = parse_changelog_text("- Removed ``Retry`` option ``method_whitelist``.", "2.0.0")
+    bad = Usage(file="a.py", line=1, code="", attr_chain="urllib3.util.retry.Retry",
+                usage_type="function_call", kwargs=["total", "method_whitelist"])
+    good = Usage(file="a.py", line=2, code="", attr_chain="urllib3.util.retry.Retry",
+                 usage_type="function_call", kwargs=["total", "allowed_methods"])
+    risks, _ = analyze([bad, good], entries, "urllib3")
+    assert [r.usage.line for r in risks] == [1]
+    assert risks[0].severity == "breaking"

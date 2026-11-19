@@ -27,7 +27,7 @@ from depshift.deps import discover_dependencies, normalize_name, requirement_fil
 from depshift.config import load_config
 from depshift import cache as cache_mod
 from depshift.report import render_markdown, render_html
-from depshift.apisurface import get_api_changes
+from depshift.apisurface import get_api_changes, get_return_types
 from depshift.precise import match_precise
 from depshift.names import import_names_for
 
@@ -258,7 +258,11 @@ def _run_single_check(package: str, target_version: Optional[str], directory: st
         if api_changes is None and not any("deep" in w for w in warnings):
             warnings.append("deep API diff unavailable (no Python sources for one of the versions)")
         if api_changes:
-            precise = match_precise(usages, api_changes, import_names)
+            try:
+                returns = get_return_types(package, current, target_version)
+            except Exception:
+                returns = {}
+            precise = match_precise(usages, api_changes, import_names, returns)
             # dedupe against changelog risks by (file, line, api)
             existing_keys = {(r.usage.file, r.usage.line, r.usage.attr_chain) for r in risks}
             for pr in precise:
