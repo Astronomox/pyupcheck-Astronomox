@@ -28,6 +28,75 @@ class PackageVisitor(ast.NodeVisitor):
         self.usages: List[Usage] = []
         self.aliases: Dict[str, str] = {}  # alias -> real dotted name
         self.from_imports: Dict[str, str] = {}  # local name -> full dotted name
+        # variable -> package class it holds an instance of, e.g. s -> requests.Session
+        self.instances: Dict[str, str] = {}
+
+    # ── light type tracking ──────────────────────────────────────────────────
+
+    def _class_of(self, value) -> Optional[str]:
+        """Package class an expression evaluates to an instance of, if obvious."""
+        if isinstance(value, ast.Call):
+            chain = self._resolve_attr_chain(value.func)
+            if chain and self._is_package_ref(chain):
+                return chain
+        if isinstance(value, ast.Await):
+            return self._class_of(value.value)
+        return None
+
+    def _annotation_class(self, ann) -> Optional[str]:
+        if ann is None:
+            return None
+        if isinstance(ann, ast.Constant) and isinstance(ann.value, str):
+            try:
+                ann = ast.parse(ann.value, mode="eval").body
+            except SyntaxError:
+                return None
+        if isinstance(ann, ast.Subscript):  # Optional[pkg.X]
+            return self._annotation_class(ann.slice)
+        if isinstance(ann, ast.BinOp):  # pkg.X | None
+            return self._annotation_class(ann.left) or self._annotation_class(ann.right)
+        chain = self._resolve_attr_chain(ann)
+        if chain and self._is_package_ref(chain):
+            return chain
+        return None
+
+    def _bind(self, target, cls: Optional[str]):
+        if isinstance(target, ast.Name):
+            if cls:
+                self.instances[target.id] = cls
+            else:
+                self.instances.pop(target.id, None)
+
+    def visit_Assign(self, node: ast.Assign):
+        self.generic_visit(node)
+        cls = self._class_of(node.value)
+        for t in node.targets:
+            self._bind(t, cls)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign):
+        self.generic_visit(node)
+        self._bind(node.target, self._annotation_class(node.annotation) or
+                   (self._class_of(node.value) if node.value else None))
+
+    def visit_With(self, node):
+        for item in node.items:
+            self.visit(item.context_expr)
+            if item.optional_vars is not None:
+                self._bind(item.optional_vars, self._class_of(item.context_expr))
+        for stmt in node.body:
+            self.visit(stmt)
+
+    visit_AsyncWith = visit_With
+
+    def visit_FunctionDef(self, node):
+        saved = dict(self.instances)
+        args = node.args
+        for a in list(args.posonlyargs) + list(args.args) + list(args.kwonlyargs):
+            self._bind(ast.Name(id=a.arg), self._annotation_class(a.annotation))
+        self.generic_visit(node)
+        self.instances = saved  # parameters are local to the function
+
+    visit_AsyncFunctionDef = visit_FunctionDef
 
     def visit_Import(self, node: ast.Import):
         for alias in node.names:
@@ -141,6 +210,9 @@ class PackageVisitor(ast.NodeVisitor):
                 return f"{self.aliases[name]}.{rest}" if rest else self.aliases[name]
             if name in self.from_imports:
                 return f"{self.from_imports[name]}.{rest}" if rest else self.from_imports[name]
+            if name in self.instances and rest:
+                # method/attribute on an instance: s.get -> requests.Session.get
+                return f"{self.instances[name]}.{rest}"
             if name == self.package:
                 return ".".join(parts)
         return None

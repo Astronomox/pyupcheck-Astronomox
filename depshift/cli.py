@@ -16,6 +16,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 from depshift import __version__
 from depshift.scanner import scan_directory
 from depshift.changelog import (
+    collect_changes,
     get_changes_between,
     get_current_version,
     get_available_versions,
@@ -77,6 +78,87 @@ def _filter_by_since(changes, since_str: str, package: str):
     return filtered
 
 
+def latest_allowed_version(package: str, spec: Optional[str] = None) -> Optional[str]:
+    """Newest non-yanked, non-prerelease version on PyPI that satisfies spec.
+
+    With no spec this is the latest release. A constraint like ``>=2,<3`` means
+    the project will never install 3.x, so checking against 3.x is noise.
+    """
+    from packaging.specifiers import SpecifierSet, InvalidSpecifier
+    from packaging.version import Version, InvalidVersion
+    info = get_pypi_info(package)
+    try:
+        spec_set = SpecifierSet(spec or "")
+    except InvalidSpecifier:
+        spec_set = SpecifierSet("")
+    best = None
+    for ver, files in (info.get("releases") or {}).items():
+        try:
+            v = Version(ver)
+        except InvalidVersion:
+            continue
+        if v.is_prerelease or v.is_devrelease:
+            continue
+        if files and all(f.get("yanked") for f in files):
+            continue
+        if spec_set and v not in spec_set:
+            continue
+        if best is None or v > best:
+            best = v
+    return str(best) if best is not None else None
+
+
+def specifier_of(raw: str) -> Optional[str]:
+    """The version specifier of a requirement string, e.g. '>=2,<3'."""
+    from packaging.requirements import Requirement, InvalidRequirement
+    try:
+        spec = str(Requirement(raw).specifier)
+    except InvalidRequirement:
+        return None
+    return spec or None
+
+
+def _satisfies(version: str, spec: str) -> bool:
+    from packaging.specifiers import SpecifierSet, InvalidSpecifier
+    from packaging.version import Version, InvalidVersion
+    try:
+        return Version(version) in SpecifierSet(spec)
+    except (InvalidSpecifier, InvalidVersion):
+        return True
+
+
+def _is_exact_pin(spec: Optional[str]) -> bool:
+    if not spec:
+        return False
+    parts = [p.strip() for p in spec.split(",") if p.strip()]
+    return len(parts) == 1 and parts[0].startswith(("==", "===")) and "*" not in parts[0]
+
+
+def _not_newer(target: str, current: str) -> bool:
+    """True when target is the same as or older than current (nothing to upgrade)."""
+    from packaging.version import Version, InvalidVersion
+    try:
+        return Version(target) <= Version(current)
+    except InvalidVersion:
+        return target == current
+
+
+def _lower_bound(spec: Optional[str]) -> Optional[str]:
+    """The minimum version a spec allows (>=, ~=, ==), used as 'current'
+    when nothing is installed or pinned."""
+    from packaging.specifiers import SpecifierSet, InvalidSpecifier
+    if not spec:
+        return None
+    try:
+        specs = SpecifierSet(spec)
+    except InvalidSpecifier:
+        return None
+    for sp in specs:
+        if sp.operator in (">=", "~=", "==", "===") and "*" not in sp.version:
+            return sp.version
+    return None
+
+
 def _pinned_version(directory: str, package: str) -> Optional[str]:
     """The ==pinned version of package in the project's dependency files, if any."""
     target = normalize_name(package)
@@ -89,21 +171,32 @@ def _pinned_version(directory: str, package: str) -> Optional[str]:
 def _run_single_check(package: str, target_version: Optional[str], directory: str,
                       github_token: Optional[str], cfg, suppress_errors: bool = False,
                       since: Optional[str] = None, deep: bool = False,
-                      pinned: Optional[str] = None) -> Optional[dict]:
+                      pinned: Optional[str] = None, spec: Optional[str] = None) -> Optional[dict]:
     installed = get_installed_version(package)
+    current_source = "installed"
+    if installed and spec and not _satisfies(installed, spec):
+        # whatever is installed here isn't what the project uses
+        installed = None
     if not installed:
         # not installed here (e.g. CI without deps): use the version pinned in the project
         installed = pinned or _pinned_version(directory, package)
+        current_source = "pinned"
+    if not installed and spec:
+        # unpinned range: the oldest version it allows is the riskiest baseline
+        installed = _lower_bound(spec)
+        current_source = "constraint lower bound"
 
     if not target_version:
         try:
-            target_version = get_current_version(package)
+            # an exact pin says where you are, not where you may go
+            range_spec = None if _is_exact_pin(spec) else spec
+            target_version = latest_allowed_version(package, range_spec) or get_current_version(package)
         except Exception as e:
             if not suppress_errors:
                 console.print(f"[red]{package}:[/] not found on PyPI ({e})")
             return None
 
-    if installed and installed == target_version:
+    if installed and _not_newer(target_version, installed):
         return {
             "package": package, "current_version": installed,
             "target_version": target_version, "risks": [],
@@ -111,7 +204,19 @@ def _run_single_check(package: str, target_version: Optional[str], directory: st
             "up_to_date": True,
         }
 
-    current = installed or "0.0.0"
+    if not installed:
+        # Comparing against 0.0.0 would report every change in the package's
+        # history. Be honest instead.
+        return {
+            "package": package, "current_version": None,
+            "target_version": target_version, "risks": [],
+            "safe_count": 0, "breaking_count": 0, "deprecated_count": 0,
+            "unchecked": True,
+            "warnings": ["current version unknown: install the package, pin it with ==, "
+                         "or give a lower bound (>=) so there is a baseline to compare"],
+        }
+
+    current = installed
     import_names = import_names_for(package)
     usages = scan_directory(directory, import_names, exclude_dirs=cfg.exclude_dirs)
     if not usages:
@@ -122,10 +227,17 @@ def _run_single_check(package: str, target_version: Optional[str], directory: st
             "no_usages": True, "import_names": import_names,
         }
 
+    warnings: List[str] = []
     try:
-        changes = get_changes_between(package, current, target_version, github_token=github_token)
-    except Exception:
+        report = collect_changes(package, current, target_version, github_token=github_token)
+        changes = report.entries
+        if report.sources_failed:
+            warnings.append("could not read: " + ", ".join(report.sources_failed))
+        changelog_checked = report.checked
+    except Exception as e:
         changes = []
+        changelog_checked = False
+        warnings.append(f"changelog lookup failed ({type(e).__name__})")
 
     if since and changes:
         changes = _filter_by_since(changes, since, package)
@@ -140,8 +252,11 @@ def _run_single_check(package: str, target_version: Optional[str], directory: st
     if deep:
         try:
             api_changes = get_api_changes(package, current, target_version)
-        except Exception:
+        except Exception as e:
             api_changes = None
+            warnings.append(f"deep API diff failed ({type(e).__name__})")
+        if api_changes is None and not any("deep" in w for w in warnings):
+            warnings.append("deep API diff unavailable (no Python sources for one of the versions)")
         if api_changes:
             precise = match_precise(usages, api_changes, import_names)
             # dedupe against changelog risks by (file, line, api)
@@ -157,7 +272,8 @@ def _run_single_check(package: str, target_version: Optional[str], directory: st
                     "severity": "breaking", "change_kind": pr.change.kind,
                     "change_description": pr.reason,
                     "change_version": target_version,
-                    "precise": True,
+                    "precise": True, "confidence": "high",
+                    "replacement": getattr(pr.change, "replacement", None),
                 })
 
     risk_dicts = [
@@ -167,6 +283,8 @@ def _run_single_check(package: str, target_version: Optional[str], directory: st
             "change_kind": r.change.kind,
             "change_description": r.change.description,
             "change_version": r.change.version,
+            "confidence": getattr(r.change, "confidence", "medium"),
+            "replacement": getattr(r.change, "replacement", None),
         }
         for r in risks
     ]
@@ -182,6 +300,10 @@ def _run_single_check(package: str, target_version: Optional[str], directory: st
         "breaking_count": sum(1 for r in all_risks if r["severity"] == "breaking"),
         "deprecated_count": sum(1 for r in all_risks if r["severity"] == "deprecated"),
         "deep": deep,
+        "current_source": current_source,
+        "warnings": warnings,
+        # nothing could be read at all: "OK" would be a lie
+        "unchecked": not changelog_checked and not (deep and api_changes is not None),
     }
 
 
@@ -234,6 +356,14 @@ def _print_terminal_result(r: dict, quiet: bool):
             console.print(f"[dim]{r['package']}[/] no usages found, safe to upgrade to {r['target_version']}")
         return
 
+    if r.get("unchecked") and not r["risks"]:
+        cur = r.get("current_version") or "?"
+        console.print(f"[magenta]{r['package']}[/] {cur} -> {r['target_version']}  "
+                      f"[magenta]NOT CHECKED[/]")
+        for w in r.get("warnings", []):
+            console.print(f"    [dim]{w}[/]")
+        return
+
     header = f"[bold]{r['package']}[/] {r['current_version']} -> {r['target_version']}"
     if r["breaking_count"]:
         console.print(f"{header}  [red bold]{r['breaking_count']} BREAKING[/]")
@@ -251,9 +381,19 @@ def _print_terminal_result(r: dict, quiet: bool):
             rel = os.path.relpath(risk["file"])
         except ValueError:
             rel = risk["file"]
-        tag = " [cyan][FACT][/]" if risk.get("precise") else ""
+        if risk.get("precise"):
+            tag = " [cyan][FACT][/]"
+        elif risk.get("confidence") == "low":
+            tag = " [dim](low confidence)[/]"
+        else:
+            tag = ""
         console.print(f"  [{color}]{mark}[/]{tag} [bold]{rel}:{risk['line']}[/]  {risk['code']}")
         console.print(f"    [dim]{risk['change_description']}[/]")
+        if risk.get("replacement"):
+            console.print(f"    [green]-> use {risk['replacement']}[/]")
+    if not quiet:
+        for w in r.get("warnings", []):
+            console.print(f"    [magenta]note:[/] [dim]{w}[/]")
 
 
 @click.group()
@@ -373,7 +513,7 @@ def check_all(directory, github_token, fmt, output, fail_on, min_severity, exclu
             progress.update(task, description=f"Checking [bold]{dep.name}[/]...")
             r = _run_single_check(dep.name, None, directory, github_token, cfg,
                                   suppress_errors=True, since=since, pinned=dep.pinned_version,
-                                  deep=deep)
+                                  deep=deep, spec=specifier_of(dep.raw))
             if r:
                 results.append(r)
             progress.advance(task)
@@ -385,8 +525,12 @@ def check_all(directory, github_token, fmt, output, fail_on, min_severity, exclu
 
         total_breaking = sum(r["breaking_count"] for r in results)
         total_deprecated = sum(r["deprecated_count"] for r in results)
+        total_unchecked = sum(1 for r in results if r.get("unchecked"))
         if not quiet:
             console.print()
+            if total_unchecked:
+                console.print(f"[magenta]{total_unchecked} package(s) could not be checked[/] "
+                              "(see notes above); they are not counted as safe")
             if total_breaking:
                 console.print(Panel(
                     f"[red bold]{total_breaking} breaking[/] | [yellow]{total_deprecated} deprecated[/] across {len(results)} packages",
@@ -395,8 +539,9 @@ def check_all(directory, github_token, fmt, output, fail_on, min_severity, exclu
                 console.print(Panel(f"[yellow]{total_deprecated} deprecated[/] across {len(results)} packages",
                                     border_style="yellow"))
             else:
-                console.print(Panel(f"[green]All {len(results)} packages safe to upgrade[/]",
-                                    border_style="green"))
+                checked = len(results) - total_unchecked
+                console.print(Panel(f"[green]{checked} checked packages safe to upgrade[/]",
+                                    border_style="green" if not total_unchecked else "magenta"))
         if output:
             _emit(results, "md", output, quiet)
     else:
@@ -434,6 +579,7 @@ def fix(directory, dry_run, no_cache):
     from packaging.version import Version, InvalidVersion
 
     updates: List[dict] = []
+    skipped_unchecked: List[str] = []
 
     with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console, transient=True) as progress:
         task = progress.add_task("Scanning...", total=len(deps))
@@ -460,9 +606,15 @@ def fix(directory, dry_run, no_cache):
                 continue
 
             try:
-                changes = get_changes_between(dep.name, pinned, latest)
+                report = collect_changes(dep.name, pinned, latest)
             except Exception:
-                changes = []
+                report = None
+            if report is None or not report.checked:
+                # couldn't read any changelog: never rewrite a pin on zero evidence
+                skipped_unchecked.append(dep.name)
+                progress.advance(task)
+                continue
+            changes = report.entries
 
             names = import_names_for(dep.name)
             usages = scan_directory(directory, names, exclude_dirs=cfg.exclude_dirs)
@@ -478,6 +630,8 @@ def fix(directory, dry_run, no_cache):
                 })
             progress.advance(task)
 
+    if skipped_unchecked:
+        console.print(f"[magenta]Skipped (could not read changelogs):[/] {', '.join(skipped_unchecked)}")
     if not updates:
         console.print("[green]Nothing to update.[/] All pinned deps are at the latest safe version.")
         return
