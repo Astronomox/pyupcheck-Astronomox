@@ -1,0 +1,4 @@
+package = "click"
+from = "7.1.2"
+to = "8.1.0"
+source = "Click 8.1 changelog: get_terminal_size removed (deprecated in 8.0)"

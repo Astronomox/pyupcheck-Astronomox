@@ -6,7 +6,7 @@ arguments you pass, so it can flag a removed parameter you actually use.
 """
 
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Union
+from typing import Dict, Iterable, List, Optional, Union
 
 from depshift.scanner import Usage
 from depshift.apisurface import APIChange
@@ -55,7 +55,8 @@ def _prefixes(dotted: str) -> List[str]:
 
 
 def match_precise(usages: List[Usage], changes: List[APIChange],
-                  package: Union[str, Iterable[str]]) -> List[PreciseRisk]:
+                  package: Union[str, Iterable[str]],
+                  returns: Optional[Dict[str, str]] = None) -> List[PreciseRisk]:
     """Cross-reference real API changes against usages, including kwargs.
 
     A usage matches a change when the full dotted path agrees, or, because
@@ -126,7 +127,10 @@ def match_precise(usages: List[Usage], changes: List[APIChange],
         if owner is None:
             # module-level API: the usage must not be a method call on a class
             return True
-        return len(parts) >= 2 and parts[-2] == owner
+        if len(parts) < 2:
+            return False
+        # pkg.Engine.execute, or e.execute() where e = create_engine() -> Engine
+        return parts[-2] == owner or (returns or {}).get(parts[-2]) == owner
 
     def strict_pick(candidates, usage):
         """Exact path, or the package-root re-export (``pkg.NAME``)."""
@@ -134,6 +138,8 @@ def match_precise(usages: List[Usage], changes: List[APIChange],
         for c in candidates:
             if c.api == chain:
                 return c
+            if chain in getattr(c, "still_at", ()):
+                continue  # the name the user wrote still exists
             root = _root_of(chain, roots)
             if root and chain == f"{root}.{chain.rsplit('.', 1)[-1]}" and same_package(usage, c):
                 return c

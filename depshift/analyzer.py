@@ -44,6 +44,21 @@ def match_usage_to_change(usage: Usage, change: ChangeEntry,
     package = _root_for(usage, package)
     usage_api = normalize_api(usage.attr_chain, package)
     change_api = normalize_api(change.api, package)
+    if change_api == package.lower() or change.api == "unknown":
+        # "Import X from flask instead" names the package itself, which is
+        # not a change to every usage of it
+        return None
+
+    # removed/renamed keyword argument the usage actually passes:
+    # change "Retry.method_whitelist" vs call Retry(method_whitelist=...)
+    if usage.kwargs and change.kind in ("removed", "changed", "deprecated", "renamed"):
+        parts = change.api.rstrip("()").split(".")
+        param = parts[-1]
+        owner = parts[-2] if len(parts) > 1 else None
+        callee = usage.attr_chain.split(".")[-1]
+        if param in usage.kwargs and owner is not None and owner == callee:
+            severity = "breaking" if change.kind in ("removed", "changed") else "deprecated"
+            return Risk(usage=usage, change=change, severity=severity)
 
     # direct match
     if usage_api == change_api:

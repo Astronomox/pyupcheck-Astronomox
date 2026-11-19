@@ -1,0 +1,27 @@
+name: Accuracy benchmark
+
+# Runs real upgrades from benchmarks/cases against PyPI/GitHub, so it needs
+# network access and takes a few minutes: weekly and on demand, not per PR.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1"
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Install
+        run: pip install -e .
+      - name: Run benchmark
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python benchmarks/run.py --json benchmark.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: benchmark.json

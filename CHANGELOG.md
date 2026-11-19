@@ -5,6 +5,24 @@ All notable changes to pyupcheck are documented here.
 ## [Unreleased]
 
 ### Added
+- Accuracy benchmark (`benchmarks/`, `make bench`): real upgrades with known breaks, scored for recall and precision. Runs weekly in CI
+- `--deep` sees names served by a module `__getattr__` (pandas `Int64Index`, Pillow `Image.ANTIALIAS`) and reports them when they disappear
+- `--deep` follows annotated return types: `engine = create_engine(...); engine.execute()` matches changes to `Engine.execute`
+- Changelog parsing treats a wrapped bullet as one item, reports every API an item names, and understands "``X`` options ``Y``" as parameters of `X`
+- Changelog matching checks the keyword arguments you pass (`Retry(method_whitelist=...)`)
+- "Remove previously deprecated code" entries promote every earlier deprecation to a removal
+
+### Fixed
+- An invalid or expired `GITHUB_TOKEN` no longer hides public changelogs (GitHub answers 404 for raw files sent with a bad token); requests fall back to anonymous
+- Network failures are no longer cached for 24h as "no changelog" / "no downloadable files"
+- `--deep` works for yanked releases when that exact version is requested
+- `--deep` no longer flags a name that is still available at the path you use (`np.nan` after NumPy 2 moved `numpy.core`)
+- A changelog entry naming the package itself ("import it from ``flask``") no longer flags every usage
+
+### Changed
+- Requires Python 3.10+ (3.8 and 3.9 are end-of-life and no longer available on CI runners); CI tests 3.10-3.14
+
+### Added
 - `--deep` detects new required parameters, parameters that became keyword-only or positional-only, removed module/class constants, and re-exports that can no longer be imported (e.g. Flask 3's `from flask import Markup`)
 - `--deep` suggests where a removed function or class now lives
 - The scanner follows objects: `s = requests.Session(); s.get(verify=False)` resolves to `requests.Session.get`, including `with ... as s` and type-annotated parameters (`def f(s: Optional[requests.Session])`)

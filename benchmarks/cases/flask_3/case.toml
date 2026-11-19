@@ -1,0 +1,4 @@
+package = "flask"
+from = "2.2.5"
+to = "3.0.0"
+source = "Flask 3.0 changelog: Markup/escape re-exports and flask.json.JSONEncoder removed"

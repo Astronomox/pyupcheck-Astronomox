@@ -31,6 +31,7 @@ class FuncSig:
     required: List[str] = field(default_factory=list)  # params with no default (excl. self/cls)
     kwonly: List[str] = field(default_factory=list)     # keyword-only params
     posonly: List[str] = field(default_factory=list)    # positional-only params
+    returns: Optional[str] = None  # simple class name of the annotated return type
 
 
 @dataclass
@@ -94,27 +95,33 @@ def _find_sdist_or_wheel_url(package: str, version: str) -> Optional[Tuple[str, 
     Any wheel works (including platform-specific ones) since only the
     Python sources and extension module names are read, never executed.
     """
-    key = f"disturl2:{package}:{version}"
+    key = f"disturl3:{package}:{version}"
     cached = cache_get(key)
     if cached is not None:
         return tuple(cached) if cached else None
 
     files = []
+    lookup_failed = False
     try:
         files = get_pypi_version_info(package, version).get("urls", []) or []
     except Exception:
         files = []
+        lookup_failed = True
     if not files:
         try:
             files = get_pypi_info(package).get("releases", {}).get(version, []) or []
+            lookup_failed = False
         except Exception:
             files = []
+            lookup_failed = True
+
+    # A yanked release is still the code that release contained; use it when
+    # it is all there is (the user asked for this exact version).
+    usable = [f for f in files if not f.get("yanked")] or files
 
     wheels = []
     sdist = None
-    for f in files:
-        if f.get("yanked"):
-            continue
+    for f in usable:
         fn = f.get("filename", "")
         url = f.get("url", "")
         size = f.get("size") or 0
@@ -134,7 +141,8 @@ def _find_sdist_or_wheel_url(package: str, version: str) -> Optional[Tuple[str, 
     # Cache a "not found" result as [] rather than None: cache_get() cannot
     # distinguish a cached None from a cache miss, so None here would defeat
     # negative caching and re-trigger a network fetch on every call.
-    cache_set(key, list(result) if result else [])
+    if result or not lookup_failed:  # never remember a network failure as "no files"
+        cache_set(key, list(result) if result else [])
     return result
 
 
@@ -278,6 +286,45 @@ class _SurfaceVisitor(ast.NodeVisitor):
         self.attributes: Set[str] = set()
         self._class_stack: List[str] = []
         self._depth = 0  # >0 would mean inside a function body (never visited)
+        self._literals: Dict[str, Set[str]] = {}  # module-level NAME = [..]/{..} string literals
+        self._deferred: Set[str] = set()          # names __getattr__ checks `in` (resolved later)
+
+    def finalize(self):
+        """Resolve names a module ``__getattr__`` serves from module-level literals."""
+        for ref in self._deferred:
+            self.exports.update(n for n in self._literals.get(ref, ()) if self._public(n))
+
+    def _getattr_names(self, node):
+        """Names a PEP 562 module ``__getattr__(name)`` answers for.
+
+        Packages use it to keep deprecated names importable (pandas'
+        Int64Index, Pillow's ANTIALIAS, flask's Markup); those names are API
+        until they disappear from it.
+        """
+        if not node.args.args:
+            return
+        param = node.args.args[0].arg
+        local: Dict[str, Set[str]] = {}
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Assign) and len(sub.targets) == 1 \
+                    and isinstance(sub.targets[0], ast.Name):
+                lit = _string_literals(sub.value)
+                if lit:
+                    local[sub.targets[0].id] = lit
+        for sub in ast.walk(node):
+            if not isinstance(sub, ast.Compare) or not isinstance(sub.left, ast.Name) \
+                    or sub.left.id != param:
+                continue
+            for op, comp in zip(sub.ops, sub.comparators):
+                if isinstance(op, (ast.Eq, ast.In)):
+                    lit = _string_literals(comp)
+                    if lit:
+                        self.exports.update(n for n in lit if self._public(n))
+                    elif isinstance(comp, ast.Name):
+                        if comp.id in local:
+                            self.exports.update(n for n in local[comp.id] if self._public(n))
+                        else:
+                            self._deferred.add(comp.id)
 
     def _public(self, name: str) -> bool:
         return not name.startswith("_") or (name.startswith("__") and name.endswith("__"))
@@ -345,11 +392,18 @@ class _SurfaceVisitor(ast.NodeVisitor):
                             if isinstance(el, ast.Constant) and isinstance(el.value, str):
                                 self.exports.add(el.value)
                     continue
+                if not self._class_stack:
+                    lit = _string_literals(getattr(node, "value", None))
+                    if lit:
+                        self._literals[n.id] = lit
                 if n.id.startswith("_"):
                     continue
                 self.attributes.add(".".join(self._class_stack + [n.id]))
 
     def _add_func(self, node):
+        if node.name == "__getattr__" and not self._class_stack:
+            self._getattr_names(node)
+            return
         if not self._public(node.name):
             return
         dotted = ".".join(self._class_stack + [node.name])
@@ -372,12 +426,48 @@ class _SurfaceVisitor(ast.NodeVisitor):
             required=required,
             kwonly=[a.arg for a in args.kwonlyargs],
             posonly=[a.arg for a in args.posonlyargs],
+            returns=_return_name(node.returns),
         )
         if any(_base_name(d) == "overload" for d in node.decorator_list):
             sig.required = []  # overload variants don't define what's required
         self.functions[dotted] = sig
         self.names.add(node.name)
         # bodies are not visited: nested defs are implementation details
+
+
+def _return_name(ann) -> Optional[str]:
+    """Class name a return annotation names: ``-> Engine``, ``-> "Engine"``,
+    ``-> Optional[Engine]``, ``-> Engine | None``. None for builtins/unknown."""
+    if ann is None:
+        return None
+    if isinstance(ann, ast.Constant) and isinstance(ann.value, str):
+        try:
+            ann = ast.parse(ann.value, mode="eval").body
+        except SyntaxError:
+            return None
+    if isinstance(ann, ast.Subscript) and _base_name(ann.value) == "Optional":
+        return _return_name(ann.slice)
+    if isinstance(ann, ast.BinOp):
+        return _return_name(ann.left) or _return_name(ann.right)
+    if isinstance(ann, (ast.Name, ast.Attribute)):
+        name = _base_name(ann)
+        if name and name[:1].isupper() and name not in ("None", "Any", "Self"):
+            return name
+    return None
+
+
+def _string_literals(node) -> Set[str]:
+    """String elements of a list/tuple/set literal, or keys of a dict literal."""
+    out: Set[str] = set()
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        out.add(node.value)
+    elif isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        out.update(e.value for e in node.elts
+                   if isinstance(e, ast.Constant) and isinstance(e.value, str))
+    elif isinstance(node, ast.Dict):
+        out.update(k.value for k in node.keys
+                   if isinstance(k, ast.Constant) and isinstance(k.value, str))
+    return {n for n in out if n.isidentifier()}
 
 
 def _base_name(node) -> Optional[str]:
@@ -408,6 +498,7 @@ def build_surface(version: str, sources: Dict[str, List[str]],
                 continue  # e.g. Python 2-only sources
             visitor = _SurfaceVisitor(module_path)
             visitor.visit(tree)
+            visitor.finalize()
             if visitor.exports:
                 surface.exports.setdefault(module_path, set()).update(visitor.exports)
             for cls, bases in visitor.bases.items():
@@ -439,7 +530,7 @@ def build_surface(version: str, sources: Dict[str, List[str]],
 
 def extract_surface(package: str, version: str) -> Optional[APISurface]:
     """Download a version and extract its public API surface (cached)."""
-    key = f"surface3:{package}:{version}"
+    key = f"surface5:{package}:{version}"
     cached = cache_get(key)
     if cached is not None:
         surf = APISurface(version=version)
@@ -476,7 +567,8 @@ def extract_surface(package: str, version: str) -> Optional[APISurface]:
         "functions": {
             k: {"name": v.name, "params": v.params, "has_varargs": v.has_varargs,
                 "has_kwargs": v.has_kwargs, "is_async": v.is_async,
-                "required": v.required, "kwonly": v.kwonly, "posonly": v.posonly}
+                "required": v.required, "kwonly": v.kwonly, "posonly": v.posonly,
+                "returns": v.returns}
             for k, v in surface.functions.items()
         },
         "exports": {k: sorted(v) for k, v in surface.exports.items()},
@@ -547,7 +639,7 @@ def _member_of(surface: APISurface, dotted: str) -> Optional[str]:
 def _still_at(new: APISurface, short: str) -> List[str]:
     """Import paths through which ``short`` is still reachable in ``new``."""
     paths = [f"{m}.{short}" for m, names in new.exports.items() if short in names]
-    paths += [k for k in list(new.functions) + list(new.classes)
+    paths += [k for k in list(new.functions) + list(new.classes) + list(new.attributes)
               if k.rsplit(".", 1)[-1] == short]
     return sorted(set(paths))
 
@@ -693,9 +785,25 @@ def diff_surfaces(old: APISurface, new: APISurface) -> List[APIChange]:
                 kind="removed_attribute", api=attr,
                 detail=f"'{attr}' was removed in {new.version}",
                 member_of=_member_of(old, attr),
+                still_at=_still_at(new, attr.rsplit(".", 1)[-1]),
             ))
 
     return changes
+
+
+def get_return_types(package: str, *versions: str) -> Dict[str, str]:
+    """{function short name: class short name it returns}, from annotations in
+    any of the given versions. Lets ``e = create_engine(); e.execute()`` be
+    matched against changes to ``Engine.execute``. Ambiguous names are dropped."""
+    seen: Dict[str, Set[str]] = {}
+    for v in versions:
+        surf = extract_surface(package, v)
+        if surf is None:
+            continue
+        for fname, sig in surf.functions.items():
+            if sig.returns and _is_public_api(fname):
+                seen.setdefault(fname.rsplit(".", 1)[-1], set()).add(sig.returns)
+    return {k: next(iter(v)) for k, v in seen.items() if len(v) == 1}
 
 
 def get_api_changes(package: str, from_version: str, to_version: str) -> Optional[List[APIChange]]:
