@@ -1,8 +1,8 @@
 """Fetch changelog and deprecation data for a package version."""
 
 import re
-from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
 
 import httpx
 
@@ -170,6 +170,7 @@ _API_BACKTICK = re.compile(r"`{1,2}:?(?:\w+:)*`?~?\.?([a-zA-Z_][\w.]*(?:\(\))?)`
 _API_DOTTED = re.compile(r"(?:^|[\s(])([a-zA-Z_]\w*\.[a-zA-Z_][\w.]*(?:\(\))?)")
 _REPLACEMENT = re.compile(
     r"(?:use|in favou?r of|replaced (?:by|with)|superseded by|renamed to|moved to|instead,? use|"
+    r"alias(?:es)?(?:\s+\([^)]*\))?\s+(?:of|for)|"
     r"(?:renam|mov)\w*\s+`{0,2}[\w.:~]+`{0,2}\s+(?:to|into))\s+"
     r"`{0,2}:?(?:\w+:)*`?~?\.?([a-zA-Z_][\w.]*)", re.IGNORECASE)
 
@@ -180,7 +181,7 @@ _PARAM_OF = re.compile(
     re.IGNORECASE)
 _KEYWORD_FROM = re.compile(
     r"\b(?:option|param|parameter|argument|arg|kwarg|keyword argument|keyword)s?\s+"
-    r"`{1,2}([a-zA-Z_]\w*)`{1,2}\s+(?:from|of|in|to|for)\b", re.IGNORECASE)
+    r"`{1,2}([a-zA-Z_]\w*)`{1,2}\s+(?:from|of|in(?!\s+favou?r)|to|for)\b", re.IGNORECASE)
 _PARAM_OWNER = re.compile(
     r"`{1,2}:?(?:\w+:)*`?~?\.?([a-zA-Z_][\w.]*(?:\(\))?)`{1,2}(?:'s)?\s+"
     r"(?:option|param|parameter|argument|arg|kwarg|keyword argument|keyword)s?\b", re.IGNORECASE)
@@ -208,7 +209,12 @@ def _section_kind(heading: str) -> Optional[str]:
     return None
 
 
+_API_CALL_KWARG = re.compile(r"`{1,2}([a-zA-Z_][\w.]*)\(([a-zA-Z_]\w*)=[^`]*\)`{1,2}")
+
+
 def _extract_apis(line: str) -> List[str]:
+    # ``Retry(method_whitelist=...)`` names the parameter Retry.method_whitelist
+    line = _API_CALL_KWARG.sub(lambda m: f"``{m.group(1)}.{m.group(2)}``", line)
     apis = [a.rstrip("()").strip(".") for a in _API_BACKTICK.findall(line)]
     if not apis:
         apis = [a.rstrip("()").strip(".") for a in _API_DOTTED.findall(line)]
@@ -277,7 +283,12 @@ def _items(text: str) -> List[Tuple[Optional[str], str]]:
                 level = (stack[-1][0] + 1) if stack else 1
             while stack and stack[-1][0] >= level:
                 stack.pop()
-            stack.append((level, _section_kind(heading)))
+            kind = _section_kind(heading)
+            if kind == "benign" and section() in ("removed", "deprecated"):
+                # "Miscellaneous" under "Features deprecated in 3.0" is still
+                # about deprecations
+                kind = None
+            stack.append((level, kind))
             continue
         if _in_table(table_borders):
             # one row = one item: first column is the API, the rest says what
@@ -345,6 +356,18 @@ def _classify_item(line: str, section: Optional[str], version: str) -> List[Chan
             # "Renamed ``a`` to ``b``": the phrase itself contains the old name
             replacements = replacements[1:]
         apis = [a for a in apis if a not in replacements] or apis
+    replacements = list(dict.fromkeys(replacements))
+    # "a, b and c are deprecated in favour of x, y and z respectively": pair by
+    # order, and only when the counts agree. One replacement for several old
+    # names is ambiguous, so none of them gets one.
+    paired: Dict[str, str] = {}
+    if replacements:
+        own = _PARAM_OWNER.search(line)
+        # "``Retry`` options ``a``, ``b`` in favour of ``x``, ``y``": the owner
+        # isn't one of the things being replaced
+        olds = [a for a in apis if not (own and a == own.group(1).rstrip("()"))]
+        if len(replacements) == len(olds):
+            paired = dict(zip(olds, replacements))
 
     if section == "removed":
         # everything under a "Breaking changes" heading breaks, except explicit
@@ -412,9 +435,16 @@ def _classify_item(line: str, section: Optional[str], version: str) -> List[Chan
             c = "low"
         entries.append(ChangeEntry(
             kind=kind, api=api, description=line[:200], version=version,
-            confidence=c, replacement=replacement if replacement != api else None,
+            confidence=c, replacement=_pick_replacement(api, paired),
         ))
     return entries
+
+
+def _pick_replacement(api: str, paired: Dict[str, str]) -> Optional[str]:
+    """The replacement paired with this API (or with its last segment, for
+    ``Retry.method_whitelist`` built from ``method_whitelist``)."""
+    repl = paired.get(api) or paired.get(api.rsplit(".", 1)[-1])
+    return repl.rstrip(".") if repl and repl != api else None
 
 
 _CHANGE_VERB = r"(?:remov|delet|drop|deprecat|renam|expir|replac|supersed)\w*"
@@ -546,6 +576,29 @@ def _versions_between(pypi_info: dict, current: str, target: str) -> List[str]:
     return [str(v) for v in sorted(out)]
 
 
+def _docs_versions(pypi_info: dict, current: str, target: str, lookback: bool) -> List[str]:
+    """Versions whose per-version docs notes to read: the upgrade range, plus
+    (with lookback) the x.y.0 releases of the current major series, where
+    deprecations and their replacements are usually announced."""
+    versions = _versions_between(pypi_info, current, target)
+    if not lookback:
+        return versions
+    from packaging.version import Version, InvalidVersion
+    try:
+        cur = Version(current)
+    except InvalidVersion:
+        return versions
+    earlier = []
+    for ver in (pypi_info.get("releases") or {}):
+        try:
+            v = Version(ver)
+        except InvalidVersion:
+            continue
+        if v.major == cur.major and v.micro == 0 and not v.is_prerelease and v <= cur:
+            earlier.append(v)
+    return [str(v) for v in sorted(earlier)] + [v for v in versions if v not in {str(e) for e in earlier}]
+
+
 def _three_part(v: str) -> str:
     parts = v.split(".")
     while len(parts) < 3:
@@ -674,6 +727,10 @@ class ChangeReport:
     sources_ok: List[str]
     sources_failed: List[str]
     skipped_unversioned: int = 0
+    # every parsed entry up to the target, not just those in the upgrade
+    # range: a deprecation announced before your version still names the
+    # replacement for an API removed inside the range
+    history: List[ChangeEntry] = field(default_factory=list)
 
     @property
     def checked(self) -> bool:
@@ -682,7 +739,7 @@ class ChangeReport:
 
 
 def collect_changes(package: str, current_version: str, target_version: str,
-                    github_token: Optional[str] = None) -> ChangeReport:
+                    github_token: Optional[str] = None, lookback: bool = False) -> ChangeReport:
     """Get breaking/deprecated changes between two versions, reporting which
     sources worked and which failed instead of silently returning nothing."""
     ok: List[str] = []
@@ -727,7 +784,7 @@ def collect_changes(package: str, current_version: str, target_version: str,
             # CHANGES file (Pillow, NumPy, pandas), so read them too
             try:
                 docs = fetch_docs_release_notes(
-                    owner, repo, _versions_between(pypi_info, current_version, target_version))
+                    owner, repo, _docs_versions(pypi_info, current_version, target_version, lookback))
                 if docs is not None:
                     ok.append("docs release notes")
                     all_entries.extend(docs)
@@ -770,7 +827,14 @@ def collect_changes(package: str, current_version: str, target_version: str,
                 seen.add(key)
                 filtered.append(entry)
 
-    return ChangeReport(filtered, ok, failed, skipped)
+    history = []
+    for entry in all_entries:
+        try:
+            if Version(entry.version) <= v_target:
+                history.append(entry)
+        except InvalidVersion:
+            continue
+    return ChangeReport(filtered, ok, failed, skipped, history)
 
 
 def _has_in_range(entries: List[ChangeEntry], current: str, target: str) -> bool:

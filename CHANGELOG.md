@@ -4,6 +4,19 @@ All notable changes to pyupcheck are documented here.
 
 ## [Unreleased]
 
+### Added
+- `pyupcheck migrate PACKAGE [VERSION]`: rewrites your code for an upgrade. Shows a diff by default, `--write` applies it. Only mechanical changes verified against the target version's API: arguments that became keyword-only, renamed keyword arguments, renamed or moved names (imports keep their local name via `as`). Everything else is listed as needing a manual change; exit code 1 while any remain
+- Changelog replacements are paired one-to-one ("`a`, `b` in favour of `x`, `y` respectively"); one replacement named for several APIs is treated as ambiguous
+- Changelog parsing understands "aliases of", ``Name(param=...)`` mentions, and generic sub-headings ("Miscellaneous") inside a deprecation or removal section
+
+### Fixed
+- "Deprecated ``Retry`` option ``x`` in favor of ``y``" was read as `y.x`
+- In "the ``force_text()`` alias of ``force_str()`` is deprecated", the replacement `force_str` was reported as deprecated too
+- Items under a "Miscellaneous" sub-heading of "Features deprecated in X" were ignored
+
+### Changed
+- Release and benchmark workflows use `actions/upload-artifact@v7` / `download-artifact@v7` (v4 and v5 run on the deprecated Node.js 20)
+
 ## [0.6.0] - 2026-11-20
 
 First release published from GitHub Actions. 0.5.0 was never uploaded to PyPI, so coming from 0.4.3 also read the 0.5.0 section below.

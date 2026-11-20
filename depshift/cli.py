@@ -194,30 +194,36 @@ def _pinned_version(directory: str, package: str) -> Optional[str]:
     return None
 
 
+def _baseline_version(package: str, directory: str, pinned: Optional[str] = None,
+                      spec: Optional[str] = None, locked: Optional[str] = "auto"):
+    """(version, source) the project is on now, most trustworthy first: the
+    lockfile (what the project runs), an exact pin, what's installed here (if
+    it fits the project's constraint), then the lowest version the constraint
+    allows. (None, None) when there is no baseline."""
+    if locked == "auto":
+        locked = locked_version(directory, package)
+    if locked:
+        return locked, "lockfile"
+    pin = pinned or _pinned_version(directory, package)
+    if pin:
+        return pin, "pinned"
+    here = get_installed_version(package)
+    if here and not (spec and not _satisfies(here, spec)):
+        return here, "installed"
+    if spec:
+        # unpinned range: the oldest version it allows is the riskiest baseline
+        low = _lower_bound(spec)
+        if low:
+            return low, "constraint lower bound"
+    return None, None
+
+
 def _run_single_check(package: str, target_version: Optional[str], directory: str,
                       github_token: Optional[str], cfg, suppress_errors: bool = False,
                       since: Optional[str] = None, deep: bool = False,
                       pinned: Optional[str] = None, spec: Optional[str] = None,
                       locked: Optional[str] = "auto") -> Optional[dict]:
-    # Baseline, most trustworthy first: the lockfile (what the project runs),
-    # an exact pin, what's installed here (if it fits the project's
-    # constraint), then the lowest version the constraint allows.
-    if locked == "auto":
-        locked = locked_version(directory, package)
-    installed, current_source = None, None
-    if locked:
-        installed, current_source = locked, "lockfile"
-    if not installed:
-        installed = pinned or _pinned_version(directory, package)
-        current_source = "pinned" if installed else None
-    if not installed:
-        here = get_installed_version(package)
-        if here and not (spec and not _satisfies(here, spec)):
-            installed, current_source = here, "installed"
-    if not installed and spec:
-        # unpinned range: the oldest version it allows is the riskiest baseline
-        installed = _lower_bound(spec)
-        current_source = "constraint lower bound" if installed else None
+    installed, current_source = _baseline_version(package, directory, pinned, spec, locked)
 
     if not target_version:
         try:
@@ -734,6 +740,112 @@ def fix(directory, dry_run, no_cache):
             console.print(f"[red]Could not write {req_path}:[/] {e}")
 
     console.print("\n[green]Done.[/] Run [bold]pip install -r requirements.txt[/] to apply.")
+
+
+# ── migrate ───────────────────────────────────────────────────────────────────
+
+@main.command()
+@click.argument("package")
+@click.argument("target_version", required=False)
+@click.option("--dir", "-d", "directory", default=".", help="Project directory")
+@click.option("--write", is_flag=True, help="Apply the changes (default: show a diff only)")
+@click.option("--exclude", "-e", multiple=True)
+@click.option("--github-token", envvar="GITHUB_TOKEN", default=None)
+@click.option("--no-cache", is_flag=True)
+def migrate(package, target_version, directory, write, exclude, github_token, no_cache):
+    """Rewrite your code for upgrading PACKAGE to TARGET_VERSION.
+
+    Applies only mechanical, verified changes: arguments that became
+    keyword-only, renamed keyword arguments, and names that moved or were
+    renamed (each replacement is checked against the target version's real
+    API). Everything else that breaks is listed for you to change by hand.
+
+    Shows a diff by default; pass --write to change files. Exits 1 if
+    anything still needs a manual change.
+    """
+    import ast as _ast
+    from depshift.apisurface import extract_surface
+    from depshift.rewrite import apply_edits, plan_migration, unified_diff
+
+    directory = os.path.abspath(directory)
+    cfg = load_config(directory)
+    cfg.exclude_dirs.update(exclude)
+    if no_cache or not cfg.cache:
+        cache_mod.disable_cache()
+
+    dep = next((d for d in discover_dependencies(directory) if d.name == normalize_name(package)), None)
+    spec = specifier_of(dep.raw) if dep else None
+    current, source = _baseline_version(package, directory, dep.pinned_version if dep else None, spec)
+    if not current:
+        console.print(f"[red]{package}:[/] current version unknown. Install it, pin it with ==, "
+                      "or lock it, so there is a version to migrate from.")
+        sys.exit(2)
+    if not target_version:
+        try:
+            target_version = latest_allowed_version(package, None if _is_exact_pin(spec) else spec)
+        except Exception as e:
+            console.print(f"[red]{package}:[/] not found on PyPI ({e})")
+            sys.exit(2)
+    if not target_version or _not_newer(target_version, current):
+        console.print(f"[green]{package}[/] {current} is already the latest allowed version.")
+        return
+
+    names = import_names_for(package)
+    with console.status(f"Comparing [bold]{package}[/] {current} -> {target_version}..."):
+        usages = scan_directory(directory, names, exclude_dirs=cfg.exclude_dirs)
+        changes = get_api_changes(package, current, target_version)
+        new_surface = extract_surface(package, target_version)
+        try:
+            entries = collect_changes(package, current, target_version, github_token=github_token,
+                                      lookback=True).history
+        except Exception:
+            entries = []
+        try:
+            returns = get_return_types(package, current, target_version)
+        except Exception:
+            returns = {}
+
+    if changes is None or new_surface is None:
+        console.print(f"[red]{package}:[/] could not read the API of {current} or {target_version} "
+                      "(no Python sources published), so nothing can be rewritten safely.")
+        sys.exit(2)
+
+    plan = plan_migration(usages, changes, new_surface, names, entries, returns)
+    console.print(f"[bold]{package}[/] {current} [dim]({source})[/] -> {target_version}\n")
+
+    changed_files = 0
+    for path, fixes in sorted(plan.by_file().items()):
+        with open(path, encoding="utf-8") as f:
+            before = f.read()
+        after = apply_edits(before, [e for fx in fixes for e in fx.edits])
+        if after == before:
+            continue
+        try:
+            _ast.parse(after)
+        except SyntaxError:
+            console.print(f"[red]skipped {os.path.relpath(path)}:[/] the rewrite would not parse")
+            continue
+        rel = os.path.relpath(path, directory)
+        for fx in sorted(fixes, key=lambda x: x.line):
+            console.print(f"  [green]fix[/] {rel}:{fx.line}  {fx.description}")
+        print(unified_diff(rel, before, after))
+        changed_files += 1
+        if write:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(after)
+
+    if plan.manual:
+        console.print(f"[yellow]{len(plan.manual)} change(s) need you:[/]")
+        for m in sorted(plan.manual, key=lambda m: (m.file, m.line)):
+            console.print(f"  [yellow]![/] {os.path.relpath(m.file, directory)}:{m.line}  {m.code}")
+            console.print(f"    [dim]{m.reason}[/]")
+
+    if not plan.fixes and not plan.manual:
+        console.print("[green]Nothing to change:[/] no breaking API changes hit your code.")
+    elif changed_files:
+        verb = "Rewrote" if write else "Would rewrite"
+        console.print(f"\n{verb} {changed_files} file(s)." + ("" if write else " Run again with --write to apply."))
+    sys.exit(1 if plan.manual else 0)
 
 
 # ── ci-setup ──────────────────────────────────────────────────────────────────
