@@ -4,6 +4,8 @@ All notable changes to pyupcheck are documented here.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-20
+
 ### Added
 - `pyupcheck migrate PACKAGE [VERSION]`: rewrites your code for an upgrade. Shows a diff by default, `--write` applies it. Only mechanical changes verified against the target version's API: arguments that became keyword-only, renamed keyword arguments, renamed or moved names (imports keep their local name via `as`). Everything else is listed as needing a manual change; exit code 1 while any remain
 - Changelog replacements are paired one-to-one ("`a`, `b` in favour of `x`, `y` respectively"); one replacement named for several APIs is treated as ambiguous
