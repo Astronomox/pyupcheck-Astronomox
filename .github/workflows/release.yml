@@ -6,23 +6,45 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Or run it from the Actions tab on main: the version comes from
+  # pyproject.toml and the tag is created with the GitHub Release.
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
-      - name: Tag must match the package version
+      - name: Work out the tag and check it matches the package version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match pyproject.toml version $version"
-            exit 1
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ "$GITHUB_REF_NAME" != "main" ]; then
+              echo "::error::Manual releases run from main (got $GITHUB_REF_NAME)"
+              exit 1
+            fi
+            tag="v$version"
+            if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
+              echo "::error::Tag $tag already exists: bump the version first"
+              exit 1
+            fi
+          else
+            tag="$GITHUB_REF_NAME"
+            if [ "v$version" != "$tag" ]; then
+              echo "::error::Tag $tag does not match pyproject.toml version $version"
+              exit 1
+            fi
           fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Test
         run: |
@@ -57,7 +79,7 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
 
   github-release:
-    needs: publish
+    needs: [build, publish]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -68,15 +90,18 @@ jobs:
           name: dist
           path: dist/
       - name: Release notes from CHANGELOG.md
+        env:
+          TAG: ${{ needs.build.outputs.tag }}
         run: |
           python - <<'PY'
           import os, re
-          version = os.environ["GITHUB_REF_NAME"].lstrip("v")
+          version = os.environ["TAG"].lstrip("v")
           text = open("CHANGELOG.md", encoding="utf-8").read()
           m = re.search(rf"^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## \[|\Z)", text, re.S | re.M)
           open("notes.md", "w", encoding="utf-8").write(m.group(1).strip() if m else f"pyupcheck {version}")
           PY
-      - name: Create GitHub release
+      - name: Create GitHub release (and the tag, for manual runs)
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --notes-file notes.md
+          TAG: ${{ needs.build.outputs.tag }}
+        run: gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "$TAG" --notes-file notes.md

@@ -39,7 +39,11 @@ git tag v0.6.0
 git push origin main v0.6.0
 ```
 
-Pushing the tag runs the workflow, which:
+Or, without pushing a tag: bump and merge to `main`, then open
+**Actions → Release → Run workflow** on `main`. The version comes from
+`pyproject.toml` and the tag is created along with the GitHub Release.
+
+Either way the workflow:
 
 1. Checks the tag matches the version in `pyproject.toml`
 2. Runs pyflakes and the test suite
