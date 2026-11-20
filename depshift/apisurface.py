@@ -14,7 +14,7 @@ import zipfile
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
-import httpx
+from depshift.http import http_get
 
 from depshift.cache import cache_get, cache_set
 from depshift.changelog import get_pypi_info, get_pypi_version_info
@@ -148,7 +148,7 @@ def _find_sdist_or_wheel_url(package: str, version: str) -> Optional[Tuple[str, 
 
 def _download(url: str) -> Optional[bytes]:
     try:
-        resp = httpx.get(url, timeout=120, follow_redirects=True)
+        resp = http_get(url, timeout=120, follow_redirects=True)
         resp.raise_for_status()
         return resp.content
     except Exception:

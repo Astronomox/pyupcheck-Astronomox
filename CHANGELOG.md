@@ -5,6 +5,7 @@ All notable changes to pyupcheck are documented here.
 ## [Unreleased]
 
 ### Added
+- `check-all` checks dependencies in parallel (`--jobs/-j`, default 8) over one shared keep-alive HTTP connection pool: an 8-package project went from 95s to 5s cold (15s with `--deep`, under 4s warm). Output order is unchanged, and a crash in one package is reported for that package instead of stopping the run
 - The scanner follows package objects through your own code: helper functions that return them (by return annotation or by what they `return`), attributes stored on `self` (`self.engine = create_engine(...)` then `self.engine.execute()`), and methods called on a call result (`get_engine().execute()`, `pd.DataFrame(...).append(...)`)
 - Changelog parsing understands "Remove keyword ``x`` from ``f`` and ``g``" as parameters of `f` and `g`
 - Benchmark cases for inference (SQLAlchemy and pandas objects reached through helpers, attributes and chains): 18 cases, 41 breaking lines
@@ -34,6 +35,8 @@ All notable changes to pyupcheck are documented here.
 - Requires Python 3.10+ (3.8 and 3.9 are end-of-life and no longer available on CI runners); CI tests 3.10-3.14
 
 ### Fixed
+- `check-all -f json` (and `md`/`html` to stdout) printed "Found N dependencies to check" before the report, so redirecting it to a file produced invalid JSON
+- Cache files are written atomically, so parallel checks never read a half-written entry
 - A changelog item that only mentions an API ("Passing dtype to ``DataFrame`` now raises") is reported as a warning, not as the API being removed
 - API names from changelogs are compared case-sensitively (`numpy.NaN` removed is not `numpy.nan`)
 - A bare `import numpy` no longer collects every change in the package as a warning

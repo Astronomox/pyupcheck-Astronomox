@@ -180,7 +180,7 @@ def test_rate_limit_is_an_error_not_empty(monkeypatch):
             raise cl.httpx.HTTPStatusError("rate limited", request=self.request,
                                            response=cl.httpx.Response(403, request=self.request))
 
-    monkeypatch.setattr(cl.httpx, "get", lambda *a, **k: R())
+    monkeypatch.setattr(cl, "http_get", lambda *a, **k: R())
     with pytest.raises(cl.httpx.HTTPStatusError):
         cl.fetch_github_releases("o", "r")
 

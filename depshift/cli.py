@@ -512,7 +512,10 @@ def check(package, target_version, directory, github_token, fmt, output, fail_on
 @click.option("--quiet", "-q", is_flag=True)
 @click.option("--since", default=None, metavar="YYYY-MM-DD")
 @click.option("--deep", is_flag=True, help="Deep mode: diff real API surfaces for every dependency (slower)")
-def check_all(directory, github_token, fmt, output, fail_on, min_severity, exclude, no_cache, quiet, since, deep):
+@click.option("--jobs", "-j", type=click.IntRange(1, 64), default=8, show_default=True,
+              help="Dependencies to check in parallel")
+def check_all(directory, github_token, fmt, output, fail_on, min_severity, exclude, no_cache, quiet, since, deep,
+              jobs):
     """Check ALL dependencies found in requirements.txt / pyproject.toml / setup.cfg / setup.py / environment.yml."""
     directory = os.path.abspath(directory)
     cfg = load_config(directory)
@@ -535,7 +538,9 @@ def check_all(directory, github_token, fmt, output, fail_on, min_severity, exclu
                       "pyproject.toml, Pipfile, setup.cfg, setup.py, environment.yml)")
         sys.exit(2)
 
-    if not quiet:
+    # JSON/Markdown/HTML on stdout must be nothing but the report
+    chatty = not quiet and (fmt == "terminal" or bool(output))
+    if chatty:
         console.print(f"Found [bold]{len(deps)}[/] dependencies to check\n")
 
     # collect all results with progress bar, then print
@@ -547,24 +552,42 @@ def check_all(directory, github_token, fmt, output, fail_on, min_severity, exclu
         TaskProgressColumn(),
         console=console,
         transient=True,
-        disable=quiet,
+        disable=not chatty,
     ) as progress:
         task = progress.add_task("Checking dependencies...", total=len(deps))
-        for dep in deps:
-            progress.update(task, description=f"Checking [bold]{dep.name}[/]...")
+
+        def check_one(dep):
             lock = locks.get(dep.name)
             r = _run_single_check(dep.name, None, directory, github_token, cfg,
                                   suppress_errors=True, since=since, pinned=dep.pinned_version,
                                   deep=deep, spec=specifier_of(dep.raw),
                                   locked=lock.version if lock else None)
-            if r:
-                if dep.source.endswith(UNDECLARED):
-                    r["undeclared"] = True
-                    r.setdefault("warnings", []).append(
-                        f"imported by your code but not declared as a dependency "
-                        f"(only present via {lock.source if lock else 'another package'})")
-                results.append(r)
-            progress.advance(task)
+            if r and dep.source.endswith(UNDECLARED):
+                r["undeclared"] = True
+                r.setdefault("warnings", []).append(
+                    f"imported by your code but not declared as a dependency "
+                    f"(only present via {lock.source if lock else 'another package'})")
+            return r
+
+        # Checks are almost entirely network waits (PyPI, GitHub, downloads),
+        # so threads overlap them well. Results keep the dependency order.
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        slots: List[Optional[dict]] = [None] * len(deps)
+        with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+            futures = {pool.submit(check_one, dep): i for i, dep in enumerate(deps)}
+            for fut in as_completed(futures):
+                i = futures[fut]
+                try:
+                    slots[i] = fut.result()
+                except Exception as e:  # one broken package must not sink the run
+                    slots[i] = {
+                        "package": deps[i].name, "current_version": None, "target_version": "?",
+                        "risks": [], "safe_count": 0, "breaking_count": 0, "deprecated_count": 0,
+                        "unchecked": True, "warnings": [f"check crashed ({type(e).__name__}: {e})"],
+                    }
+                progress.update(task, description=f"Checked [bold]{deps[i].name}[/]")
+                progress.advance(task)
+        results = [r for r in slots if r]
 
     # print results after progress bar closes cleanly
     if fmt == "terminal":
