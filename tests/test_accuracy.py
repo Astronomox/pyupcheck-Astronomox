@@ -735,3 +735,34 @@ def test_collect_changes_history_keeps_earlier_deprecations(monkeypatch):
     report = collect_changes("pkg", "1.5.0", "2.0.0")
     assert [e.version for e in report.entries] == ["2.0.0"]           # range only
     assert any(e.replacement == "pkg.new" for e in report.history)    # history keeps 1.1.0
+
+
+def test_getattr_tombstone_is_not_an_export():
+    old = {"pkg": "def load_boston(): pass\ndef load_iris(): pass"}
+    new = {"pkg": textwrap.dedent("""\
+        def load_iris(): pass
+        def __getattr__(name):
+            if name == "load_boston":
+                raise ImportError("load_boston was removed, see ...")
+            if name in ("old_alias",):
+                return load_iris
+            raise AttributeError(name)
+        """)}
+    ch = diff(old, new)
+    assert match_precise([U("pkg.load_boston")], ch, "pkg")
+    n = build_surface("2.0", {k: [v] for k, v in new.items()})
+    assert "old_alias" in n.exports["pkg"] and "load_boston" not in n.exports["pkg"]
+
+
+def test_bundled_tests_are_not_api():
+    ch = diff({"pkg.tests.test_x": "def test_a(): pass", "pkg": ""}, {"pkg.tests.test_x": "", "pkg": ""})
+    assert ch == []
+
+
+@pytest.mark.parametrize("line,apis", [
+    ("- Remove to_numpy_matrix & from_numpy_matrix (#5746)", {"to_numpy_matrix", "from_numpy_matrix"}),
+    ("- Removed the read_only flag handling", {"unknown"}),
+    ("- Drop support for python_2", {"unknown"}),
+])
+def test_bare_snake_case_names_after_verb(line, apis):
+    assert {e.api for e in parse_changelog_text(line, "3.0")} == apis

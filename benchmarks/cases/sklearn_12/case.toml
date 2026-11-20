@@ -1,0 +1,4 @@
+package = "scikit-learn"
+from = "1.1.3"
+to = "1.2.0"
+source = "scikit-learn 1.2 release notes: load_boston and plot_confusion_matrix removed"

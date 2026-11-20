@@ -105,6 +105,8 @@ def main(argv=None) -> int:
     ap.add_argument("cases", nargs="*")
     ap.add_argument("--mode", choices=MODES, default="both")
     ap.add_argument("--json", dest="json_out")
+    ap.add_argument("--no-migrate", action="store_true",
+                    help="skip checking migrate's rewrites against migrated.py")
     args = ap.parse_args(argv)
 
     names = args.cases or sorted(n for n in os.listdir(CASES_DIR)
@@ -155,13 +157,62 @@ def main(argv=None) -> int:
         print(f"{m:<10} recall {t.recall:6.1%}   precision {t.precision:6.1%}   "
               f"({len(t.tp)} caught, {len(t.fn)} missed, {len(t.fp)} false alarms)")
 
+    migrate_rows = []
+    if not args.no_migrate:
+        migratable = [n for n in names if os.path.isfile(os.path.join(CASES_DIR, n, "migrated.py"))]
+        if migratable:
+            print()
+            for name in migratable:
+                ok, detail = migrate_case(load_case(name))
+                migrate_rows.append({"case": name, "ok": ok, "detail": detail})
+                print(f"migrate {name:<{width}} {'exact' if ok else 'MISMATCH'}"
+                      + (f"   {detail}" if detail else ""))
+            passed = sum(r["ok"] for r in migrate_rows)
+            print(f"migrate    {passed}/{len(migrate_rows)} cases rewritten exactly as expected")
+
     if args.json_out:
         with open(args.json_out, "w", encoding="utf-8") as f:
-            json.dump({"cases": rows, "totals": {
+            json.dump({"cases": rows, "migrate": migrate_rows, "totals": {
                 m: {"recall": totals[m].recall, "precision": totals[m].precision,
                     "tp": len(totals[m].tp), "fn": len(totals[m].fn), "fp": len(totals[m].fp)}
                 for m in modes}}, f, indent=2)
     return 0
+
+
+def migrate_case(case: dict):
+    """Run migrate on a copy of the case and compare with migrated.py."""
+    import difflib
+    import shutil
+    import tempfile
+    from depshift.apisurface import extract_surface
+    from depshift.rewrite import apply_edits, plan_migration
+
+    with open(os.path.join(case["dir"], "migrated.py"), encoding="utf-8") as f:
+        expected = f.read()
+    with tempfile.TemporaryDirectory() as tmp:
+        shutil.copy(os.path.join(case["dir"], "app.py"), tmp)
+        app = os.path.join(tmp, "app.py")
+        try:
+            names = import_names_for(case["package"])
+            usages = scan_directory(tmp, names)
+            changes = get_api_changes(case["package"], case["from"], case["to"])
+            surface = extract_surface(case["package"], case["to"])
+            if changes is None or surface is None:
+                return False, "could not extract API surface"
+            history = collect_changes(case["package"], case["from"], case["to"],
+                                      github_token=os.environ.get("GITHUB_TOKEN"), lookback=True).history
+            returns = get_return_types(case["package"], case["from"], case["to"])
+            plan = plan_migration(usages, changes, surface, names, history, returns)
+            with open(app, encoding="utf-8") as f:
+                before = f.read()
+            after = apply_edits(before, [e for fx in plan.fixes for e in fx.edits])
+        except Exception as e:  # report, keep going
+            return False, f"{type(e).__name__}: {e}"[:120]
+    if after == expected:
+        return True, ""
+    diff = [ln for ln in difflib.unified_diff(expected.splitlines(), after.splitlines(), lineterm="", n=0)
+            if ln.startswith(("+", "-")) and not ln.startswith(("+++", "---"))]
+    return False, " | ".join(diff[:4])[:200]
 
 
 if __name__ == "__main__":

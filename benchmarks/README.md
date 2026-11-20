@@ -24,16 +24,23 @@ Create `cases/<name>/` with:
 
 Only mark a line `# BREAK` when an upstream source says so.
 
+Optionally add `migrated.py`: the exact file `pyupcheck migrate --write`
+should produce. Only expect rewrites whose replacement the package's own
+notes name; if they don't (NetworkX 3's `to_numpy_matrix`), `migrated.py`
+is identical to `app.py`, which checks that migrate doesn't guess.
+
 ## Current results
 
 | Mode | Recall | Precision |
 |---|---|---|
-| changelog (default) | 65.9% | 100% |
+| changelog (default) | 61.4% | 100% |
 | `--deep` | 100% | 100% |
+| `migrate` (exact rewrite) | 6/6 cases | |
 
-18 cases, 41 breaking lines: click 8.1, Django 4.0, Flask 3, Jinja 3.1,
-Matplotlib 3.9, NumPy 2, pandas 2, Pillow 10, Pydantic 2, PyYAML 6,
-SciPy 1.14, SQLAlchemy 2, urllib3 2, Werkzeug 3, two inference cases
-(objects reached through helper functions, `self` attributes and chained
-calls), plus two negative controls. Changelog misses are mostly changes
-worded loosely or described only in migration guides; deep mode catches them.
+26 cases, 57 breaking lines: click 8.1, Django 4.0 (two cases), Flask 3,
+Jinja 3.1, Matplotlib 3.9, NetworkX 3, NumPy 2 (two cases), pandas 2 (two
+cases), Pillow 10, Pydantic 2, PyYAML 6, scikit-learn 1.2, SciPy 1.14,
+SQLAlchemy 2, urllib3 2, Werkzeug 2.1 and 3, two inference cases, and four
+negative controls (requests, Flask, NumPy and Django patch releases).
+Changelog misses are mostly changes worded loosely or described only in
+migration guides; deep mode catches them.

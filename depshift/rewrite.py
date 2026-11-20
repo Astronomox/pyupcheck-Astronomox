@@ -316,8 +316,9 @@ def _fix_moved_name(u: Usage, ch: APIChange, idx: _Index, repl_map: Dict[str, st
                     new_surface: APISurface, roots: List[str]) -> Optional[Fix]:
     old_api = u.attr_chain
     old_short = old_api.rsplit(".", 1)[-1]
-    target = ch.replacement or repl_map.get(ch.api) or repl_map.get(old_api) \
-        or repl_map.get(old_short)
+    # the package's own words beat an inferred location
+    target = repl_map.get(ch.api) or repl_map.get(old_api) or repl_map.get(old_short) \
+        or ch.replacement
     if not target:
         return None
     target = _resolve_replacement(old_api, _normalize(target, roots), roots)

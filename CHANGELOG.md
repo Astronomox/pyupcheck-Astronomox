@@ -4,6 +4,15 @@ All notable changes to pyupcheck are documented here.
 
 ## [Unreleased]
 
+### Added
+- Benchmark: 26 cases / 57 breaking lines (NumPy 2 aliases, NetworkX 3, scikit-learn 1.2, Werkzeug 2.1, pandas 2 methods, Django 4.0 `urlquote`, NumPy and Django patch-release controls) and `migrated.py` expectations that check `migrate`'s exact output
+- Changelog parsing picks up unmarked snake_case names right after a removal verb ("Remove to_numpy_matrix & from_numpy_matrix"); NetworkX `doc/release/release_X.rst` notes are read
+
+### Fixed
+- A module `__getattr__` branch that only raises (scikit-learn 1.2's `load_boston` explanation) no longer makes the removed name look available
+- Test modules shipped inside a package (`sklearn/datasets/tests`) are no longer treated as API
+- `--deep` no longer suggests a same-named function in another package as the new home (NumPy 2 `round_` is not `numpy.ma.core.round_`), and `migrate` prefers the replacement the changelog names
+
 ## [0.8.0] - 2026-11-20
 
 ### Added

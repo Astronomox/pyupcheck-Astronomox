@@ -163,3 +163,15 @@ def test_removed_without_replacement_is_manual(tmp_path):
         """, {"pkg": "def gone(): pass\ndef stays(): pass"}, {"pkg": "def stays(): pass"})
     assert "pkg.gone()" in after
     assert plan.manual
+
+
+def test_same_name_in_other_package_is_not_a_new_home(tmp_path):
+    old = {"numpy": "from numpy.core.fromnumeric import round_", "numpy.core.fromnumeric": "def round_(a): pass",
+           "numpy.ma.core": "def round_(a): pass", "numpy.core": ""}
+    new = {"numpy": "def round(a): pass", "numpy.core.fromnumeric": "", "numpy.ma.core": "def round_(a): pass",
+           "numpy.core": ""}
+    changes, new_surface = surfaces(old, new)
+    assert all(c.replacement != "numpy.ma.core.round_" for c in changes)
+    plan, after = migrate(tmp_path, "import numpy as np\nr = np.round_(1)\n", old, new,
+                          changelog="- ``np.round_`` has been removed. Use ``np.round`` instead.", pkg="numpy")
+    assert "np.round(1)" in after and not plan.manual
