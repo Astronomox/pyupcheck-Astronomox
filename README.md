@@ -48,6 +48,21 @@ If a lockfile is present (`uv.lock`, `poetry.lock`, `pdm.lock`, `pylock.toml`, `
 
 Install names and import names don't have to match: `pyyaml` is scanned as `yaml`, `Pillow` as `PIL`, `scikit-learn` as `sklearn`, `protobuf` as `google.protobuf`. Names come from the installed package's metadata when available, then a built-in table of known mismatches.
 
+### `migrate` - rewrite your code for an upgrade
+
+```bash
+pyupcheck migrate scipy 1.14.0          # show a diff of the fixes
+pyupcheck migrate scipy 1.14.0 --write  # apply them
+```
+
+Applies only mechanical changes it can verify against the new version's real API:
+
+- arguments that became keyword-only: `f(a, 1)` -> `f(a, b=1)`
+- renamed keyword arguments: `Retry(method_whitelist=...)` -> `Retry(allowed_methods=...)`
+- renamed or moved names: `integrate.simps` -> `integrate.simpson`, `np.float_` -> `np.float64`, `from django.utils.encoding import force_text` -> `... import force_str as force_text`
+
+Replacements come from the package's own deprecation notes (including ones published before your current version), are paired one-to-one ("`a`, `b` in favour of `x`, `y` respectively"), and are only applied if the replacement exists in the target version. Anything else that breaks (a new required argument, an API moved to another package) is listed for you to change by hand, and the command exits 1 while such items remain.
+
 ### `outdated` - list stale dependencies
 
 ```bash

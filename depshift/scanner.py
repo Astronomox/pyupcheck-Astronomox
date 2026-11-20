@@ -16,6 +16,7 @@ class Usage:
     usage_type: str  # "import", "function_call", "attribute_access", "submodule"
     call_args: Optional[List[str]] = None  # positional arg count marker + keyword names
     kwargs: Optional[List[str]] = None  # keyword argument names used in a call
+    col: Optional[int] = None  # column (UTF-8 byte offset) of the node, for rewriting
 
 
 class PackageVisitor(ast.NodeVisitor):
@@ -196,7 +197,7 @@ class PackageVisitor(ast.NodeVisitor):
                     continue  # parent of a namespace package, e.g. `import google`
                 self.usages.append(Usage(
                     file=self.filepath,
-                    line=node.lineno,
+                    line=node.lineno, col=node.col_offset,
                     code=self.lines[node.lineno - 1].strip(),
                     attr_chain=alias.name,
                     usage_type="import",
@@ -211,7 +212,7 @@ class PackageVisitor(ast.NodeVisitor):
             if alias.name == "*":
                 if self._is_package_ref(module):
                     self.usages.append(Usage(
-                        file=self.filepath, line=node.lineno,
+                        file=self.filepath, line=node.lineno, col=node.col_offset,
                         code=self.lines[node.lineno - 1].strip(),
                         attr_chain=module, usage_type="import",
                     ))
@@ -223,7 +224,7 @@ class PackageVisitor(ast.NodeVisitor):
                 self.from_imports[local] = full
                 self.usages.append(Usage(
                     file=self.filepath,
-                    line=node.lineno,
+                    line=node.lineno, col=node.col_offset,
                     code=self.lines[node.lineno - 1].strip(),
                     attr_chain=full,
                     usage_type="import",
@@ -240,7 +241,7 @@ class PackageVisitor(ast.NodeVisitor):
         if chain and self._is_package_ref(chain):
             self.usages.append(Usage(
                 file=self.filepath,
-                line=node.lineno,
+                line=node.lineno, col=node.col_offset,
                 code=self.lines[node.lineno - 1].strip(),
                 attr_chain=chain,
                 usage_type="attribute_access",
@@ -255,7 +256,7 @@ class PackageVisitor(ast.NodeVisitor):
         full = self.from_imports.get(node.id)
         if full and self._is_package_ref(full):
             self.usages.append(Usage(
-                file=self.filepath, line=node.lineno,
+                file=self.filepath, line=node.lineno, col=node.col_offset,
                 code=self.lines[node.lineno - 1].strip(),
                 attr_chain=full, usage_type="attribute_access",
             ))
@@ -267,7 +268,7 @@ class PackageVisitor(ast.NodeVisitor):
             kwargs = [kw.arg for kw in node.keywords if kw.arg]
             self.usages.append(Usage(
                 file=self.filepath,
-                line=node.lineno,
+                line=node.lineno, col=node.col_offset,
                 code=self.lines[node.lineno - 1].strip(),
                 attr_chain=chain,
                 usage_type="function_call",
@@ -289,7 +290,7 @@ class PackageVisitor(ast.NodeVisitor):
                 if mod == self.package or mod.startswith(f"{self.package}."):
                     self.usages.append(Usage(
                         file=self.filepath,
-                        line=node.lineno,
+                        line=node.lineno, col=node.col_offset,
                         code=self.lines[node.lineno - 1].strip(),
                         attr_chain=mod,
                         usage_type="dynamic_import",

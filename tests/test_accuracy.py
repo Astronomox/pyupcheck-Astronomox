@@ -674,3 +674,64 @@ def test_unknown_self_attribute_not_resolved():
                 return self.name.upper()
     """)
     assert not any("upper" in u.attr_chain for u in us)
+
+
+# ── replacements: pairing, aliases, call-style mentions, generic sub-headings ─
+
+def test_respectively_pairs_by_order():
+    e = parse_changelog_text(
+        "- ``a.trapz``, ``a.cumtrapz``, and ``a.simps`` have been deprecated in favour of "
+        "``a.trapezoid``, ``a.cumulative_trapezoid``, and ``a.simpson`` respectively", "1.12")
+    assert {x.api: x.replacement for x in e} == {
+        "a.trapz": "a.trapezoid", "a.cumtrapz": "a.cumulative_trapezoid", "a.simps": "a.simpson"}
+
+
+def test_one_replacement_for_many_is_ambiguous():
+    e = parse_changelog_text("- ``a.old`` and ``a.older`` are deprecated, use ``a.new`` instead.", "1.0")
+    assert all(x.replacement is None for x in e)
+
+
+def test_aliases_of_is_a_replacement_and_not_deprecated():
+    e = parse_changelog_text(
+        "- The ``smart_text()`` and ``force_text()`` aliases (since Django 2.0) of "
+        "``smart_str()`` and ``force_str()`` are deprecated.", "3.0")
+    assert {x.api: x.replacement for x in e} == {"smart_text": "smart_str", "force_text": "force_str"}
+
+
+def test_call_style_kwarg_mention():
+    e = parse_changelog_text(
+        "- Deprecated ``Retry`` options ``Retry(method_whitelist=...)`` in favor of "
+        "``Retry(allowed_methods=...)``", "1.26.0")
+    assert [(x.api, x.replacement) for x in e] == [("Retry.method_whitelist", "Retry.allowed_methods")]
+
+
+def test_in_favor_of_is_not_keyword_in():
+    e = parse_changelog_text("- Deprecated ``Retry`` option ``method_whitelist`` in favor of ``allowed_methods``.", "1.0")
+    assert [(x.api, x.replacement) for x in e] == [("Retry.method_whitelist", "allowed_methods")]
+
+
+def test_generic_subheading_inherits_deprecation_section():
+    text = textwrap.dedent("""\
+        Features deprecated in 3.0
+        ==========================
+
+        Miscellaneous
+        -------------
+
+        * ``pkg.ugettext()`` is deprecated in favor of ``pkg.gettext()``.
+        """)
+    e = parse_changelog_text(text, "3.0")
+    assert [(x.kind, x.api, x.replacement) for x in e] == [("deprecated", "pkg.ugettext", "pkg.gettext")]
+
+
+def test_collect_changes_history_keeps_earlier_deprecations(monkeypatch):
+    import depshift.changelog as cl
+    changelog = "## 2.0.0\n- Removed ``pkg.old``.\n\n## 1.1.0\n- ``pkg.old`` is deprecated, use ``pkg.new``.\n"
+    monkeypatch.setattr(cl, "get_pypi_info", lambda p: {"info": {"project_urls": {"Source": "https://github.com/o/r"}}})
+    monkeypatch.setattr(cl, "fetch_github_releases", lambda o, r, token=None: [])
+    monkeypatch.setattr(cl, "fetch_raw_changelog", lambda o, r, token=None: changelog)
+    monkeypatch.setattr(cl, "fetch_docs_release_notes", lambda *a, **k: None)
+    monkeypatch.setattr(cl, "get_pypi_version_info", lambda p, v: {"info": {"description": ""}})
+    report = collect_changes("pkg", "1.5.0", "2.0.0")
+    assert [e.version for e in report.entries] == ["2.0.0"]           # range only
+    assert any(e.replacement == "pkg.new" for e in report.history)    # history keeps 1.1.0
