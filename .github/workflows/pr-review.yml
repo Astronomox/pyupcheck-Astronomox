@@ -1,0 +1,23 @@
+name: Dependency review
+
+# pyupcheck reviewing its own dependency PRs with the action in this repo.
+on:
+  pull_request:
+    paths:
+      - "requirements*.txt"
+      - "pyproject.toml"
+      - "*.lock"
+      - "pylock*.toml"
+
+permissions:
+  contents: read
+  pull-requests: write  # to post the review comment
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # the base commit's dependency files are compared
+      - uses: ./

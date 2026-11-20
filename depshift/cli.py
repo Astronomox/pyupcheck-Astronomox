@@ -5,7 +5,7 @@ import os
 import re
 import sys
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import click
 from rich.console import Console
@@ -332,7 +332,7 @@ def _run_single_check(package: str, target_version: Optional[str], directory: st
         for r in risks
     ]
     # prepend precise (fact-based) findings — they're more trustworthy
-    all_risks = precise_findings + risk_dicts
+    all_risks = _dedupe_risks(precise_findings + risk_dicts)
 
     return {
         "package": package,
@@ -348,6 +348,24 @@ def _run_single_check(package: str, target_version: Optional[str], directory: st
         # nothing could be read at all: "OK" would be a lie
         "unchecked": not changelog_checked and not (deep and api_changes is not None),
     }
+
+
+def _dedupe_risks(risks: List[dict]) -> List[dict]:
+    """One finding per (file, line, API): the most severe, verified first.
+
+    A removed API usually also has an earlier deprecation notice; once a
+    line is known to break, repeating that it was deprecated is noise.
+    """
+    order = {"breaking": 0, "deprecated": 1, "warning": 2}
+    best: Dict[tuple, dict] = {}
+    for r in risks:
+        key = (r["file"], r["line"], r["api"])
+        cur = best.get(key)
+        rank = (order.get(r["severity"], 3), 0 if r.get("precise") else 1)
+        if cur is None or rank < (order.get(cur["severity"], 3), 0 if cur.get("precise") else 1):
+            best[key] = r
+    kept = {id(r) for r in best.values()}
+    return [r for r in risks if id(r) in kept]
 
 
 def _should_fail(results: List[dict], fail_on: str) -> bool:
@@ -740,6 +758,93 @@ def fix(directory, dry_run, no_cache):
             console.print(f"[red]Could not write {req_path}:[/] {e}")
 
     console.print("\n[green]Done.[/] Run [bold]pip install -r requirements.txt[/] to apply.")
+
+
+# ── review ────────────────────────────────────────────────────────────────────
+
+def _fixable_count(package: str, old: str, new: str, directory: str, cfg,
+                   github_token: Optional[str]) -> Optional[int]:
+    """How many breaking usages `migrate` would fix automatically."""
+    from depshift.apisurface import extract_surface
+    from depshift.rewrite import plan_migration
+    names = import_names_for(package)
+    usages = scan_directory(directory, names, exclude_dirs=cfg.exclude_dirs)
+    changes = get_api_changes(package, old, new)
+    surface = extract_surface(package, new)
+    if changes is None or surface is None:
+        return None
+    try:
+        history = collect_changes(package, old, new, github_token=github_token, lookback=True).history
+    except Exception:
+        history = []
+    plan = plan_migration(usages, changes, surface, names, history,
+                          get_return_types(package, old, new))
+    return len(plan.fixes)
+
+
+@main.command()
+@click.option("--base", required=True, help="Git ref to compare against (e.g. origin/main, the PR base SHA)")
+@click.option("--dir", "-d", "directory", default=".", help="Repository root")
+@click.option("--deep/--no-deep", default=True, show_default=True,
+              help="Diff real API surfaces and count what migrate can fix")
+@click.option("--output", "-o", default=None, help="Write the Markdown report to a file")
+@click.option("--fail-on", type=click.Choice(["breaking", "deprecated", "any", "never"]), default="never",
+              show_default=True)
+@click.option("--github-token", envvar="GITHUB_TOKEN", default=None)
+@click.option("--jobs", "-j", type=click.IntRange(1, 64), default=8, show_default=True)
+@click.option("--no-cache", is_flag=True)
+def review(base, directory, deep, output, fail_on, github_token, jobs, no_cache):
+    """Check the dependency versions changed since BASE (for pull requests).
+
+    Compares dependency files and lockfiles at --base with the working tree,
+    then checks each package that changed version, from its old version to
+    its new one. Prints Markdown suitable for a PR comment.
+    """
+    import subprocess as _sp
+    from concurrent.futures import ThreadPoolExecutor
+    from depshift.review import changed_dependencies, render_review
+
+    directory = os.path.abspath(directory)
+    cfg = load_config(directory)
+    if no_cache or not cfg.cache:
+        cache_mod.disable_cache()
+    try:
+        changes = changed_dependencies(directory, base)
+    except (_sp.CalledProcessError, FileNotFoundError) as e:
+        detail = getattr(e, "stderr", "") or str(e)
+        console.print(f"[red]Could not read dependency files at {base}:[/] {detail.strip()}")
+        sys.exit(2)
+    ignored = {normalize_name(p) for p in cfg.ignore_packages}
+    changes = [c for c in changes if c.name not in ignored]
+
+    def one(change):
+        r = _run_single_check(change.name, change.new, directory, github_token, cfg,
+                              suppress_errors=True, deep=deep, spec=specifier_of(change.raw),
+                              locked=change.old)
+        if r is None:
+            return None
+        if r.get("up_to_date"):
+            # a downgrade or no-op: nothing new to break
+            r.setdefault("warnings", []).append(f"{change.old} -> {change.new} is not an upgrade; not checked")
+            r["current_version"] = change.old
+        elif deep and r["breaking_count"]:
+            try:
+                r["fixable"] = _fixable_count(change.name, change.old, change.new, directory, cfg,
+                                              github_token)
+            except Exception:
+                r["fixable"] = None
+        return r
+
+    with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+        results = [r for r in pool.map(one, changes) if r]
+
+    text = render_review(results, repo_root=directory)
+    if output:
+        with open(output, "w", encoding="utf-8") as f:
+            f.write(text)
+    else:
+        print(text)
+    sys.exit(1 if _should_fail(results, fail_on) else 0)
 
 
 # ── migrate ───────────────────────────────────────────────────────────────────
