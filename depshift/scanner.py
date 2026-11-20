@@ -31,12 +31,96 @@ class PackageVisitor(ast.NodeVisitor):
         # variable -> package class it holds an instance of, e.g. s -> requests.Session
         self.instances: Dict[str, str] = {}
         self._call_funcs: Set[int] = set()  # Name nodes already recorded as calls
+        # light inference, filled by prepare() before the walk
+        self.func_returns: Dict[str, str] = {}             # user function -> package class it returns
+        self.attr_types: Dict[tuple, str] = {}             # (user class, attr) -> package class
+        self._class_stack: List[str] = []
+
+    # ── pre-pass: what user functions return, what classes keep on self ──────
+
+    def prepare(self, tree):
+        """Learn imports, user function return types and ``self.x`` attribute
+        types before the main walk, so ``engine = get_engine()`` and
+        ``self.engine.execute()`` resolve to the package API."""
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for a in node.names:
+                    if self._is_package_ref(a.name) or self.package.startswith(f"{a.name}."):
+                        if a.asname:
+                            self.aliases[a.asname] = a.name
+                        else:
+                            first = a.name.split(".")[0]
+                            self.aliases[first] = first
+            elif isinstance(node, ast.ImportFrom) and not node.level:
+                module = node.module or ""
+                for a in node.names:
+                    full = f"{module}.{a.name}"
+                    if a.name != "*" and (self._is_package_ref(module) or self._is_package_ref(full)):
+                        self.from_imports[a.asname or a.name] = full
+
+        funcs = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        classes = [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]
+        for _ in range(3):  # helpers that call helpers
+            for fn in funcs:
+                if fn.name in self.func_returns:
+                    continue
+                cls = self._annotation_class(fn.returns) or self._infer_returns(fn)
+                if cls:
+                    self.func_returns[fn.name] = cls
+            for c in classes:
+                for item in ast.walk(c):
+                    if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+                        cls = self._annotation_class(item.annotation)
+                        if cls:
+                            self.attr_types.setdefault((c.name, item.target.id), cls)
+                    targets, value = None, None
+                    if isinstance(item, ast.Assign):
+                        targets, value = item.targets, item.value
+                    elif isinstance(item, ast.AnnAssign):
+                        targets, value = [item.target], item.value
+                    if not targets:
+                        continue
+                    for t in targets:
+                        if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name) \
+                                and t.value.id == "self":
+                            cls = (self._annotation_class(item.annotation) if isinstance(item, ast.AnnAssign)
+                                   else None) or (self._class_of(value) if value is not None else None)
+                            if cls:
+                                self.attr_types.setdefault((c.name, t.attr), cls)
+
+    def _infer_returns(self, fn) -> Optional[str]:
+        """Package class a function returns, from its return statements."""
+        local: Dict[str, str] = {}
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Assign):
+                cls = self._class_of(node.value)
+                for t in node.targets:
+                    if isinstance(t, ast.Name) and cls:
+                        local[t.id] = cls
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Return) and node.value is not None:
+                if isinstance(node.value, ast.Name) and node.value.id in local:
+                    return local[node.value.id]
+                cls = self._class_of(node.value)
+                if cls:
+                    return cls
+        return None
+
+    def visit_ClassDef(self, node: ast.ClassDef):
+        self._class_stack.append(node.name)
+        self.generic_visit(node)
+        self._class_stack.pop()
 
     # ── light type tracking ──────────────────────────────────────────────────
 
     def _class_of(self, value) -> Optional[str]:
         """Package class an expression evaluates to an instance of, if obvious."""
         if isinstance(value, ast.Call):
+            if isinstance(value.func, ast.Name) and value.func.id in self.func_returns:
+                return self.func_returns[value.func.id]  # engine = get_engine()
+            if isinstance(value.func, ast.Attribute) and isinstance(value.func.value, ast.Name) \
+                    and value.func.value.id == "self" and value.func.attr in self.func_returns:
+                return self.func_returns[value.func.attr]  # self.make_engine()
             chain = self._resolve_attr_chain(value.func)
             if chain and self._is_package_ref(chain):
                 return chain
@@ -220,6 +304,21 @@ class PackageVisitor(ast.NodeVisitor):
         while isinstance(current, ast.Attribute):
             parts.append(current.attr)
             current = current.value
+        if isinstance(current, ast.Call) and parts:
+            # method on a call result: get_engine().execute, pd.DataFrame(...).append
+            base = self._class_of(current)
+            if base:
+                parts.reverse()
+                return f"{base}.{'.'.join(parts)}"
+            return None
+        if isinstance(current, ast.Name) and current.id == "self" and len(parts) >= 2 \
+                and self._class_stack:
+            # self.engine.execute -> sqlalchemy.create_engine.execute
+            parts.reverse()
+            cls = self.attr_types.get((self._class_stack[-1], parts[0]))
+            if cls:
+                return f"{cls}.{'.'.join(parts[1:])}"
+            return None
         if isinstance(current, ast.Name):
             parts.append(current.id)
             parts.reverse()
@@ -266,6 +365,7 @@ def scan_file(filepath: str, package_name: PackageNames) -> List[Usage]:
     found: List[Usage] = []
     for name in _as_names(package_name):
         visitor = PackageVisitor(name, lines, filepath)
+        visitor.prepare(tree)
         visitor.visit(tree)
         found.extend(visitor.usages)
 
@@ -306,6 +406,7 @@ def scan_notebook(filepath: str, package_name: PackageNames) -> List[Usage]:
             continue
         for name in _as_names(package_name):
             visitor = PackageVisitor(name, lines, filepath)
+            visitor.prepare(tree)
             visitor.visit(tree)
             for u in visitor.usages:
                 # u.line stays relative to the cell; the cell number goes in code

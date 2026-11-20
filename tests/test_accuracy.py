@@ -606,3 +606,71 @@ def test_nested_bullets_belong_to_parent():
     simpson = [e for e in entries if e.api == "integrate.simpson"]
     assert simpson and all(e.confidence == "low" for e in simpson)
     assert any(e.api == "scipy.misc" and e.confidence != "low" for e in entries)
+
+
+def test_keyword_from_owner_phrase():
+    e = parse_changelog_text(
+        "- Remove keyword ``mangle_dupe_cols`` from :func:`read_csv` and :func:`read_table`", "2.0")
+    assert {x.api for x in e} == {"read_csv.mangle_dupe_cols", "read_table.mangle_dupe_cols"}
+
+
+# ── scanner inference ─────────────────────────────────────────────────────────
+
+def test_helper_return_and_self_attribute_inference():
+    us = scan("""
+        from sqlalchemy import create_engine
+        import pandas as pd
+
+        def get_engine():
+            return create_engine("sqlite://")
+
+        def build():
+            df = pd.DataFrame()
+            return df
+
+        def load() -> "pd.DataFrame":
+            return something()
+
+        class Repo:
+            def __init__(self):
+                self.engine = get_engine()
+
+            def run(self):
+                return self.engine.execute("x")
+
+        e = get_engine()
+        e.execute("y")
+        get_engine().execute("z")
+        build().append({})
+        load().append({})
+        pd.DataFrame().append({})
+    """, pkg="sqlalchemy") + scan("""
+        import pandas as pd
+        def build():
+            df = pd.DataFrame()
+            return df
+        def load() -> "pd.DataFrame":
+            return something()
+        build().append({})
+        load().append({})
+        pd.DataFrame().append({})
+    """, pkg="pandas")
+    got = calls(us)
+    assert ("sqlalchemy.create_engine.execute", ()) in got
+    assert sum(1 for c in got if c[0] == "sqlalchemy.create_engine.execute") == 1  # deduped set
+    lines = sorted(u.line for u in us if u.attr_chain == "sqlalchemy.create_engine.execute")
+    assert len(lines) == 3  # self.engine.execute, e.execute, get_engine().execute
+    assert {u.attr_chain for u in us if u.attr_chain.endswith(".append")} == {"pandas.DataFrame.append"}
+    assert len([u for u in us if u.attr_chain == "pandas.DataFrame.append"]) == 3
+
+
+def test_unknown_self_attribute_not_resolved():
+    us = scan("""
+        import requests
+        class C:
+            def __init__(self):
+                self.name = "x"
+            def go(self):
+                return self.name.upper()
+    """)
+    assert not any("upper" in u.attr_chain for u in us)

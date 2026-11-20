@@ -28,12 +28,12 @@ Only mark a line `# BREAK` when an upstream source says so.
 
 | Mode | Recall | Precision |
 |---|---|---|
-| changelog (default) | 70.6% | 100% |
+| changelog (default) | 65.9% | 100% |
 | `--deep` | 100% | 100% |
 
-16 cases, 34 breaking lines: click 8.1, Django 4.0, Flask 3, Jinja 3.1,
+18 cases, 41 breaking lines: click 8.1, Django 4.0, Flask 3, Jinja 3.1,
 Matplotlib 3.9, NumPy 2, pandas 2, Pillow 10, Pydantic 2, PyYAML 6,
-SciPy 1.14, SQLAlchemy 2, urllib3 2, Werkzeug 3, plus two negative controls
-(requests, a Flask patch release). Changelog misses are mostly changes worded
-loosely ("should be imported from MarkupSafe") or described in migration
-guides rather than release notes.
+SciPy 1.14, SQLAlchemy 2, urllib3 2, Werkzeug 3, two inference cases
+(objects reached through helper functions, `self` attributes and chained
+calls), plus two negative controls. Changelog misses are mostly changes
+worded loosely or described only in migration guides; deep mode catches them.

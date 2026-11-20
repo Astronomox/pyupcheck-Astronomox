@@ -5,6 +5,9 @@ All notable changes to pyupcheck are documented here.
 ## [Unreleased]
 
 ### Added
+- The scanner follows package objects through your own code: helper functions that return them (by return annotation or by what they `return`), attributes stored on `self` (`self.engine = create_engine(...)` then `self.engine.execute()`), and methods called on a call result (`get_engine().execute()`, `pd.DataFrame(...).append(...)`)
+- Changelog parsing understands "Remove keyword ``x`` from ``f`` and ``g``" as parameters of `f` and `g`
+- Benchmark cases for inference (SQLAlchemy and pandas objects reached through helpers, attributes and chains): 18 cases, 41 breaking lines
 - Lockfiles: `uv.lock`, `poetry.lock`, `pdm.lock`, `pylock.toml` / `pylock.*.toml` (PEP 751) and `Pipfile.lock`. The locked version is the baseline for `check`, `check-all` and `outdated`
 - `check-all` also checks packages your code imports that are only in the lockfile because another dependency pulls them in (e.g. `urllib3` via `requests`), marked "undeclared"
 - Release notes kept in project docs are read: per-version files (NumPy/SciPy `doc/source/release/X-notes.rst`, pandas `whatsnew/vX.rst`, Pillow `docs/releasenotes/X.rst`, Django `docs/releases/X.txt`), series files (SQLAlchemy `changelog_XY.rst`) and `docs/changelog.*`

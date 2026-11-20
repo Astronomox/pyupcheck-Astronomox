@@ -1,0 +1,4 @@
+package = "pandas"
+from = "1.5.3"
+to = "2.0.0"
+source = "pandas 2.0 whatsnew: DataFrame.append removed. Tests objects reached through helpers, annotations and chains."
