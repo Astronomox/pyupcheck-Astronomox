@@ -197,15 +197,9 @@ cd pyupcheck-Astronomox
 pip install -e "."
 ```
 
-**Releasing (for maintainers and forks)**
+**Releasing (for maintainers)**
 
-An `upload.bat` script is included to build and publish in one step. Get a PyPI API token from https://pypi.org/manage/account/token/ and run:
-
-```
-upload.bat YOUR_PYPI_TOKEN
-```
-
-It cleans old builds, builds the package, uploads to PyPI, installs the new version locally, and shows the banner to confirm. Never commit your token.
+Releases are published by GitHub Actions when a version tag is pushed, using PyPI Trusted Publishing (no tokens). See [RELEASING.md](RELEASING.md).
 
 **Things that would genuinely improve the tool:**
 

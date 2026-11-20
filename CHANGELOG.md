@@ -31,6 +31,7 @@ All notable changes to pyupcheck are documented here.
 - Each result lists which sources could not be read; packages where nothing could be read are reported as NOT CHECKED (terminal, Markdown and HTML) instead of OK
 
 ### Changed
+- Releases are published from GitHub Actions on a version tag using PyPI Trusted Publishing; `upload.bat` (which put the PyPI token on the command line) and `make publish` are removed. `bump.py` also dates the CHANGELOG and accepts `--yes`. See RELEASING.md
 - Baseline order is now: lockfile, exact pin, installed version (if it satisfies the project's constraint), constraint lower bound. Previously the installed version came first
 - Requires Python 3.10+ (3.8 and 3.9 are end-of-life and no longer available on CI runners); CI tests 3.10-3.14
 
