@@ -1,0 +1,4 @@
+package = "django"
+from = "3.2.25"
+to = "4.0"
+source = "Django 4.0 release notes, features removed: django.utils.http.urlquote and urlquote_plus"

@@ -313,9 +313,19 @@ class _SurfaceVisitor(ast.NodeVisitor):
                 lit = _string_literals(sub.value)
                 if lit:
                     local[sub.targets[0].id] = lit
+        # `if name == "load_boston": raise ImportError(...)` is a tombstone:
+        # the name is gone and the module only explains where it went
+        tombstones = set()
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.If):
+                body = [n for stmt in sub.body for n in ast.walk(stmt)]
+                raises = any(isinstance(n, ast.Raise) for n in body)
+                returns = any(isinstance(n, (ast.Return, ast.Yield)) for n in body)
+                if raises and not returns:
+                    tombstones.update(id(n) for n in ast.walk(sub.test) if isinstance(n, ast.Compare))
         for sub in ast.walk(node):
             if not isinstance(sub, ast.Compare) or not isinstance(sub.left, ast.Name) \
-                    or sub.left.id != param:
+                    or sub.left.id != param or id(sub) in tombstones:
                 continue
             for op, comp in zip(sub.ops, sub.comparators):
                 if isinstance(op, (ast.Eq, ast.In)):
@@ -590,7 +600,7 @@ def _resolve_star_imports(surface: APISurface, stars: Dict[str, List[Tuple[int, 
 
 def extract_surface(package: str, version: str) -> Optional[APISurface]:
     """Download a version and extract its public API surface (cached)."""
-    key = f"surface6:{package}:{version}"
+    key = f"surface7:{package}:{version}"
     cached = cache_get(key)
     if cached is not None:
         surf = APISurface(version=version)
@@ -639,9 +649,12 @@ def extract_surface(package: str, version: str) -> Optional[APISurface]:
 
 
 def _is_public_api(dotted: str) -> bool:
-    """True if no segment of the dotted path is private (underscore-prefixed)."""
+    """True if no segment of the dotted path is private (underscore-prefixed)
+    or a bundled test suite (``sklearn.datasets.tests``)."""
     for seg in dotted.split("."):
         if seg.startswith("_") and not (seg.startswith("__") and seg.endswith("__")):
+            return False
+        if seg in ("tests", "test"):
             return False
     return True
 
@@ -713,10 +726,22 @@ def _still_at(new: APISurface, short: str) -> List[str]:
     return sorted(set(paths))
 
 
-def _new_home(new: APISurface, short: str, kind: str) -> Optional[str]:
-    """Where a name that vanished from its old location lives now (unique match only)."""
+def _package_of(dotted: str) -> str:
+    """Package a definition's module sits in, ignoring privacy underscores:
+    numpy._core.fromnumeric.round_ -> numpy.core."""
+    module = dotted.rsplit(".", 1)[0]
+    parent = module.rsplit(".", 1)[0] if "." in module else module
+    return ".".join(seg.lstrip("_") for seg in parent.split("."))
+
+
+def _new_home(new: APISurface, old: str, kind: str) -> Optional[str]:
+    """Where a name that vanished from ``old`` lives now: a unique definition
+    of the same name in the same package (pkg.urls.f -> pkg.newurls.f). A
+    same-named function elsewhere (numpy.ma.core.round_) is a different API."""
+    short = old.rsplit(".", 1)[-1]
     pool = new.functions if kind == "function" else new.classes
-    hits = [k for k in pool if k.rsplit(".", 1)[-1] == short and _is_public_api(k)]
+    hits = [k for k in pool if k.rsplit(".", 1)[-1] == short and _is_public_api(k)
+            and _package_of(k) == _package_of(old)]
     return hits[0] if len(hits) == 1 else None
 
 
@@ -747,7 +772,7 @@ def diff_surfaces(old: APISurface, new: APISurface) -> List[APIChange]:
             continue
         mod = cls.rsplit(".", 1)[0]
         if mod in new.modules or mod not in removed_modules:
-            home = _new_home(new, cls.rsplit(".", 1)[-1], "class")
+            home = _new_home(new, cls, "class")
             changes.append(APIChange(
                 kind="removed_class", api=cls,
                 detail=f"Class '{cls}' was removed in {new.version}"
@@ -775,7 +800,7 @@ def diff_surfaces(old: APISurface, new: APISurface) -> List[APIChange]:
             # report only if the enclosing module/class still exists; otherwise the
             # removal of the parent is the finding
             if parent in new.modules or parent in new.classes:
-                home = _new_home(new, short, "function")
+                home = _new_home(new, fname, "function")
                 changes.append(APIChange(
                     kind="removed_function", api=fname,
                     detail=f"'{fname}()' was removed in {new.version}"

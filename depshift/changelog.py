@@ -212,7 +212,24 @@ def _section_kind(heading: str) -> Optional[str]:
 _API_CALL_KWARG = re.compile(r"`{1,2}([a-zA-Z_][\w.]*)\(([a-zA-Z_]\w*)=[^`]*\)`{1,2}")
 
 
+_BARE_AFTER_VERB = re.compile(
+    r"\b(?:remov|delet|drop|deprecat|renam)\w*\s+((?:[a-z][a-z0-9]*_[a-z0-9_]+(?:\(\))?"
+    r"(?:\s*(?:,|&|and|or)\s*)?)+)", re.IGNORECASE)
+_SNAKE = re.compile(r"[a-z][a-z0-9]*_[a-z0-9_]+")
+
+
 def _extract_apis(line: str) -> List[str]:
+    apis = _extract_marked_apis(line)
+    if apis:
+        return apis
+    # "Remove to_numpy_matrix & from_numpy_matrix (#5746)": snake_case names
+    # right after the verb, unmarked. Only directly after the verb, so prose
+    # like "removed the read_only flag handling" doesn't count.
+    m = _BARE_AFTER_VERB.search(line)
+    return _SNAKE.findall(m.group(1)) if m else []
+
+
+def _extract_marked_apis(line: str) -> List[str]:
     # ``Retry(method_whitelist=...)`` names the parameter Retry.method_whitelist
     line = _API_CALL_KWARG.sub(lambda m: f"``{m.group(1)}.{m.group(2)}``", line)
     apis = [a.rstrip("()").strip(".") for a in _API_BACKTICK.findall(line)]
@@ -531,6 +548,7 @@ DOCS_NOTES_PATTERNS = [
     "docs/release-notes/{v}.rst",
     "docs/changelog/{v}.md",
     "docs/whatsnew/{v}.rst",
+    "doc/release/release_{v}.rst",           # NetworkX
     "docs/releases/{v}.txt",                 # Django (two-part names for x.y.0)
     "docs/releases/{v}.rst",
 ]
@@ -620,7 +638,7 @@ def fetch_docs_release_notes(owner: str, repo: str, versions: List[str],
     """
     if not versions:
         return None
-    key = f"docs-layout2:{owner}/{repo}"
+    key = f"docs-layout3:{owner}/{repo}"
     layout = cache_get(key)
     probe = _three_part(versions[-1])
     if layout is None:

@@ -1,0 +1,5 @@
+package = "networkx"
+from = "2.8.8"
+to = "3.0"
+source = "NetworkX 3.0 release notes: to_numpy_matrix and from_numpy_matrix removed (use *_numpy_array)"
+# migrate must not guess: the notes never name a replacement, so the code stays as is

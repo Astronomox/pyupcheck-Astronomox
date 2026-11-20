@@ -1,0 +1,4 @@
+package = "numpy"
+from = "1.26.0"
+to = "1.26.4"
+source = "Negative control: bug-fix releases"
