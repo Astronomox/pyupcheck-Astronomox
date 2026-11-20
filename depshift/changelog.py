@@ -6,6 +6,8 @@ from typing import List, Optional, Tuple
 
 import httpx
 
+from depshift.http import http_get
+
 
 @dataclass
 class ChangeEntry:
@@ -34,7 +36,7 @@ def get_pypi_info(package: str) -> dict:
     if cached is not None:
         return cached
     url = PYPI_API.format(package=package)
-    resp = httpx.get(url, timeout=15, follow_redirects=True)
+    resp = http_get(url, timeout=15, follow_redirects=True)
     resp.raise_for_status()
     data = resp.json()
     cache_set(key, data)
@@ -48,7 +50,7 @@ def get_pypi_version_info(package: str, version: str) -> dict:
     if cached is not None:
         return cached
     url = PYPI_VERSION_API.format(package=package, version=version)
-    resp = httpx.get(url, timeout=15, follow_redirects=True)
+    resp = http_get(url, timeout=15, follow_redirects=True)
     resp.raise_for_status()
     data = resp.json()
     cache_set(key, data)
@@ -107,11 +109,11 @@ def fetch_github_releases(owner: str, repo: str, token: Optional[str] = None) ->
     page = 1
     while page <= 5:  # cap at 5 pages
         url = f"{GITHUB_RELEASES_API.format(owner=owner, repo=repo)}?per_page=50&page={page}"
-        resp = httpx.get(url, headers=headers, timeout=15, follow_redirects=True)
+        resp = http_get(url, headers=headers, timeout=15, follow_redirects=True)
         if resp.status_code in (401, 403) and "Authorization" in headers:
             # an expired/invalid token must not block a public repo: retry anonymously
             headers.pop("Authorization")
-            resp = httpx.get(url, headers=headers, timeout=15, follow_redirects=True)
+            resp = http_get(url, headers=headers, timeout=15, follow_redirects=True)
         if resp.status_code != 200:
             if page == 1 and resp.status_code in (401, 403, 429):
                 # rate limited or bad token: say so rather than "no breaking changes"
@@ -472,7 +474,7 @@ def fetch_raw_changelog(owner: str, repo: str, token: Optional[str] = None) -> O
             for fname in CHANGELOG_FILENAMES:
                 url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{fname}"
                 try:
-                    resp = httpx.get(url, headers=headers, timeout=10, follow_redirects=True)
+                    resp = http_get(url, headers=headers, timeout=10, follow_redirects=True)
                     if resp.status_code == 200 and len(resp.text) > 50:
                         cache_set(key, resp.text)
                         return resp.text
@@ -517,7 +519,7 @@ def _raw(owner: str, repo: str, path: str, branch: str = "main") -> Optional[str
     """Fetch a public file from GitHub; None if it doesn't exist. Raises on
     network errors so callers can report them."""
     url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
-    resp = httpx.get(url, timeout=10, follow_redirects=True)
+    resp = http_get(url, timeout=10, follow_redirects=True)
     if resp.status_code == 200 and len(resp.text) > 50:
         return resp.text
     if resp.status_code in (404, 400):

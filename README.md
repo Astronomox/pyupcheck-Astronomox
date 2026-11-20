@@ -40,6 +40,7 @@ Reads every `requirements*.txt` (following `-r` includes), `pyproject.toml` (PEP
 ```bash
 pyupcheck check-all
 pyupcheck check-all --deep          # fact-based API diff for every dependency
+pyupcheck check-all -j 16           # check 16 dependencies in parallel (default 8)
 pyupcheck check-all --format html -o report.html
 ```
 

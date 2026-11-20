@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -46,8 +47,11 @@ def cache_set(key: str, data: Any):
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         path = _key_path(key)
-        with open(path, "w", encoding="utf-8") as f:
+        # write then rename: a reader on another thread never sees half a file
+        tmp = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump({"ts": time.time(), "data": data}, f)
+        os.replace(tmp, path)
     except Exception:
         pass
 
