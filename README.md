@@ -100,6 +100,38 @@ pyupcheck check flask -f md -o r.md   # markdown report
 pyupcheck check flask -f html -o r.html # styled HTML report
 ```
 
+## Review dependency pull requests
+
+Comment on every pull request that changes a dependency version (Dependabot, Renovate, or by hand) with the call sites each upgrade breaks and how many `pyupcheck migrate` can fix:
+
+```yaml
+# .github/workflows/dependency-review.yml
+name: Dependency review
+on:
+  pull_request:
+    paths: ["requirements*.txt", "pyproject.toml", "*.lock", "pylock*.toml", "Pipfile*"]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: Astronomox/pyupcheck-Astronomox@v0.8.0
+        # with:
+        #   fail-on: breaking   # make the check fail on breaking usages
+        #   deep: "false"       # changelog only (faster)
+```
+
+The comment is updated in place on later pushes, and the same report is written to the job summary, so it is still visible when the token can't comment (for example on pull requests from forks). Locally:
+
+```bash
+pyupcheck review --base origin/main
+```
+
 ## CI integration
 
 Exit code is 1 when the `--fail-on` condition is met:

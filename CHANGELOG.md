@@ -4,6 +4,15 @@ All notable changes to pyupcheck are documented here.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-20
+
+### Added
+- `pyupcheck review --base REF`: checks only the dependencies whose version changed since `REF` (dependency files and lockfiles, committed or not), from their old version to their new one, and prints a Markdown report with the breaking usages and how many `migrate` can fix
+- GitHub Action (`uses: Astronomox/pyupcheck-Astronomox@vX.Y.Z`): runs `review` on pull requests, posts one comment and updates it on later pushes, writes the report to the job summary, and can fail the check (`fail-on`)
+
+### Fixed
+- A usage reported both as breaking (removed) and as deprecated (the earlier notice) is now reported once, as breaking; verified findings win over changelog ones
+
 ## [0.7.0] - 2026-11-20
 
 ### Added
