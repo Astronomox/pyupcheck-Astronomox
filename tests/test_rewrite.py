@@ -175,3 +175,53 @@ def test_same_name_in_other_package_is_not_a_new_home(tmp_path):
     plan, after = migrate(tmp_path, "import numpy as np\nr = np.round_(1)\n", old, new,
                           changelog="- ``np.round_`` has been removed. Use ``np.round`` instead.", pkg="numpy")
     assert "np.round(1)" in after and not plan.manual
+
+
+# ── moved to another package ──────────────────────────────────────────────────
+
+FLASK_OLD = {"flask": "from markupsafe import Markup, escape\nfrom flask.app import Flask", "flask.app": "class Flask: pass"}
+FLASK_NEW = {"flask": "from flask.app import Flask", "flask.app": "class Flask: pass"}
+FLASK_NOTE = ("- Importing ``escape`` and ``Markup`` from ``flask`` is deprecated. "
+              "Import them directly from ``markupsafe`` instead.")
+
+
+def migrate_ext(tmp_path, code, verify):
+    path = tmp_path / "app.py"
+    path.write_text(textwrap.dedent(code), encoding="utf-8")
+    changes, new_surface = surfaces(FLASK_OLD, FLASK_NEW)
+    plan = plan_migration(scan_file(str(path), "flask"), changes, new_surface, "flask",
+                          parse_changelog_text(FLASK_NOTE, "2.3.0"), verify_external=verify)
+    after = apply_edits(path.read_text(), [e for f in plan.fixes for e in f.edits])
+    ast.parse(after)
+    return plan, after
+
+
+def test_import_moved_to_other_package(tmp_path):
+    plan, after = migrate_ext(tmp_path, """
+        from flask import Markup
+        from flask import escape as esc
+        x = Markup("<b>") + esc("y")
+        """, verify=lambda dotted: dotted in {"markupsafe.Markup", "markupsafe.escape"})
+    assert "from markupsafe import Markup\n" in after
+    assert "from markupsafe import escape as esc\n" in after
+    assert 'Markup("<b>") + esc("y")' in after  # call sites untouched, still valid
+    assert not plan.manual
+
+
+def test_other_package_missing_name_is_manual(tmp_path):
+    plan, after = migrate_ext(tmp_path, "from flask import Markup\n", verify=lambda dotted: False)
+    assert after == "from flask import Markup\n"
+    assert plan.manual
+
+
+def test_attribute_use_of_moved_name_stays_manual(tmp_path):
+    plan, after = migrate_ext(tmp_path, "import flask\nx = flask.Markup('a')\n", verify=lambda d: True)
+    assert "flask.Markup('a')" in after  # would need a new import line: left to a person
+    assert plan.manual
+
+
+def test_stdlib_verified_by_reading_source_not_importing():
+    from depshift.rewrite import exists_elsewhere
+    assert exists_elsewhere("urllib.parse.quote")
+    assert not exists_elsewhere("urllib.parse.no_such_name")
+    assert exists_elsewhere("antigravity.geohash")  # parsed, never imported

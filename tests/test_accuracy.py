@@ -766,3 +766,10 @@ def test_bundled_tests_are_not_api():
 ])
 def test_bare_snake_case_names_after_verb(line, apis):
     assert {e.api for e in parse_changelog_text(line, "3.0")} == apis
+
+
+def test_import_them_from_other_package():
+    e = parse_changelog_text(
+        "- Importing ``escape`` and ``Markup`` from ``flask`` is deprecated. "
+        "Import them directly from ``markupsafe`` instead.", "2.3.0")
+    assert {(x.api, x.replacement) for x in e} == {("escape", "markupsafe.escape"), ("Markup", "markupsafe.Markup")}

@@ -5,6 +5,9 @@ All notable changes to pyupcheck are documented here.
 ## [Unreleased]
 
 ### Added
+- `migrate` rewrites imports of names that moved to another package when the changelog says so ("Import them directly from ``markupsafe``": `from flask import Markup` -> `from markupsafe import Markup`). The name is verified first: third-party packages by reading their latest release's API, standard-library modules by parsing their source (never by importing what a changelog names)
+
+### Added
 - Benchmark: 26 cases / 57 breaking lines (NumPy 2 aliases, NetworkX 3, scikit-learn 1.2, Werkzeug 2.1, pandas 2 methods, Django 4.0 `urlquote`, NumPy and Django patch-release controls) and `migrated.py` expectations that check `migrate`'s exact output
 - Changelog parsing picks up unmarked snake_case names right after a removal verb ("Remove to_numpy_matrix & from_numpy_matrix"); NetworkX `doc/release/release_X.rst` notes are read
 
