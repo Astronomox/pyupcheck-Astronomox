@@ -4,6 +4,10 @@ All notable changes to pyupcheck are documented here.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-20
+
+First release published from GitHub Actions. 0.5.0 was never uploaded to PyPI, so coming from 0.4.3 also read the 0.5.0 section below.
+
 ### Added
 - `check-all` checks dependencies in parallel (`--jobs/-j`, default 8) over one shared keep-alive HTTP connection pool: an 8-package project went from 95s to 5s cold (15s with `--deep`, under 4s warm). Output order is unchanged, and a crash in one package is reported for that package instead of stopping the run
 - The scanner follows package objects through your own code: helper functions that return them (by return annotation or by what they `return`), attributes stored on `self` (`self.engine = create_engine(...)` then `self.engine.execute()`), and methods called on a call result (`get_engine().execute()`, `pd.DataFrame(...).append(...)`)
@@ -56,7 +60,7 @@ All notable changes to pyupcheck are documented here.
 - `--deep` no longer matches a removed method against a module-level function of the same name (`click.command` vs `Context.command`); constructor changes now match `pkg.Cls(...)` calls
 - `fix` no longer rewrites a pin when no changelog could be read
 
-## [0.5.0] - 2026-09-25
+## [0.5.0] - 2026-09-25 (not published to PyPI; included in 0.6.0)
 
 ### Added
 - Works with any PyPI package whose import name differs from its install name (`pyyaml` -> `yaml`, `Pillow` -> `PIL`, `scikit-learn` -> `sklearn`, `protobuf` -> `google.protobuf`, ...). Import names come from installed metadata, a table of known mismatches, then a normalized-name fallback
