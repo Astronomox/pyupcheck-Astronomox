@@ -4,6 +4,8 @@ All notable changes to pyupcheck are documented here.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-21
+
 ### Added
 - `migrate` rewrites imports of names that moved to another package when the changelog says so ("Import them directly from ``markupsafe``": `from flask import Markup` -> `from markupsafe import Markup`). The name is verified first: third-party packages by reading their latest release's API, standard-library modules by parsing their source (never by importing what a changelog names)
 
