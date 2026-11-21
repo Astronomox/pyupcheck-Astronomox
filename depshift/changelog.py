@@ -437,6 +437,13 @@ def _classify_item(line: str, section: Optional[str], version: str) -> List[Chan
     if dotted:
         # "`pkg.connect` takes a `Config` object": the dotted names are the subject
         targets = dotted
+    # "Import them directly from ``markupsafe`` instead": same names, new package
+    new_home = _IMPORT_FROM.search(line)
+    home = new_home.group(1).strip(".") if new_home else None
+    if home:
+        old_home = _IMPORTING_FROM.search(line)
+        modules = {home, old_home.group(1).strip(".") if old_home else None}
+        targets = [a for a in targets if a not in modules] or targets
     seen = set()
     entries = []
     for api in targets[:8]:
@@ -452,9 +459,17 @@ def _classify_item(line: str, section: Optional[str], version: str) -> List[Chan
             c = "low"
         entries.append(ChangeEntry(
             kind=kind, api=api, description=line[:200], version=version,
-            confidence=c, replacement=_pick_replacement(api, paired),
+            confidence=c, replacement=_pick_replacement(api, paired)
+            or (f"{home}.{api.rsplit('.', 1)[-1]}" if home and api != "unknown" else None),
         ))
     return entries
+
+
+_IMPORT_FROM = re.compile(
+    r"\bimport\s+(?:them|it|this|these|those|the\s+\w+)?\s*(?:directly\s+)?from\s+"
+    r"(?::\w+:)?`{0,2}~?([a-zA-Z_][\w.]*)`{0,2}", re.IGNORECASE)
+_IMPORTING_FROM = re.compile(
+    r"\bimporting\b.*?\bfrom\s+(?::\w+:)?`{0,2}~?([a-zA-Z_][\w.]*)`{0,2}", re.IGNORECASE)
 
 
 def _pick_replacement(api: str, paired: Dict[str, str]) -> Optional[str]:

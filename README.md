@@ -60,6 +60,7 @@ Applies only mechanical changes it can verify against the new version's real API
 - arguments that became keyword-only: `f(a, 1)` -> `f(a, b=1)`
 - renamed keyword arguments: `Retry(method_whitelist=...)` -> `Retry(allowed_methods=...)`
 - renamed or moved names: `integrate.simps` -> `integrate.simpson`, `np.float_` -> `np.float64`, `from django.utils.encoding import force_text` -> `... import force_str as force_text`
+- imports of names moved to another package: `from flask import Markup` -> `from markupsafe import Markup` (checked against that package's real API)
 
 Replacements come from the package's own deprecation notes (including ones published before your current version), are paired one-to-one ("`a`, `b` in favour of `x`, `y` respectively"), and are only applied if the replacement exists in the target version. Anything else that breaks (a new required argument, an API moved to another package) is listed for you to change by hand, and the command exits 1 while such items remain.
 
@@ -224,7 +225,7 @@ These findings are marked `[FACT]` in the output because they come from the real
 
 ## Accuracy
 
-`benchmarks/` holds 26 real upgrades with known breaking changes (Django 4, Flask 3, NumPy 2, pandas 2, Pydantic 2, SQLAlchemy 2, SciPy 1.14, Pillow 10 and more). On the current set, `--deep` catches 100% of breaking lines with no false alarms; changelog-only mode catches 61.4%, also with no false alarms; `migrate` produces the exact expected rewrite in all 6 rewrite cases. Run it with `make bench`.
+`benchmarks/` holds 26 real upgrades with known breaking changes (Django 4, Flask 3, NumPy 2, pandas 2, Pydantic 2, SQLAlchemy 2, SciPy 1.14, Pillow 10 and more). On the current set, `--deep` catches 100% of breaking lines with no false alarms; changelog-only mode catches 61.4%, also with no false alarms; `migrate` produces the exact expected rewrite in all 7 rewrite cases. Run it with `make bench`.
 
 Changelogs are read from GitHub releases, root CHANGES files, and per-version release notes in project docs (NumPy, SciPy, pandas, Pillow, Django, SQLAlchemy layouts).
 

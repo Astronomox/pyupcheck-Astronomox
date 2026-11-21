@@ -35,7 +35,7 @@ is identical to `app.py`, which checks that migrate doesn't guess.
 |---|---|---|
 | changelog (default) | 61.4% | 100% |
 | `--deep` | 100% | 100% |
-| `migrate` (exact rewrite) | 6/6 cases | |
+| `migrate` (exact rewrite) | 7/7 cases | |
 
 26 cases, 57 breaking lines: click 8.1, Django 4.0 (two cases), Flask 3,
 Jinja 3.1, Matplotlib 3.9, NetworkX 3, NumPy 2 (two cases), pandas 2 (two

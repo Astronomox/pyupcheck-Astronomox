@@ -16,7 +16,7 @@ comments are untouched.
 import ast
 import difflib
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional, Tuple, Union
+from typing import Callable, Dict, Iterable, List, Optional, Tuple, Union
 
 from depshift.analyzer import COMMON_ALIASES
 from depshift.apisurface import APIChange, APISurface, _reachable
@@ -170,12 +170,47 @@ def _param_exists(surface: APISurface, func_api: str, param: str) -> bool:
     return param in sig.params
 
 
+def exists_elsewhere(dotted: str) -> bool:
+    """Does ``dotted`` (e.g. ``markupsafe.Markup``) exist outside the package
+    being upgraded? Standard-library modules are checked in the running
+    Python; third-party ones by reading the API of their latest release."""
+    import os
+    import sys
+    import sysconfig
+    module, _, name = dotted.rpartition(".")
+    if not module or not name:
+        return False
+    top = module.split(".")[0]
+    if top in getattr(sys, "stdlib_module_names", ()):
+        # read the module's source rather than importing it: a name taken
+        # from changelog text must never decide what code runs
+        from depshift.apisurface import build_surface
+        base = os.path.join(sysconfig.get_paths()["stdlib"], *module.split("."))
+        for path in (base + ".py", os.path.join(base, "__init__.py")):
+            if os.path.isfile(path):
+                try:
+                    with open(path, encoding="utf-8") as f:
+                        surface = build_surface("stdlib", {module: [f.read()]})
+                except (OSError, ValueError):
+                    return False
+                return _exists(surface, dotted)
+        return False  # C module without Python source: can't verify
+    from depshift.apisurface import extract_surface
+    from depshift.changelog import get_current_version
+    try:
+        surface = extract_surface(top, get_current_version(top))
+    except Exception:
+        return False
+    return surface is not None and _exists(surface, dotted)
+
+
 # ── planning ──────────────────────────────────────────────────────────────────
 
 def plan_migration(usages: List[Usage], changes: List[APIChange], new_surface: APISurface,
                    package: Union[str, Iterable[str]], changelog_entries: Iterable = (),
                    returns: Optional[Dict[str, str]] = None,
-                   sources: Optional[Dict[str, str]] = None) -> MigrationPlan:
+                   sources: Optional[Dict[str, str]] = None,
+                   verify_external: Optional[Callable[[str], bool]] = None) -> MigrationPlan:
     """Turn the breaking changes that hit ``usages`` into fixes and manual items.
 
     ``sources`` maps file path -> source text (read from disk when missing).
@@ -242,7 +277,7 @@ def plan_migration(usages: List[Usage], changes: List[APIChange], new_surface: A
             if u.usage_type != "import" and (u.file, u.attr_chain) in fixed_imports \
                     and idx.attribute(u, u.attr_chain.rsplit(".", 1)[-1]) is None:
                 continue  # bare name from a rewritten import: still valid via its alias
-            fix = _fix_moved_name(u, ch, idx, repl_map, new_surface, roots)
+            fix = _fix_moved_name(u, ch, idx, repl_map, new_surface, roots, verify_external)
             if fix:
                 plan.fixes.append(fix)
                 if u.usage_type == "import":
@@ -313,7 +348,8 @@ def _fix_renamed_kwarg(u: Usage, ch: APIChange, idx: _Index, repl_map: Dict[str,
 
 
 def _fix_moved_name(u: Usage, ch: APIChange, idx: _Index, repl_map: Dict[str, str],
-                    new_surface: APISurface, roots: List[str]) -> Optional[Fix]:
+                    new_surface: APISurface, roots: List[str],
+                    verify_external: Optional[Callable[[str], bool]] = None) -> Optional[Fix]:
     old_api = u.attr_chain
     old_short = old_api.rsplit(".", 1)[-1]
     # the package's own words beat an inferred location
@@ -322,7 +358,15 @@ def _fix_moved_name(u: Usage, ch: APIChange, idx: _Index, repl_map: Dict[str, st
     if not target:
         return None
     target = _resolve_replacement(old_api, _normalize(target, roots), roots)
-    if target == old_api or not _exists(new_surface, target):
+    if target == old_api:
+        return None
+    external = not any(target == r or target.startswith(r + ".") for r in roots)
+    if external:
+        # moved to another package (flask.Markup -> markupsafe.Markup): only
+        # import lines are rewritten, and only if that package really has it
+        if u.usage_type != "import" or not (verify_external or exists_elsewhere)(target):
+            return None
+    elif not _exists(new_surface, target):
         return None
     new_mod, _, new_short = target.rpartition(".")
 
