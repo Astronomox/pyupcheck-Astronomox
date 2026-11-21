@@ -1,0 +1,4 @@
+package = "urllib3"
+from = "1.26.18"
+to = "2.0.0"
+source = "Negative control: APIs that keep working in 2.0"

@@ -1,0 +1,4 @@
+package = "flask"
+from = "2.2.5"
+to = "2.3.0"
+source = "Flask 2.3.0 changelog: json.JSONEncoder and JSONDecoder classes removed"

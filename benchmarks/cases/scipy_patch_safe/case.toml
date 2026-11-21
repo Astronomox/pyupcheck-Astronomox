@@ -1,0 +1,4 @@
+package = "scipy"
+from = "1.11.1"
+to = "1.11.4"
+source = "Negative control: bug-fix releases"

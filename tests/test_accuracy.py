@@ -859,3 +859,44 @@ def test_sponsor_link_is_not_the_repo():
 def test_colon_or_bare_name_in_breaking_section_is_not_a_removal(item):
     text = "Backwards incompatible API changes\n----------------------------------\n\n" + item + "\n"
     assert all(e.confidence == "low" for e in parse_changelog_text(text, "2.0.0"))
+
+
+def test_escaped_table_names_and_no_replacement_as_target():
+    text = textwrap.dedent("""\
+        ======================  ==========================
+        removed member          migration guideline
+        ======================  ==========================
+        unicode\\_               Use ``np.str_`` instead.
+        ======================  ==========================
+        """)
+    got = [(e.api, e.replacement) for e in parse_changelog_text(text, "2.0.0")]
+    assert got == [("unicode_", "np.str_")]  # np.str_ itself is not removed
+
+
+def test_except_clause_keeps_members():
+    from depshift.analyzer import analyze
+    entries = parse_changelog_text(
+        "- Deprecate the ``werkzeug.urls`` module, except for the ``uri_to_iri`` and "
+        "``iri_to_uri`` functions.", "2.3.0")
+    assert entries[0].exceptions == ["uri_to_iri", "iri_to_uri"]
+    us = [Usage(file="a.py", line=1, code="", attr_chain="werkzeug.urls", usage_type="import"),
+          Usage(file="a.py", line=2, code="", attr_chain="werkzeug.urls.iri_to_uri", usage_type="function_call"),
+          Usage(file="a.py", line=3, code="", attr_chain="werkzeug.urls.url_quote", usage_type="function_call")]
+    risks, _ = analyze(us, entries, "werkzeug")
+    assert [r.usage.line for r in risks] == [3]
+
+
+def test_use_of_is_not_a_replacement_phrase():
+    e = parse_changelog_text("- Positional use of ``pkg.f`` arguments is deprecated.", "1.0")
+    assert [(x.api, x.replacement) for x in e] == [("pkg.f", None)]
+
+
+def test_short_names_in_list_inherit_first_module():
+    e = parse_changelog_text(
+        "- ``django.utils.translation.ugettext()``, ``ugettext_lazy()``, ``ungettext()``, "
+        "and ``ungettext_lazy()`` are removed.", "4.0")
+    assert {x.api for x in e} == {"django.utils.translation." + n
+                                  for n in ("ugettext", "ugettext_lazy", "ungettext", "ungettext_lazy")}
+    # not a list: the sentence is about pkg.connect only
+    e = parse_changelog_text("## Breaking\n- ``pkg.connect`` takes a ``Config`` object.", "2.0")
+    assert {x.api for x in e} == {"pkg.connect"}

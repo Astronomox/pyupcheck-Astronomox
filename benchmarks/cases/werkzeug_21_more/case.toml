@@ -1,0 +1,4 @@
+package = "werkzeug"
+from = "2.0.3"
+to = "2.1.0"
+source = "Werkzeug 2.1.0 changelog: BaseRequest and the wrappers.json JSONMixin (deprecated in 2.0) removed"

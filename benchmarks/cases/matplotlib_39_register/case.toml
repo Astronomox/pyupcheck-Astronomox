@@ -1,0 +1,4 @@
+package = "matplotlib"
+from = "3.7.5"
+to = "3.9.0"
+source = "Matplotlib 3.9.0 API changes, removals: matplotlib.cm.register_cmap"

@@ -17,6 +17,8 @@ class ChangeEntry:
     description: str
     version: str  # version where this change happened
     confidence: str = "medium"  # "high" (explicit section / strong phrase), "medium", "low"
+    # "Deprecate the ``urls`` module, except for ``iri_to_uri``": members that stay
+    exceptions: List[str] = field(default_factory=list)
     replacement: Optional[str] = None  # suggested replacement API, when the text names one
 
 
@@ -392,13 +394,18 @@ def _classify_item(line: str, section: Optional[str], version: str) -> List[Chan
     # everything named after "in favor of" / "use" / "replaced by" is a
     # replacement, not something that changed
     repl_at = None if NO_DROP_IN in line else _REPLACEMENT.search(line)
+    if repl_at and repl_at.group(0).lower().startswith("use") \
+            and repl_at.group(1).lower() in ("of", "in", "for", "with", "case", "cases", "by", "to"):
+        # "Positional use of some arguments...": "use" as a noun, not "use X"
+        repl_at = None
     replacements: List[str] = []
     if repl_at:
         replacements = _extract_apis(line[repl_at.start():])
         if repl_at.group(0).lower().startswith(("renam", "mov")):
             # "Renamed ``a`` to ``b``": the phrase itself contains the old name
             replacements = replacements[1:]
-        apis = [a for a in apis if a not in replacements] or apis
+        # only replacements named: nothing identifies what changed
+        apis = [a for a in apis if a not in replacements]
     replacements = list(dict.fromkeys(replacements))
     # "a, b and c are deprecated in favour of x, y and z respectively": pair by
     # order, and only when the counts agree. One replacement for several old
@@ -464,8 +471,14 @@ def _classify_item(line: str, section: Optional[str], version: str) -> List[Chan
             targets = [f"{o}.{a}" for a in params]
     dotted = [a for a in targets if "." in a]
     if dotted:
-        # "`pkg.connect` takes a `Config` object": the dotted names are the subject
-        targets = dotted
+        if _LISTED_AFTER_FIRST.search(line) and "." in targets[0]:
+            # "``django.utils.translation.ugettext()``, ``ugettext_lazy()``, and
+            # ``ungettext()`` are removed": the short names are siblings of the first
+            parent = targets[0].rsplit(".", 1)[0]
+            targets = [a if "." in a else f"{parent}.{a}" for a in targets]
+        else:
+            # "`pkg.connect` takes a `Config` object": the dotted names are the subject
+            targets = dotted
     # "Import them directly from ``markupsafe`` instead": same names, new package
     new_home = _IMPORT_FROM.search(line)
     home = new_home.group(1).strip(".") if new_home else None
@@ -473,6 +486,10 @@ def _classify_item(line: str, section: Optional[str], version: str) -> List[Chan
         old_home = _IMPORTING_FROM.search(line)
         modules = {home, old_home.group(1).strip(".") if old_home else None}
         targets = [a for a in targets if a not in modules] or targets
+    exc = _EXCEPT.search(line)
+    excepted = [a.rsplit(".", 1)[-1] for a in _extract_apis(line[exc.end():])] if exc else []
+    if excepted:
+        targets = [a for a in targets if a.rsplit(".", 1)[-1] not in excepted] or targets
     seen = set()
     entries = []
     for api in targets[:8]:
@@ -489,12 +506,17 @@ def _classify_item(line: str, section: Optional[str], version: str) -> List[Chan
             c = "low"
         entries.append(ChangeEntry(
             kind=kind, api=api, description=line[:200], version=version,
-            confidence=c, replacement=_pick_replacement(api, paired)
+            confidence=c, exceptions=excepted, replacement=_pick_replacement(api, paired)
             or (f"{home}.{api.rsplit('.', 1)[-1]}" if home and api != "unknown" else None),
         ))
     return entries
 
 
+# the item opens with a list of marked names: ``a.b.c()``, ``d()``, and ``e()``
+_LISTED_AFTER_FIRST = re.compile(
+    r"^\W*(?::\w+:)?`{1,2}[^`]+`{1,2}(?:\s*,\s*(?:and\s+|or\s+)?(?::\w+:)?`{1,2}[^`]+`{1,2})+"
+    r"\s*,?\s*(?:and|or)?\s*(?::\w+:)?`{0,2}")
+_EXCEPT = re.compile(r"\b(?:except(?:\s+for)?|other\s+than|apart\s+from)\b", re.IGNORECASE)
 _IMPORT_FROM = re.compile(
     r"\bimport\s+(?:them|it|this|these|those|the\s+\w+)?\s*(?:directly\s+)?from\s+"
     r"(?::\w+:)?`{0,2}~?([a-zA-Z_][\w.]*)`{0,2}", re.IGNORECASE)
@@ -551,7 +573,8 @@ def _table_row_item(old: str, new: str) -> str:
     ``np.asarray`` with a float dtype") still marks a removal but gives no
     replacement, so migrate never rewrites one behaviour into another.
     """
-    old = old.strip()
+    old = old.strip().replace("\\_", "_").replace("\\*", "*")  # reST escapes: unicode\_
+    new = new.replace("\\_", "_")
     if re.fullmatch(r"[a-zA-Z_][\w.]*(?:\(\))?", old):
         old = f"``{old}``"  # bare name in the first column
     new = new.strip()
@@ -1048,7 +1071,7 @@ def _promote_swept_deprecations(entries: List[ChangeEntry], v_current, v_target)
                 kind="removed", api=e.api, version=str(sweep_v),
                 confidence="low" if e.confidence == "low" else "medium",
                 description=f"Removed in {sweep_v} (deprecated in {e.version}: {e.description[:120]})",
-                replacement=e.replacement,
+                replacement=e.replacement, exceptions=list(e.exceptions),
             ))
     return out
 
