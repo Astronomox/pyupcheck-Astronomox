@@ -1,0 +1,4 @@
+package = "numpy"
+from = "1.26.4"
+to = "2.0.0"
+source = "NumPy 2.0 migration guide: PINF, Infinity, longfloat, safe_eval removed"

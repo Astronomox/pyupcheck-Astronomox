@@ -1,0 +1,4 @@
+package = "scikit-learn"
+from = "1.1.3"
+to = "1.2.0"
+source = "scikit-learn 1.2 release notes: plot_roc_curve and plot_precision_recall_curve removed"

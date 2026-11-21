@@ -1,0 +1,4 @@
+package = "django"
+from = "4.2.10"
+to = "5.0"
+source = "Django 5.0 release notes, features removed: django.utils.timezone.utc (deprecated in 4.1)"

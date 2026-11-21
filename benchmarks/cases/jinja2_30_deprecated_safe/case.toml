@@ -1,0 +1,4 @@
+package = "jinja2"
+from = "2.11.3"
+to = "3.0.0"
+source = "Negative control for breaking: Markup and escape are only deprecated in 3.0 (removed in 3.1)"

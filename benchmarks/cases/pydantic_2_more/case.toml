@@ -1,0 +1,4 @@
+package = "pydantic"
+from = "1.10.13"
+to = "2.0"
+source = "Pydantic V2 migration guide, removed in V2: PyObject, ConstrainedInt"

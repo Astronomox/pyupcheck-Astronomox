@@ -73,6 +73,17 @@ def match_usage_to_change(usage: Usage, change: ChangeEntry,
             severity = "breaking" if change.kind in ("removed", "changed") else "deprecated"
             return Risk(usage=usage, change=change, severity=severity)
 
+    excepted = getattr(change, "exceptions", None) or []
+    if excepted:
+        # a module deprecated/removed except for some members: the module
+        # itself stays, and so do those members
+        if usage_api == change_api:
+            return None
+        if usage_api.startswith(change_api + "."):
+            member = usage_api[len(change_api) + 1:].split(".")[0]
+            if member in excepted:
+                return None
+
     def sev() -> str:
         if getattr(change, "confidence", "medium") == "low":
             return "warning"  # mentioned, not shown to be removed

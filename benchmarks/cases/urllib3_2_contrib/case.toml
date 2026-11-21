@@ -1,0 +1,4 @@
+package = "urllib3"
+from = "1.26.18"
+to = "2.0.0"
+source = "urllib3 2.0 changelog: urllib3.contrib.ntlmpool removed"

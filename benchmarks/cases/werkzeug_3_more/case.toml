@@ -1,0 +1,4 @@
+package = "werkzeug"
+from = "2.2.3"
+to = "3.0.0"
+source = "Werkzeug 3.0 changelog: werkzeug.urls url_encode and url_unquote removed"

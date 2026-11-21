@@ -1,0 +1,4 @@
+package = "networkx"
+from = "2.8.8"
+to = "3.0"
+source = "NetworkX 3.0 release notes: read_gpickle, write_gpickle and info removed"
