@@ -1,0 +1,4 @@
+package = "flask"
+from = "2.2.5"
+to = "3.0.0"
+source = "Flask 3.0 changelog: Markup and escape no longer importable from flask (deprecated in 2.3: import them from markupsafe)"

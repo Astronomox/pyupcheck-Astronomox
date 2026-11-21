@@ -214,10 +214,40 @@ def test_other_package_missing_name_is_manual(tmp_path):
     assert plan.manual
 
 
-def test_attribute_use_of_moved_name_stays_manual(tmp_path):
-    plan, after = migrate_ext(tmp_path, "import flask\nx = flask.Markup('a')\n", verify=lambda d: True)
-    assert "flask.Markup('a')" in after  # would need a new import line: left to a person
-    assert plan.manual
+def test_attribute_use_of_moved_name_gets_new_import(tmp_path):
+    plan, after = migrate_ext(tmp_path, """
+        \"\"\"Doc.\"\"\"
+        import flask
+        x = flask.Markup('a')
+        y = flask.escape(x)
+        """, verify=lambda d: True)
+    assert after == '\n"""Doc."""\nimport flask\nimport markupsafe\nx = markupsafe.Markup(\'a\')\ny = markupsafe.escape(x)\n'
+    assert not plan.manual
+
+
+def test_import_added_once_and_not_if_present(tmp_path):
+    plan, after = migrate_ext(tmp_path, "import markupsafe\nimport flask\nx = flask.Markup(1)\n",
+                              verify=lambda d: True)
+    assert after.count("import markupsafe") == 1
+    assert "x = markupsafe.Markup(1)" in after
+
+
+def test_import_appended_when_file_ends_with_imports(tmp_path):
+    path = tmp_path / "app.py"
+    path.write_text("import flask", encoding="utf-8")  # no trailing newline, nothing after
+    changes, new_surface = surfaces(FLASK_OLD, FLASK_NEW)
+    # a usage on the import line itself doesn't need a new import; this checks the
+    # end-of-file insertion path directly
+    from depshift.rewrite import Fix, _Index, _add_needed_imports, MigrationPlan
+    plan = MigrationPlan(fixes=[Fix(str(path), 1, "x", [], needs_import="markupsafe")])
+    _add_needed_imports(plan, lambda f: _Index(path.read_text()))
+    assert apply_edits("import flask", plan.fixes[0].edits) == "import flask\nimport markupsafe\n"
+
+
+def test_non_plain_expression_stays_manual(tmp_path):
+    plan, after = migrate_ext(tmp_path, "import flask\nx = get().Markup\ny = flask.Markup\n",
+                              verify=lambda d: True)
+    assert "y = markupsafe.Markup" in after
 
 
 def test_stdlib_verified_by_reading_source_not_importing():
@@ -225,3 +255,10 @@ def test_stdlib_verified_by_reading_source_not_importing():
     assert exists_elsewhere("urllib.parse.quote")
     assert not exists_elsewhere("urllib.parse.no_such_name")
     assert exists_elsewhere("antigravity.geohash")  # parsed, never imported
+
+
+def test_method_called_on_moved_name(tmp_path):
+    plan, after = migrate_ext(tmp_path, "import flask\nx = flask.Markup('<b>{}</b>').format(1)\n",
+                              verify=lambda d: True)
+    assert "x = markupsafe.Markup('<b>{}</b>').format(1)" in after
+    assert len(plan.fixes) == 1 and not plan.manual

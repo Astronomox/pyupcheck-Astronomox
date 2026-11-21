@@ -27,8 +27,8 @@ from depshift.scanner import Usage
 @dataclass
 class Edit:
     """Replace source between two (line, byte-col) positions (1-based lines)."""
-    start: Tuple[int, int]
-    end: Tuple[int, int]
+    start: Tuple[int, Optional[int]]  # col None: end of that line
+    end: Tuple[int, Optional[int]]
     new: str
 
 
@@ -38,6 +38,7 @@ class Fix:
     line: int
     description: str
     edits: List[Edit] = field(default_factory=list)
+    needs_import: Optional[str] = None  # module the rewritten code refers to
 
 
 @dataclass
@@ -65,6 +66,8 @@ class MigrationPlan:
 def _offset(lines: List[str], pos: Tuple[int, int]) -> int:
     """Character offset of (1-based line, UTF-8 byte column) in the joined source."""
     line, bcol = pos
+    if bcol is None:  # end of that line, including its newline
+        return sum(len(lines[i]) for i in range(line))
     before = sum(len(lines[i]) for i in range(line - 1))
     ccol = len(lines[line - 1].encode("utf-8")[:bcol].decode("utf-8", errors="ignore"))
     return before + ccol
@@ -99,9 +102,25 @@ class _Index:
 
     def __init__(self, source: str):
         self.tree = ast.parse(source)
+        self.n_lines = len(source.splitlines())
+        self.ends_with_newline = source.endswith("\n")
         self.calls: Dict[Tuple[int, int], ast.Call] = {}
         self.attrs: Dict[Tuple[int, int], List[ast.Attribute]] = {}
         self.imports: Dict[int, ast.ImportFrom] = {}
+        # modules bound by a top-level `import x` / `import x.y`, and the line
+        # after the last top-level import (or after the docstring) for new ones
+        self.imported_modules = set()
+        self.insert_line = 1
+        body = self.tree.body
+        if body and isinstance(body[0], ast.Expr) and isinstance(getattr(body[0], "value", None), ast.Constant) \
+                and isinstance(body[0].value.value, str):
+            self.insert_line = body[0].end_lineno + 1
+        for stmt in body:
+            if isinstance(stmt, ast.Import):
+                self.imported_modules.update(a.name for a in stmt.names if not a.asname)
+                self.insert_line = stmt.end_lineno + 1
+            elif isinstance(stmt, ast.ImportFrom):
+                self.insert_line = stmt.end_lineno + 1
         for node in ast.walk(self.tree):
             if isinstance(node, ast.Call):
                 self.calls.setdefault((node.lineno, node.col_offset), node)
@@ -246,12 +265,13 @@ def plan_migration(usages: List[Usage], changes: List[APIChange], new_surface: A
     handled = set()
 
     fixed_imports = set()  # (file, api) whose import line is rewritten with an alias
+    planned_spans = set()  # (file, edits) already planned, to list each fix once
     # imports first, so uses of a re-aliased name know they're covered
     risks = sorted(risks, key=lambda r: r.usage.usage_type != "import")
 
     for risk in risks:
         u, ch = risk.usage, risk.change
-        key = (u.file, u.line, u.col, ch.kind, ch.param, ch.api)
+        key = (u.file, u.line, u.col, u.attr_chain, ch.kind, ch.param, ch.api)
         if key in handled:
             continue
         handled.add(key)
@@ -279,6 +299,10 @@ def plan_migration(usages: List[Usage], changes: List[APIChange], new_surface: A
                 continue  # bare name from a rewritten import: still valid via its alias
             fix = _fix_moved_name(u, ch, idx, repl_map, new_surface, roots, verify_external)
             if fix:
+                spans = (fix.file, tuple((e.start, e.end, e.new) for e in fix.edits))
+                if spans in planned_spans:
+                    continue  # same rewrite reached through another usage on this spot
+                planned_spans.add(spans)
                 plan.fixes.append(fix)
                 if u.usage_type == "import":
                     fixed_imports.add((u.file, u.attr_chain))
@@ -301,7 +325,45 @@ def plan_migration(usages: List[Usage], changes: List[APIChange], new_surface: A
         else:
             manual(u, "; ".join(c.detail for c in chs) + " (could not convert the call automatically)")
 
+    _add_needed_imports(plan, index_for)
     return plan
+
+
+def _plain_dotted(node) -> bool:
+    """``a.b.c`` made only of names, nothing called or subscripted."""
+    while isinstance(node, ast.Attribute):
+        node = node.value
+    return isinstance(node, ast.Name)
+
+
+def _dotted_text(node) -> str:
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    parts.append(getattr(node, "id", "?"))
+    return ".".join(reversed(parts))
+
+
+def _add_needed_imports(plan: "MigrationPlan", index_for) -> None:
+    """One `import x` per file and module, after the file's existing imports,
+    unless the file already has it."""
+    done = set()
+    for fix in plan.fixes:
+        mod = fix.needs_import
+        if not mod or (fix.file, mod) in done:
+            continue
+        done.add((fix.file, mod))
+        idx = index_for(fix.file)
+        if idx is None or mod in idx.imported_modules:
+            continue
+        if idx.insert_line > idx.n_lines:
+            # the imports are the last lines of the file: append at the end
+            last = (idx.n_lines, None)
+            prefix = "" if idx.ends_with_newline else "\n"
+            fix.edits.append(Edit(last, last, f"{prefix}import {mod}\n"))
+        else:
+            fix.edits.append(Edit((idx.insert_line, 0), (idx.insert_line, 0), f"import {mod}\n"))
 
 
 def _fix_keyword_only(u: Usage, chs: List[APIChange], idx: _Index) -> Optional[Fix]:
@@ -351,6 +413,14 @@ def _fix_moved_name(u: Usage, ch: APIChange, idx: _Index, repl_map: Dict[str, st
                     new_surface: APISurface, roots: List[str],
                     verify_external: Optional[Callable[[str], bool]] = None) -> Optional[Fix]:
     old_api = u.attr_chain
+    removed_short = ch.api.rsplit(".", 1)[-1]
+    parts = old_api.split(".")
+    if parts[-1] != removed_short and removed_short in parts[:-1]:
+        # the usage reaches through the removed name (flask.Markup(...).format):
+        # rewrite the removed part, not the method called on it
+        if u.usage_type == "import":
+            return None
+        old_api = ".".join(parts[:parts.index(removed_short) + 1])
     old_short = old_api.rsplit(".", 1)[-1]
     # the package's own words beat an inferred location
     target = repl_map.get(ch.api) or repl_map.get(old_api) or repl_map.get(old_short) \
@@ -363,8 +433,8 @@ def _fix_moved_name(u: Usage, ch: APIChange, idx: _Index, repl_map: Dict[str, st
     external = not any(target == r or target.startswith(r + ".") for r in roots)
     if external:
         # moved to another package (flask.Markup -> markupsafe.Markup): only
-        # import lines are rewritten, and only if that package really has it
-        if u.usage_type != "import" or not (verify_external or exists_elsewhere)(target):
+        # if that package really has it
+        if not (verify_external or exists_elsewhere)(target):
             return None
     elif not _exists(new_surface, target):
         return None
@@ -381,6 +451,14 @@ def _fix_moved_name(u: Usage, ch: APIChange, idx: _Index, repl_map: Dict[str, st
                    [Edit((node.lineno, node.col_offset), (node.end_lineno, node.end_col_offset), new_text)])
 
     old_mod = old_api.rpartition(".")[0]
+    if external:
+        # flask.Markup(...) -> markupsafe.Markup(...), plus `import markupsafe`
+        attr = idx.attribute(u, old_short)
+        if attr is None or not _plain_dotted(attr):
+            return None  # e.g. get_module().Markup: not a plain name to rewrite
+        return Fix(u.file, u.line, f"use {target} instead of {_dotted_text(attr)}",
+                   [Edit((attr.lineno, attr.col_offset), (attr.end_lineno, attr.end_col_offset), target)],
+                   needs_import=new_mod)
     if new_mod == old_mod and new_short != old_short:
         # same place, new name: np.float_ -> np.float64
         attr = idx.attribute(u, old_short)
