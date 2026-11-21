@@ -6,7 +6,7 @@ from depshift import notebook
 from depshift.changelog import parse_changelog_text
 from depshift.rewrite import apply_edits, plan_migration
 from depshift.scanner import scan_notebook
-from tests.test_rewrite import FLASK_NOTE, FLASK_NEW, FLASK_OLD, surfaces
+from test_rewrite import FLASK_NOTE, FLASK_NEW, FLASK_OLD, surfaces
 
 
 def write_nb(tmp_path, *cells, name="a.ipynb"):
