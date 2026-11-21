@@ -4,6 +4,14 @@ All notable changes to pyupcheck are documented here.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-21
+
+### Added
+- `pyupcheck outdated --safe`: a "Highest safe" column with the newest version that breaks none of your code, so a breaking latest release doesn't leave you stuck on an old one. Candidates are the newest release of each minor series your constraint allows; the latest is checked first, then a binary search (about log2(n) deep checks). A version that couldn't be checked never counts as safe
+
+### Changed
+- `pyupcheck fix` moves each pin to the highest *safe* version, verified with deep checks (`--no-deep` for changelog only), instead of the latest version or nothing; it names the packages held back and how many usages their latest release breaks. Runs dependencies in parallel (`--jobs`)
+
 ## [0.9.0] - 2026-11-21
 
 ### Added

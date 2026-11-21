@@ -654,20 +654,26 @@ def check_all(directory, github_token, fmt, output, fail_on, min_severity, exclu
 @main.command()
 @click.option("--dir", "-d", "directory", default=".")
 @click.option("--dry-run", is_flag=True, help="Show what would change without writing")
+@click.option("--deep/--no-deep", default=True, show_default=True,
+              help="Verify each candidate against the real API (slower, much more accurate)")
+@click.option("--jobs", "-j", type=click.IntRange(1, 64), default=8, show_default=True)
+@click.option("--github-token", envvar="GITHUB_TOKEN", default=None)
 @click.option("--no-cache", is_flag=True)
-def fix(directory, dry_run, no_cache):
-    """Update requirements to the latest safe version of each dependency.
+def fix(directory, dry_run, deep, jobs, github_token, no_cache):
+    """Move each pinned dependency to the highest version that is safe for your code.
 
-    Rewrites pinned versions (==x.y.z) in requirements.txt to the latest
-    version that has no breaking changes against your code.
+    Rewrites ==x.y.z pins in requirements files. If the latest release breaks
+    your code, the pin moves to the newest earlier release that doesn't,
+    instead of staying put. A version that couldn't be checked is never used.
     """
+    from concurrent.futures import ThreadPoolExecutor
     if no_cache:
         cache_mod.disable_cache()
 
     directory = os.path.abspath(directory)
     cfg = load_config(directory)
     ignored = {normalize_name(p) for p in cfg.ignore_packages}
-    deps = [d for d in discover_dependencies(directory) if d.name not in ignored]
+    deps = [d for d in discover_dependencies(directory) if d.name not in ignored and d.pinned_version]
 
     req_files = requirement_files(directory)  # .txt and pip-tools .in sources
 
@@ -675,62 +681,38 @@ def fix(directory, dry_run, no_cache):
         console.print("[yellow]No requirements.txt files found to fix.[/]")
         sys.exit(2)
 
-    from packaging.version import Version, InvalidVersion
-
     updates: List[dict] = []
     skipped_unchecked: List[str] = []
+    held_back: List[dict] = []
 
-    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console, transient=True) as progress:
-        task = progress.add_task("Scanning...", total=len(deps))
-        for dep in deps:
-            progress.update(task, description=f"Checking [bold]{dep.name}[/]...")
+    def one(dep):
+        try:
+            return dep, highest_safe_version(dep.name, dep.pinned_version, directory, cfg, github_token,
+                                             specifier_of(dep.raw), deep=deep)
+        except Exception:
+            return dep, None
 
-            if not dep.pinned_version:
-                progress.advance(task)
-                continue
+    with console.status(f"Finding the highest safe version of {len(deps)} pinned dependencies..."):
+        with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+            plans = list(pool.map(one, deps))
 
-            pinned = dep.pinned_version
-            try:
-                latest = get_current_version(dep.name)
-            except Exception:
-                progress.advance(task)
-                continue
-
-            try:
-                if Version(pinned) >= Version(latest):
-                    progress.advance(task)
-                    continue
-            except InvalidVersion:
-                progress.advance(task)
-                continue
-
-            try:
-                report = collect_changes(dep.name, pinned, latest)
-            except Exception:
-                report = None
-            if report is None or not report.checked:
-                # couldn't read any changelog: never rewrite a pin on zero evidence
+    for dep, plan in plans:
+        if plan is None or (plan["unchecked"] and plan["safe"] == dep.pinned_version):
+            if plan is None or plan["latest"] != dep.pinned_version:
                 skipped_unchecked.append(dep.name)
-                progress.advance(task)
-                continue
-            changes = report.entries
-
-            names = import_names_for(dep.name)
-            usages = scan_directory(directory, names, exclude_dirs=cfg.exclude_dirs)
-            risks, _ = analyze(usages, changes, names)
-            breaking = [r for r in risks if r.severity == "breaking"]
-
-            if not breaking:
-                updates.append({
-                    "name": dep.name,
-                    "old": pinned,
-                    "new": latest,
-                    "source": dep.source,
-                })
-            progress.advance(task)
+            continue
+        if plan["safe"] != dep.pinned_version:
+            updates.append({"name": dep.name, "old": dep.pinned_version, "new": plan["safe"],
+                            "source": dep.source})
+        if plan["safe"] != plan["latest"]:
+            held_back.append({"name": dep.name, "latest": plan["latest"],
+                              "breaking": plan["breaking_at_latest"]})
 
     if skipped_unchecked:
-        console.print(f"[magenta]Skipped (could not read changelogs):[/] {', '.join(skipped_unchecked)}")
+        console.print(f"[magenta]Skipped (could not be checked):[/] {', '.join(skipped_unchecked)}")
+    for h in held_back:
+        console.print(f"[yellow]{h['name']}[/]: {h['latest']} breaks {h['breaking']} usage(s); "
+                      f"run [bold]pyupcheck migrate {h['name']} {h['latest']}[/] to see what can be fixed")
     if not updates:
         console.print("[green]Nothing to update.[/] All pinned deps are at the latest safe version.")
         return
@@ -1050,62 +1032,178 @@ def ci_setup(ci_type, directory):
     console.print("\nDone. Commit the generated files and push.")
 
 
-# ── outdated ──────────────────────────────────────────────────────────────────
+# ── outdated / highest safe version ───────────────────────────────────────────
+
+def _candidate_versions(package: str, current: str, spec: Optional[str]) -> List[str]:
+    """The newest release of each minor series above ``current`` that the
+    project's constraint allows (no pre-releases, no yanked), oldest first."""
+    from packaging.specifiers import SpecifierSet, InvalidSpecifier
+    from packaging.version import Version, InvalidVersion
+    info = get_pypi_info(package)
+    try:
+        cur = Version(current)
+    except InvalidVersion:
+        return []
+    try:
+        allowed = SpecifierSet("" if _is_exact_pin(spec) else (spec or ""))
+    except InvalidSpecifier:
+        allowed = SpecifierSet("")
+    newest: dict = {}
+    for ver, files in (info.get("releases") or {}).items():
+        try:
+            v = Version(ver)
+        except InvalidVersion:
+            continue
+        if v <= cur or v.is_prerelease or v.is_devrelease:
+            continue
+        if files and all(f.get("yanked") for f in files):
+            continue
+        if allowed and v not in allowed:
+            continue
+        key = (v.major, v.minor)
+        if key not in newest or v > newest[key]:
+            newest[key] = v
+    return [str(v) for v in sorted(newest.values())]
+
+
+def highest_safe_version(package: str, current: str, directory: str, cfg,
+                         github_token: Optional[str] = None, spec: Optional[str] = None,
+                         deep: bool = True) -> dict:
+    """The newest version that breaks none of your code.
+
+    Breaking changes only pile up as versions go up, so the candidates (the
+    newest release of each minor series) are binary-searched: the latest is
+    checked first, then about log2(n) more. A version that couldn't be
+    checked never counts as safe.
+    """
+    candidates = _candidate_versions(package, current, spec)
+    out = {"package": package, "current": current, "latest": candidates[-1] if candidates else current,
+           "safe": current, "breaking_at_latest": 0, "checked": [], "unchecked": False}
+    if not candidates:
+        return out
+
+    cache: dict = {}
+
+    def breaks(version: str) -> Optional[int]:
+        """Breaking usages at ``version``; None if it couldn't be checked."""
+        if version not in cache:
+            r = _run_single_check(package, version, directory, github_token, cfg, suppress_errors=True,
+                                  deep=deep, spec=spec, locked=current)
+            cache[version] = None if (r is None or r.get("unchecked")) else r["breaking_count"]
+            out["checked"].append((version, cache[version]))
+        return cache[version]
+
+    latest = breaks(candidates[-1])
+    out["breaking_at_latest"] = latest if latest is not None else 0
+    if latest == 0:
+        out["safe"] = candidates[-1]
+        return out
+    if latest is None:
+        out["unchecked"] = True
+    lo, hi = 0, len(candidates) - 2  # the last one is known not to be safe
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        n = breaks(candidates[mid])
+        if n == 0:
+            out["safe"] = candidates[mid]
+            lo = mid + 1
+        else:
+            if n is None:
+                out["unchecked"] = True
+            hi = mid - 1
+    return out
+
 
 @main.command()
 @click.option("--dir", "-d", "directory", default=".")
+@click.option("--safe", is_flag=True,
+              help="Also find the highest version that breaks none of your code (runs deep checks)")
+@click.option("--jobs", "-j", type=click.IntRange(1, 64), default=8, show_default=True)
+@click.option("--github-token", envvar="GITHUB_TOKEN", default=None)
 @click.option("--no-cache", is_flag=True)
-def outdated(directory, no_cache):
-    """List all dependencies that have newer versions available."""
+def outdated(directory, safe, jobs, github_token, no_cache):
+    """List dependencies that have newer versions available.
+
+    With --safe, also show the highest version you can move to without
+    breaking your code, so a breaking latest release doesn't leave you
+    stuck on an old one.
+    """
+    from concurrent.futures import ThreadPoolExecutor
     if no_cache:
         cache_mod.disable_cache()
     directory = os.path.abspath(directory)
+    cfg = load_config(directory)
     deps = discover_dependencies(directory)
     if not deps:
         console.print("[yellow]No dependency files found[/]")
         sys.exit(2)
 
     from packaging.version import Version, InvalidVersion
+    locks = locked_versions(directory)
+
+    def one(dep):
+        lock = locks.get(dep.name)
+        spec = specifier_of(dep.raw)
+        current, _ = _baseline_version(dep.name, directory, dep.pinned_version, spec,
+                                       lock.version if lock else None)
+        try:
+            latest = latest_allowed_version(dep.name, None if _is_exact_pin(spec) else spec) \
+                or get_current_version(dep.name)
+        except Exception:
+            return None
+        row = {"name": dep.name, "current": current, "latest": latest}
+        if not current:
+            return row
+        try:
+            row["outdated"] = Version(current) < Version(latest)
+            row["major"] = Version(current).major < Version(latest).major
+        except InvalidVersion:
+            row["outdated"] = current != latest
+            row["major"] = False
+        if safe and row["outdated"]:
+            row["plan"] = highest_safe_version(dep.name, current, directory, cfg, github_token, spec)
+        return row
+
+    with console.status("Checking versions..." + (" (finding safe versions)" if safe else "")):
+        with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+            rows = [r for r in pool.map(one, deps) if r]
 
     table = Table(title="Outdated dependencies")
     table.add_column("Package", style="cyan")
-    locks = locked_versions(directory)
-    table.add_column("Locked" if locks else "Installed", style="dim")
+    table.add_column("Locked" if locks else "Current", style="dim")
     table.add_column("Latest", style="green")
+    if safe:
+        table.add_column("Highest safe", style="bold")
     table.add_column("Status")
-
     outdated_count = 0
-    rows = []
-    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console, transient=True) as progress:
-        task = progress.add_task("Checking versions...", total=len(deps))
-        for dep in deps:
-            progress.update(task, description=f"Checking [bold]{dep.name}[/]...")
-            lock = locks.get(dep.name)
-            installed = lock.version if lock else (dep.pinned_version or get_installed_version(dep.name))
-            try:
-                latest = get_current_version(dep.name)
-            except Exception:
-                progress.advance(task)
-                continue
-            if not installed:
-                rows.append((dep.name, "-", latest, "[dim]not installed[/]"))
-                progress.advance(task)
-                continue
-            try:
-                if Version(installed) < Version(latest):
-                    outdated_count += 1
-                    major_bump = Version(installed).major < Version(latest).major
-                    status = "[red]major bump[/]" if major_bump else "[yellow]update available[/]"
-                    rows.append((dep.name, installed, latest, status))
-            except InvalidVersion:
-                pass
-            progress.advance(task)
+    for r in rows:
+        if not r.get("current"):
+            cells = [r["name"], "-", r["latest"]] + (["-"] if safe else []) + ["[dim]version unknown[/]"]
+            table.add_row(*cells)
+            continue
+        if not r.get("outdated"):
+            continue
+        outdated_count += 1
+        status = "[red]major bump[/]" if r["major"] else "[yellow]update available[/]"
+        cells = [r["name"], r["current"], r["latest"]]
+        if safe:
+            plan = r.get("plan") or {}
+            if plan.get("safe") == r["latest"]:
+                cells.append(f"[green]{plan['safe']}[/]")
+                status = "[green]safe to upgrade[/]"
+            elif plan.get("safe") and plan["safe"] != r["current"]:
+                cells.append(f"[yellow]{plan['safe']}[/]")
+                status = f"[red]{r['latest']} breaks {plan['breaking_at_latest']} usage(s)[/]"
+            else:
+                cells.append("[red]none[/]" if not plan.get("unchecked") else "[magenta]not checked[/]")
+                status = f"[red]{r['latest']} breaks {plan.get('breaking_at_latest', '?')} usage(s)[/]"
+        cells.append(status)
+        table.add_row(*cells)
 
     if outdated_count:
-        for row in rows:
-            table.add_row(*row)
         console.print(table)
-        console.print(f"\n[bold]{outdated_count}[/] outdated. Run [bold]pyupcheck check-all[/] to see if upgrades are safe.")
+        hint = "" if safe else " Run with --safe to find the highest version that doesn't break your code."
+        console.print(f"\n[bold]{outdated_count}[/] outdated.{hint}")
     else:
         console.print("[green]All dependencies up to date.[/]")
 
