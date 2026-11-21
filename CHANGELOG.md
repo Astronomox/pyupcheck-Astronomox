@@ -4,6 +4,18 @@ All notable changes to pyupcheck are documented here.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-21
+
+### Added
+- `pyupcheck migrate` rewrites Jupyter notebooks: fixes land in the right cell, new imports go in the cell with the other imports, and magics, shell lines, outputs and metadata are left exactly as they were
+- Benchmark notebook case (NumPy 2): 52 cases / 103 breaking lines, `--deep` still 100% with no false alarms
+
+### Fixed
+- Notebook cells were scanned one by one, so a name imported in one cell (`import numpy as np`) was not followed into the others and every later `np.…` call was missed. Cells are now scanned as one module
+- Notebook findings pointed at a line within the cell, which GitHub annotations and SARIF put on the wrong line of the `.ipynb` file and which could merge two findings from different cells; they now point at the notebook file's own line and say which cell
+- Advice like "use ``np.asarray`` with a proper dtype instead" was taken as a drop-in replacement, so `migrate` rewrote `np.asfarray(x)` to `np.asarray(x)`, which returns integers for integer input. Replacements qualified by "with …", "and pass …", "passing …" and similar are now manual
+- Annotation and SARIF messages repeated the replacement when the release note already named it
+
 ## [0.10.0] - 2026-11-21
 
 ### Added

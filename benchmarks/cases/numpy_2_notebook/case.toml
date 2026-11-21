@@ -1,0 +1,4 @@
+package = "numpy"
+from = "1.26.4"
+to = "2.0.0"
+source = "NumPy 2.0 migration guide; a notebook that imports numpy in its first cell and uses it in later ones"

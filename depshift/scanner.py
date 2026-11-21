@@ -17,6 +17,10 @@ class Usage:
     call_args: Optional[List[str]] = None  # positional arg count marker + keyword names
     kwargs: Optional[List[str]] = None  # keyword argument names used in a call
     col: Optional[int] = None  # column (UTF-8 byte offset) of the node, for rewriting
+    # notebooks: the cell number and the line within it; line is the .ipynb
+    # file's line holding that source line, so file:line points at it
+    cell: Optional[int] = None
+    cell_line: Optional[int] = None
 
 
 class PackageVisitor(ast.NodeVisitor):
@@ -382,46 +386,36 @@ def scan_file(filepath: str, package_name: PackageNames) -> List[Usage]:
 
 
 def scan_notebook(filepath: str, package_name: PackageNames) -> List[Usage]:
-    """Scan a Jupyter notebook's code cells for usages of package_name."""
-    import json as _json
-    try:
-        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-            nb = _json.load(f)
-    except Exception:
+    """Scan a Jupyter notebook's code cells for usages of package_name.
+
+    The cells are scanned as one module, as they run, so a name imported in
+    one cell is followed into the others. Each usage has its ``cell`` and
+    ``cell_line``; its ``line`` is the line of the .ipynb file."""
+    from depshift import notebook
+    nb = notebook.load(filepath)
+    if nb is None:
         return []
-
+    try:
+        tree = ast.parse(nb.source)
+    except (SyntaxError, ValueError):
+        return []
+    lines = nb.source.splitlines()
     usages: List[Usage] = []
-    for i, cell in enumerate(nb.get("cells", [])):
-        if cell.get("cell_type") != "code":
-            continue
-        src = cell.get("source", [])
-        code = "".join(src) if isinstance(src, list) else str(src)
-        # strip magics and shell commands
-        cleaned = "\n".join(
-            l for l in code.splitlines() if not l.lstrip().startswith(("%", "!", "?"))
-        )
-        try:
-            lines = cleaned.splitlines()
-            tree = ast.parse(cleaned)
-        except SyntaxError:
-            continue
-        for name in _as_names(package_name):
-            visitor = PackageVisitor(name, lines, filepath)
-            visitor.prepare(tree)
-            visitor.visit(tree)
-            for u in visitor.usages:
-                # u.line stays relative to the cell; the cell number goes in code
-                u.code = f"[cell {i + 1}] {u.code}"
-                usages.append(u)
-
     seen: Set[tuple] = set()
-    deduped: List[Usage] = []
-    for u in usages:
-        key = (u.file, u.code, u.line, u.attr_chain)
-        if key not in seen:
+    for name in _as_names(package_name):
+        visitor = PackageVisitor(name, lines, filepath)
+        visitor.prepare(tree)
+        visitor.visit(tree)
+        for u in visitor.usages:
+            key = (u.line, u.attr_chain)
+            if key in seen:
+                continue
             seen.add(key)
-            deduped.append(u)
-    return deduped
+            u.cell, u.cell_line = nb.locate(u.line)
+            u.line = nb.file_line(u.cell, u.cell_line)
+            u.code = f"[cell {u.cell}] {u.code}"
+            usages.append(u)
+    return usages
 
 
 def scan_directory(directory: str, package_name: PackageNames, exclude_dirs: Optional[Set[str]] = None,

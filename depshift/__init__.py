@@ -1,3 +1,3 @@
 """depshift - Check if upgrading a Python dependency will break your code."""
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"

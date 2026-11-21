@@ -180,6 +180,17 @@ _REPLACEMENT = re.compile(
     r"(?:renam|mov)\w*\s+`{0,2}[\w.:~]+`{0,2}\s+(?:to|into))\s+"
     r"`{0,2}:?(?:\w+:)*`?~?\.?([a-zA-Z_][\w.]*)", re.IGNORECASE)
 
+# words right after a replacement that make it more than a rename:
+# "use ``np.asarray`` with a float dtype", "use ``X`` and pass ``y=``"
+_QUALIFIED = re.compile(
+    r"^`{0,2}(?:\(\))?`{0,2}\s+(?:with(?!\s+the\s+same\b)|passing|plus|and\s+(?:pass|set|specify|add|call|wrap)\w*|"
+    r"together\s+with|combined\s+with|followed\s+by|on\s+the\s+result|wrapped\s+in)\b", re.IGNORECASE)
+
+
+def _qualified(line: str, repl: "re.Match") -> bool:
+    return bool(_QUALIFIED.match(line[repl.end(1):]))
+
+
 _RANK = {"low": 0, "medium": 1, "high": 2}
 _PARAM_OF = re.compile(
     r"`{1,2}([a-zA-Z_]\w*)`{1,2}\s+(?:option|param|parameter|argument|arg|kwarg|keyword argument|keyword)s?"
@@ -416,7 +427,7 @@ def _classify_item(line: str, section: Optional[str], version: str) -> List[Chan
         # "``Retry`` options ``a``, ``b`` in favour of ``x``, ``y``": the owner
         # isn't one of the things being replaced
         olds = [a for a in apis if not (own and a == own.group(1).rstrip("()"))]
-        if len(replacements) == len(olds):
+        if len(replacements) == len(olds) and not _qualified(line, repl_at):
             paired = dict(zip(olds, replacements))
 
     if section == "removed":
@@ -451,6 +462,8 @@ def _classify_item(line: str, section: Optional[str], version: str) -> List[Chan
     repl = _REPLACEMENT.search(line)
     replacement = repl.group(1).rstrip(".") if repl else None
     targets = [a for a in apis if a != replacement] or (apis[:1] if apis else ["unknown"])
+    if repl and _qualified(line, repl):
+        replacement = None  # advice ("use X with a float dtype"), not a drop-in
     param_of = _PARAM_OF.search(line)
     kw_from = None if param_of else _KEYWORD_FROM.search(line)
     if param_of:

@@ -63,3 +63,11 @@ def test_one_annotation_per_line_and_no_weak_hints(tmp_path, monkeypatch):
     assert len(out) == 1
     assert "``" not in out[0] and ":pr:" not in out[0]
     assert len(json.loads(render_sarif([r], str(tmp_path)))["runs"][0]["results"]) == 1
+
+
+def test_replacement_not_repeated_when_the_note_names_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+    r = result(tmp_path, change_description="Alias ``np.float_`` has been removed. Use ``np.float64`` instead.",
+               replacement="np.float64")
+    msg = render_github_annotations([r], str(tmp_path)).split("::", 2)[2]
+    assert msg.count("np.float64") == 1
