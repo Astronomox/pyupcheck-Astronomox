@@ -6,7 +6,12 @@ All notable changes to pyupcheck are documented here.
 
 ## [0.8.1] - 2026-11-21
 
+Changelog-only accuracy on the benchmark: 61.4% -> 73.7% of breaking lines caught, still with no false alarms.
+
 ### Added
+- Migration guides are read alongside release notes: per-series guides (NumPy `numpy_2_0_migration_guide.rst`, SQLAlchemy `migration_20.rst`), per-version `removals.rst` / `deprecations.rst` (Matplotlib), and `docs/migration.md`-style guides for major-version jumps (Pydantic V1 -> V2)
+- Markdown tables are parsed ("| Pydantic V1 | Pydantic V2 |"), a table's header ("removed member") marks its rows, and bare names in a table's first column count as APIs. Only plain "use ``X`` instead" cells give a replacement; advice with conditions ("use ``np.asarray`` with a float dtype") marks a removal without one, so `migrate` never rewrites it
+- "Moved" headings mark breaking changes; a list entry that opens with the API under "Removals" ("``get_cmap``; use ...") is a removal
 - `migrate` rewrites imports of names that moved to another package when the changelog says so ("Import them directly from ``markupsafe``": `from flask import Markup` -> `from markupsafe import Markup`). The name is verified first: third-party packages by reading their latest release's API, standard-library modules by parsing their source (never by importing what a changelog names)
 
 ### Added
@@ -17,6 +22,12 @@ All notable changes to pyupcheck are documented here.
 - A module `__getattr__` branch that only raises (scikit-learn 1.2's `load_boston` explanation) no longer makes the removed name look available
 - Test modules shipped inside a package (`sklearn/datasets/tests`) are no longer treated as API
 - `--deep` no longer suggests a same-named function in another package as the new home (NumPy 2 `round_` is not `numpy.ma.core.round_`), and `migrate` prefers the replacement the changelog names
+
+### Fixed
+- The GitHub repository was taken from the first GitHub link in a package's metadata, which for Pydantic (and others) is a `github.com/sponsors/...` funding link; the source link is now preferred and sponsor links are skipped
+- "use ``X`` instead" under a Removals heading no longer turns the removal into a deprecation
+- `SyntaxWarning`s from parsing old third-party sources are no longer printed
+- Tests can no longer reach the network or the real `~/.cache/pyupcheck`
 
 ## [0.8.0] - 2026-11-20
 

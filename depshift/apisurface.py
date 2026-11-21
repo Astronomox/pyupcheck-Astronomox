@@ -8,6 +8,7 @@ what was removed, what changed signature, what parameters disappeared.
 
 import ast
 import io
+import warnings
 
 import tarfile
 import zipfile
@@ -510,7 +511,10 @@ def build_surface(version: str, sources: Dict[str, List[str]],
         surface.modules.add(module_path)
         for src in srcs:  # a module may have both a .py and a .pyi stub
             try:
-                tree = ast.parse(src)
+                with warnings.catch_warnings():
+                    # old packages' invalid escapes ("\\420") are their business, not ours
+                    warnings.simplefilter("ignore", SyntaxWarning)
+                    tree = ast.parse(src)
             except (SyntaxError, ValueError):
                 continue  # e.g. Python 2-only sources
             visitor = _SurfaceVisitor(module_path)

@@ -33,7 +33,7 @@ is identical to `app.py`, which checks that migrate doesn't guess.
 
 | Mode | Recall | Precision |
 |---|---|---|
-| changelog (default) | 61.4% | 100% |
+| changelog (default) | 73.7% | 100% |
 | `--deep` | 100% | 100% |
 | `migrate` (exact rewrite) | 7/7 cases | |
 
@@ -42,5 +42,5 @@ Jinja 3.1, Matplotlib 3.9, NetworkX 3, NumPy 2 (two cases), pandas 2 (two
 cases), Pillow 10, Pydantic 2, PyYAML 6, scikit-learn 1.2, SciPy 1.14,
 SQLAlchemy 2, urllib3 2, Werkzeug 2.1 and 3, two inference cases, and four
 negative controls (requests, Flask, NumPy and Django patch releases).
-Changelog misses are mostly changes worded loosely or described only in
-migration guides; deep mode catches them.
+Changelog misses are mostly changes worded loosely or not written down at
+all; deep mode catches them.
