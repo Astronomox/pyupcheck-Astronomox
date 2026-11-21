@@ -103,3 +103,8 @@ def test_dedupe_keeps_most_severe_verified_finding():
     kept = _dedupe_risks(risks)
     assert [(r["line"], r["severity"], r.get("precise", False)) for r in kept] == \
         [(1, "breaking", True), (2, "deprecated", False)]
+
+
+def test_clean_truncated_reference():
+    assert _clean("Import them from ``markupsafe`` instead. :pr:") == "Import them from `markupsafe` instead."
+    assert _clean("Removed. :issue:`12") == "Removed."

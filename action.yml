@@ -24,6 +24,14 @@ inputs:
   fail-on:
     description: Fail the check on breaking, deprecated, any, or never.
     default: "never"
+  annotations:
+    description: Annotate each finding on its line in the PR diff.
+    default: "true"
+  sarif:
+    description: >-
+      Also write a SARIF report to this path (relative to the workspace), for
+      github/codeql-action/upload-sarif. Empty to skip.
+    default: ""
   python-version:
     description: Python used to run pyupcheck (not your project's Python).
     default: "3.13"
@@ -38,6 +46,9 @@ outputs:
   report:
     description: Path of the Markdown report.
     value: ${{ steps.review.outputs.report }}
+  sarif:
+    description: Path of the SARIF report, when one was requested.
+    value: ${{ steps.review.outputs.sarif }}
 
 runs:
   using: composite
@@ -60,12 +71,21 @@ runs:
         BASE: ${{ inputs.base || github.event.pull_request.base.sha || 'HEAD~1' }}
         DEEP: ${{ inputs.deep == 'true' && '--deep' || '--no-deep' }}
         FAIL_ON: ${{ inputs.fail-on }}
+        ANNOTATE: ${{ inputs.annotations == 'true' && '--annotations' || '' }}
+        SARIF: ${{ inputs.sarif }}
       run: |
         report="$RUNNER_TEMP/pyupcheck-review.md"
+        sarif_args=()
+        if [ -n "$SARIF" ]; then
+          sarif_path="$GITHUB_WORKSPACE/$SARIF"
+          sarif_args=(--sarif "$sarif_path")
+          echo "sarif=$sarif_path" >> "$GITHUB_OUTPUT"
+        fi
         # the base commit must be present locally to read its dependency files
         git cat-file -e "$BASE^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$BASE"
         set +e
-        pyupcheck review --base "$BASE" $DEEP --fail-on "$FAIL_ON" -o "$report"
+        # annotations go to stdout, where GitHub turns them into line comments
+        pyupcheck review --base "$BASE" $DEEP --fail-on "$FAIL_ON" -o "$report" $ANNOTATE "${sarif_args[@]}"
         status=$?
         set -e
         cat "$report" >> "$GITHUB_STEP_SUMMARY"
