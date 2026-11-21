@@ -900,3 +900,16 @@ def test_short_names_in_list_inherit_first_module():
     # not a list: the sentence is about pkg.connect only
     e = parse_changelog_text("## Breaking\n- ``pkg.connect`` takes a ``Config`` object.", "2.0")
     assert {x.api for x in e} == {"pkg.connect"}
+
+
+def test_qualified_advice_is_not_a_drop_in_replacement():
+    from depshift.changelog import _classify_item
+    got = {e.api: e.replacement for e in _classify_item(
+        "``np.asfarray`` has been removed. Use ``np.asarray`` with a proper dtype instead.", "removed", "2.0")}
+    assert got == {"np.asfarray": None}
+    got = {e.api: e.replacement for e in _classify_item(
+        "Removed ``foo``. Use ``bar`` and pass ``strict=False``.", "removed", "2.0")}
+    assert got == {"foo": None}
+    got = {e.api: e.replacement for e in _classify_item(
+        "Removed ``foo``; use ``bar`` with the same arguments.", "removed", "2.0")}
+    assert got == {"foo": "bar"}

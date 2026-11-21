@@ -195,8 +195,9 @@ def _message(r: dict, risk: dict) -> str:
     from depshift.review import _clean
     msg = f"{r['package']} {r.get('current_version') or '?'} -> {r['target_version']}: " \
           f"{_clean(risk['change_description'])}"
-    if risk.get("replacement"):
-        msg += f" Use {risk['replacement']} instead."
+    repl = risk.get("replacement")
+    if repl and f"`{repl}`" not in msg:  # unless the release note already says so
+        msg += f" Use {repl} instead."
     return " ".join(msg.split())
 
 

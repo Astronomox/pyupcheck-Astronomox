@@ -228,7 +228,8 @@ These findings are marked `[FACT]` in the output because they come from the real
 - Follows objects: `s = requests.Session(); s.get(...)`, `with ... as s`, type-annotated parameters, helper functions that return package objects, attributes on `self`, and chained calls
 - Respects your version constraints and never reports an unchecked package as safe
 - Real API surface diffing in `--deep` mode
-- Jupyter notebook (`.ipynb`) and type stub (`.pyi`) scanning
+- Jupyter notebooks (`.ipynb`): code cells are scanned as one module, the way they run, so `import numpy as np` in the first cell is followed into every later one. `%magics`, `!shell` lines and `%%bash`-style cells are skipped. Findings point at the notebook file's line and name the cell, and `migrate --write` rewrites cells in place, leaving outputs and metadata untouched
+- Type stub (`.pyi`) scanning
 - Dynamic import detection (`importlib.import_module`, `__import__`)
 - Changelog sources: GitHub releases, raw changelog files, PyPI descriptions
 - Works for any PyPI package: resolves import names (`pyyaml` -> `yaml`), namespace packages, C extensions, `src/` layouts
@@ -239,7 +240,7 @@ These findings are marked `[FACT]` in the output because they come from the real
 
 ## Accuracy
 
-`benchmarks/` holds 51 real upgrades (100 breaking lines, plus 8 negative controls) with known breaking changes (Django 4, Flask 3, NumPy 2, pandas 2, Pydantic 2, SQLAlchemy 2, SciPy 1.14, Pillow 10 and more). On the current set, `--deep` catches 100% of breaking lines with no false alarms; changelog-only mode catches 70.0%, also with no false alarms; `migrate` produces the exact expected rewrite in all 8 rewrite cases. Run it with `make bench`.
+`benchmarks/` holds 52 real upgrades (103 breaking lines, plus 8 negative controls, and one Jupyter notebook) with known breaking changes (Django 4, Flask 3, NumPy 2, pandas 2, Pydantic 2, SQLAlchemy 2, SciPy 1.14, Pillow 10 and more). On the current set, `--deep` catches 100% of breaking lines with no false alarms; changelog-only mode catches 70.9%, also with no false alarms; `migrate` produces the exact expected rewrite in all 8 rewrite cases. Run it with `make bench`.
 
 Changelogs are read from GitHub releases, root CHANGES files, per-version release notes in project docs (NumPy, SciPy, pandas, Pillow, Django, SQLAlchemy, NetworkX layouts), and migration guides (NumPy 2, SQLAlchemy 2, Matplotlib removals, `docs/migration.md`).
 
@@ -332,6 +333,5 @@ Items being actively considered for future versions:
 - `--watch` mode: monitor your lockfile and alert when a new version would break your code
 - conda-lock support
 - VS Code extension: inline warnings on imports
-- Jupyter notebook deep scan (currently scans cells for imports, not API calls inside them)
 - `pyupcheck explain` with AI-assisted migration guidance
 - Support for TypeScript / Node.js packages (npm ecosystem)

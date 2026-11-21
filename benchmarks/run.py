@@ -3,7 +3,7 @@
 Each case in benchmarks/cases/<name>/ has:
 
   case.toml  package, from, to, source (where the ground truth comes from)
-  app.py     code using the package; lines that really break on the upgrade
+  app.py     code using the package (or app.ipynb, a notebook); lines that really break on the upgrade
              end with ``# BREAK``. Every other line that uses the package
              must NOT be flagged.
 
@@ -30,6 +30,7 @@ from typing import Dict, Set
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
+from depshift import notebook  # noqa: E402
 from depshift._toml import tomllib  # noqa: E402
 from depshift.analyzer import analyze  # noqa: E402
 from depshift.apisurface import get_api_changes, get_return_types  # noqa: E402
@@ -66,10 +67,24 @@ def load_case(name: str) -> dict:
         meta = tomllib.load(f)
     meta["name"] = name
     meta["dir"] = d
+    nb_path = os.path.join(d, "app.ipynb")
+    if os.path.isfile(nb_path):
+        # a notebook case: # BREAK lines inside cells, scored by .ipynb line
+        nb = notebook.load(nb_path)
+        meta["expected"] = {nb.file_line(cell, i)
+                            for cell in nb.starts
+                            for i, line in enumerate(_cell_lines(nb, cell), 1)
+                            if line.rstrip().endswith("# BREAK")}
+        return meta
     with open(os.path.join(d, "app.py"), encoding="utf-8") as f:
         meta["expected"] = {i for i, line in enumerate(f.read().splitlines(), 1)
                             if line.rstrip().endswith("# BREAK")}
     return meta
+
+
+def _cell_lines(nb, cell: int):
+    src = nb.data["cells"][cell - 1].get("source", "")
+    return ("".join(src) if isinstance(src, list) else src).split("\n")
 
 
 def flagged_lines(case: dict, mode: str) -> Dict[str, Set[int]]:

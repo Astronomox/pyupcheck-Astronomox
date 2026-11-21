@@ -15,9 +15,10 @@ comments are untouched.
 
 import ast
 import difflib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Dict, Iterable, List, Optional, Tuple, Union
 
+from depshift import notebook
 from depshift.analyzer import COMMON_ALIASES
 from depshift.apisurface import APIChange, APISurface, _reachable
 from depshift.precise import match_precise
@@ -39,6 +40,7 @@ class Fix:
     description: str
     edits: List[Edit] = field(default_factory=list)
     needs_import: Optional[str] = None  # module the rewritten code refers to
+    cell: Optional[int] = None  # notebook cell; line is then within it (edits are not)
 
 
 @dataclass
@@ -47,6 +49,7 @@ class Manual:
     line: int
     code: str
     reason: str
+    cell: Optional[int] = None
 
 
 @dataclass
@@ -233,10 +236,26 @@ def plan_migration(usages: List[Usage], changes: List[APIChange], new_surface: A
     """Turn the breaking changes that hit ``usages`` into fixes and manual items.
 
     ``sources`` maps file path -> source text (read from disk when missing).
+    A notebook's edits apply to its joined source (:func:`notebook.load`);
+    its fixes and manual items carry the cell and the line within it.
     """
     roots = [package] if isinstance(package, str) else list(package)
     plan = MigrationPlan()
     repl_map = replacement_map(changelog_entries, roots)
+
+    # notebook usages in the coordinates of the notebook's joined source
+    notebooks: Dict[str, Optional[notebook.Notebook]] = {}
+    joined = []
+    for u in usages:
+        if u.cell is not None:
+            if u.file not in notebooks:
+                notebooks[u.file] = notebook.load(u.file)
+            nb = notebooks[u.file]
+            if nb is None or u.cell not in nb.starts:
+                continue
+            u = replace(u, line=nb.global_line(u.cell, u.cell_line))
+        joined.append(u)
+    usages = joined
     risks = match_precise(usages, changes, roots, returns)
 
     sources = dict(sources or {})
@@ -244,16 +263,18 @@ def plan_migration(usages: List[Usage], changes: List[APIChange], new_surface: A
 
     def index_for(path: str) -> Optional[_Index]:
         if path not in indexes:
-            if path.endswith(".ipynb"):
+            try:
+                if path in notebooks:
+                    sources[path] = notebooks[path].source
+                elif path not in sources:
+                    with open(path, encoding="utf-8") as f:
+                        sources[path] = f.read()
+                indexes[path] = _Index(sources[path])
+            except (OSError, SyntaxError, ValueError, AttributeError):
                 indexes[path] = None
-            else:
-                try:
-                    if path not in sources:
-                        with open(path, encoding="utf-8") as f:
-                            sources[path] = f.read()
-                    indexes[path] = _Index(sources[path])
-                except (OSError, SyntaxError, ValueError):
-                    indexes[path] = None
+            if path in notebooks and indexes[path] is not None:
+                # new imports go in a cell, never above the first cell's marker
+                indexes[path].insert_line = max(indexes[path].insert_line, 2)
         return indexes[path]
 
     def manual(u: Usage, reason: str):
@@ -326,6 +347,10 @@ def plan_migration(usages: List[Usage], changes: List[APIChange], new_surface: A
             manual(u, "; ".join(c.detail for c in chs) + " (could not convert the call automatically)")
 
     _add_needed_imports(plan, index_for)
+    for item in plan.fixes + plan.manual:
+        nb = notebooks.get(item.file)
+        if nb is not None:
+            item.cell, item.line = nb.locate(item.line)
     return plan
 
 

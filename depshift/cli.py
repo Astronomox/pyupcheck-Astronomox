@@ -866,6 +866,7 @@ def migrate(package, target_version, directory, write, exclude, github_token, no
     """
     import ast as _ast
     from depshift.apisurface import extract_surface
+    from depshift import notebook
     from depshift.rewrite import apply_edits, plan_migration, unified_diff
 
     directory = os.path.abspath(directory)
@@ -914,10 +915,18 @@ def migrate(package, target_version, directory, write, exclude, github_token, no
     plan = plan_migration(usages, changes, new_surface, names, entries, returns)
     console.print(f"[bold]{package}[/] {current} [dim]({source})[/] -> {target_version}\n")
 
+    def where(item) -> str:
+        rel = os.path.relpath(item.file, directory)
+        return f"{rel} cell {item.cell}:{item.line}" if item.cell is not None else f"{rel}:{item.line}"
+
     changed_files = 0
     for path, fixes in sorted(plan.by_file().items()):
-        with open(path, encoding="utf-8") as f:
-            before = f.read()
+        nb = notebook.load(path) if path.endswith(".ipynb") else None
+        if nb is not None:
+            before = nb.source
+        else:
+            with open(path, encoding="utf-8") as f:
+                before = f.read()
         after = apply_edits(before, [e for fx in fixes for e in fx.edits])
         if after == before:
             continue
@@ -927,18 +936,21 @@ def migrate(package, target_version, directory, write, exclude, github_token, no
             console.print(f"[red]skipped {os.path.relpath(path)}:[/] the rewrite would not parse")
             continue
         rel = os.path.relpath(path, directory)
-        for fx in sorted(fixes, key=lambda x: x.line):
-            console.print(f"  [green]fix[/] {rel}:{fx.line}  {fx.description}")
-        print(unified_diff(rel, before, after))
+        for fx in sorted(fixes, key=lambda x: (x.cell or 0, x.line)):
+            console.print(f"  [green]fix[/] {where(fx)}  {fx.description}")
+        if nb is not None:
+            print(unified_diff(rel, notebook.cells_text(nb, before), notebook.cells_text(nb, after)))
+        else:
+            print(unified_diff(rel, before, after))
         changed_files += 1
         if write:
             with open(path, "w", encoding="utf-8") as f:
-                f.write(after)
+                f.write(notebook.dumps(notebook.restore(nb, after)) if nb is not None else after)
 
     if plan.manual:
         console.print(f"[yellow]{len(plan.manual)} change(s) need you:[/]")
-        for m in sorted(plan.manual, key=lambda m: (m.file, m.line)):
-            console.print(f"  [yellow]![/] {os.path.relpath(m.file, directory)}:{m.line}  {m.code}")
+        for m in sorted(plan.manual, key=lambda m: (m.file, m.cell or 0, m.line)):
+            console.print(f"  [yellow]![/] {where(m)}  {m.code}")
             console.print(f"    [dim]{m.reason}[/]")
 
     if not plan.fixes and not plan.manual:
