@@ -4,6 +4,8 @@ All notable changes to pyupcheck are documented here.
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-11-21
+
 ### Added
 - Benchmark grown to 51 cases / 100 breaking lines (NumPy 2 types and constants, Django 4.0 and 5.0, Werkzeug 2.1 and 3, Flask 2.3, Jinja 3.1 filters, urllib3 2 contrib, Pillow 10, scikit-learn 1.2, Matplotlib 3.9, PyYAML 6 `load_all`, NetworkX 3 I/O, pandas 2, Pydantic 2, SQLAlchemy 2), including 8 negative controls (patch releases, and Jinja 3.0 where `Markup` is only deprecated). `--deep` catches 100/100 with no false alarms
 - Changelog lists that name one API in full and its siblings by short name ("``django.utils.translation.ugettext()``, ``ugettext_lazy()``, ... are removed") qualify the short names
