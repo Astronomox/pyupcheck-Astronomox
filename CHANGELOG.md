@@ -4,6 +4,12 @@ All notable changes to pyupcheck are documented here.
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-11-21
+
+### Added
+- `migrate` rewrites attribute uses of names moved to another package and adds the import: `flask.Markup(...)` -> `markupsafe.Markup(...)` plus `import markupsafe` (once per file, after the existing imports, skipped if already imported). Only plain dotted names are rewritten; methods called on the moved name (`flask.Markup(...).format(...)`) are handled
+- Benchmark case `flask_3_attr`: 27 cases / 59 breaking lines; `migrate` exact on 8/8
+
 ## [0.8.1] - 2026-11-21
 
 Changelog-only accuracy on the benchmark: 61.4% -> 73.7% of breaking lines caught, still with no false alarms.
