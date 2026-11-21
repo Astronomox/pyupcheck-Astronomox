@@ -75,7 +75,11 @@ def extract_github_repo(pypi_info: dict) -> Optional[Tuple[str, str]]:
     urls = []
 
     project_urls = info.get("project_urls") or {}
-    for key, val in project_urls.items():
+    # the source link first: "Funding" often points at github.com/sponsors/...
+    preferred = ("source", "repository", "code", "github", "source code", "homepage", "home")
+    ranked = sorted(project_urls.items(),
+                    key=lambda kv: (0 if kv[0].strip().lower() in preferred else 1))
+    for key, val in ranked:
         if val:
             urls.append(val)
 
@@ -86,7 +90,7 @@ def extract_github_repo(pypi_info: dict) -> Optional[Tuple[str, str]]:
     pattern = re.compile(r"github\.com/([^/]+)/([^/\s#?]+)")
     for url in urls:
         m = pattern.search(url)
-        if m:
+        if m and m.group(1).lower() not in ("sponsors", "orgs", "apps", "marketplace"):
             owner, repo = m.group(1), m.group(2)
             if repo.endswith(".git"):
                 repo = repo[: -len(".git")]
@@ -131,7 +135,7 @@ def fetch_github_releases(owner: str, repo: str, token: Optional[str] = None) ->
 
 # headings that classify the bullet points beneath them
 _BREAKING_HEADING = re.compile(
-    r"\b(breaking|backwards?[- ]incompatible|incompatible|removals?|removed|expired|"
+    r"\b(breaking|backwards?[- ]incompatible|incompatible|removals?|removed|expired|moved|"
     r"api changes|migration|upgrade notes?)\b", re.IGNORECASE)
 _DEPRECATION_HEADING = re.compile(r"\bdeprecat", re.IGNORECASE)
 _BENIGN_HEADING = re.compile(
@@ -246,7 +250,7 @@ _BULLET = re.compile(r"^(\s*)(?:[-*\u2022+]|\d+[.)])\s+")
 _TABLE_BORDER = re.compile(r"^\s*=+(?:\s+=+)+\s*$")
 
 
-def _items(text: str) -> List[Tuple[Optional[str], str]]:
+def _items(text: str, default_section: Optional[str] = None) -> List[Tuple[Optional[str], str]]:
     """Split release notes into (section kind, item text) pairs.
 
     A bullet plus its wrapped continuation lines is one item; so is a plain
@@ -263,12 +267,15 @@ def _items(text: str) -> List[Tuple[Optional[str], str]]:
     cur_section: Optional[str] = None
     cur_indent: Optional[int] = None  # indent of the bullet that started the item
     table_borders = 0
+    table_kind: Optional[str] = None      # what a reST table's header row says
+    md_table_rows = 0                     # 0: none, -1: header seen, >=1: body
+    md_header_kind: Optional[str] = None
 
     def section() -> Optional[str]:
         for _, kind in reversed(stack):
             if kind is not None:
                 return kind
-        return None
+        return default_section
 
     def flush():
         if cur:
@@ -309,13 +316,32 @@ def _items(text: str) -> List[Tuple[Optional[str], str]]:
             continue
         if _in_table(table_borders):
             # one row = one item: first column is the API, the rest says what
-            # replaces it
+            # replaces it. The header row ("removed member | guideline") can
+            # say what the whole table is.
             row = raw.strip()
-            if row and table_borders % 3 != 1:   # skip the header row
+            if row and table_borders % 3 == 1:
+                table_kind = _section_kind(row)
+            elif row:
                 cols = re.split(r"\s{2,}", row, maxsplit=1)
-                text_row = cols[0] + (f" replaced by {cols[1]}" if len(cols) > 1 else "")
-                out.append((section(), text_row))
+                out.append((table_kind if table_kind in ("removed", "deprecated") else section(),
+                            _table_row_item(cols[0], cols[1] if len(cols) > 1 else "")))
             continue
+        md_row = _MD_TABLE_ROW.match(raw)
+        if md_row:
+            flush()
+            cells = [c.strip() for c in raw.strip().strip("|").split("|")]
+            if all(re.fullmatch(r":?-{3,}:?", c) for c in cells if c):
+                md_table_rows = 1  # separator: the row before it was the header
+                continue
+            if md_table_rows == 0:
+                md_header_kind = _section_kind(" ".join(cells))
+                md_table_rows = -1  # header seen, waiting for the separator
+                continue
+            if md_table_rows >= 1 and cells:
+                kind = md_header_kind if md_header_kind in ("removed", "deprecated") else section()
+                out.append((kind, _table_row_item(cells[0], cells[1] if len(cells) > 1 else "")))
+            continue
+        md_table_rows = 0
         if not raw.strip():
             nxt = next((ln for ln in lines[i + 1:] if ln.strip()), "")
             nb = _BULLET.match(nxt)
@@ -365,7 +391,7 @@ def _classify_item(line: str, section: Optional[str], version: str) -> List[Chan
     apis = _extract_apis(line)
     # everything named after "in favor of" / "use" / "replaced by" is a
     # replacement, not something that changed
-    repl_at = _REPLACEMENT.search(line)
+    repl_at = None if NO_DROP_IN in line else _REPLACEMENT.search(line)
     replacements: List[str] = []
     if repl_at:
         replacements = _extract_apis(line[repl_at.start():])
@@ -389,8 +415,11 @@ def _classify_item(line: str, section: Optional[str], version: str) -> List[Chan
     if section == "removed":
         # everything under a "Breaking changes" heading breaks, except explicit
         # deprecations; a rename there has no compatibility alias
-        if kind == "deprecated" and not re.search(r"\bremov", line, re.IGNORECASE):
-            pass
+        if kind == "deprecated" and re.search(r"\bdeprecat", line, re.IGNORECASE) \
+                and not re.search(r"\bremov", line, re.IGNORECASE):
+            pass  # an explicit deprecation listed under "Breaking changes"
+        elif kind == "deprecated":
+            kind = "removed"  # "use X instead" under "Removals" is advice, not a deprecation
         elif kind == "renamed":
             kind = "changed"
         else:
@@ -452,7 +481,8 @@ def _classify_item(line: str, section: Optional[str], version: str) -> List[Chan
         seen.add(api)
         c = conf
         if api != "unknown" and kind in ("removed", "changed", "deprecated", "renamed") \
-                and not _is_subject(line, api.rsplit(".", 1)[-1]):
+                and not _is_subject(line, api.rsplit(".", 1)[-1]) \
+                and not (section in ("removed", "deprecated") and _leads_with(line, api)):
             # the item mentions the API but isn't about removing it
             # ("Passing dtype=... to ``DataFrame`` now raises"): a behaviour
             # change worth a warning, not proof the call breaks
@@ -482,6 +512,17 @@ def _pick_replacement(api: str, paired: Dict[str, str]) -> Optional[str]:
 _CHANGE_VERB = r"(?:remov|delet|drop|deprecat|renam|expir|replac|supersed)\w*"
 
 
+def _leads_with(line: str, api: str) -> bool:
+    """Does the item open with this API? In a list under "Removals"
+    ("``matplotlib.cm.get_cmap``; use ...") the leading name is the subject."""
+    # a listing ("``get_cmap``; use ...", "``get_cmap``, ``register_cmap``"),
+    # not a sentence about the API ("``connect`` takes a Config object")
+    # ':' is out ("``read_csv``: ... now raises" describes a behaviour change),
+    # and so is a bare name with nothing after it (it says nothing)
+    m = re.match(r"\s*(?::\w+:)?`{0,2}~?\.?([a-zA-Z_][\w.]*)(?:\(\))?`{0,2}\s*[;,\u2014-]\s*\S", line)
+    return bool(m) and m.group(1) in (api, api.rsplit(".", 1)[-1])
+
+
 def _is_subject(line: str, name: str) -> bool:
     """Is ``name`` what the item removes/deprecates/renames, rather than
     something it merely mentions?"""
@@ -493,7 +534,36 @@ def _is_subject(line: str, name: str) -> bool:
     return bool(before.search(line) or after.search(line))
 
 
-def parse_changelog_text(text: str, version: str) -> List[ChangeEntry]:
+# marks advice that isn't a drop-in replacement ("use X with a float dtype")
+NO_DROP_IN = " [no drop-in replacement]"
+_MD_TABLE_ROW = re.compile(r"^\s*\|.*\|\s*$")
+_STRICT_REPLACEMENT = re.compile(
+    r"^(?:use\s+|it'?s\s+still\s+available\s+(?:as|under)\s+|now\s+(?:it'?s\s+)?available\s+(?:as|under)\s+)?"
+    r"\[?(?::\w+:)?`{1,2}~?([a-zA-Z_][\w.]*)(?:\(\))?`{1,2}\]?(?:\([^)]*\)|\[[^\]]*\])?"
+    r"(?:\s+instead)?\.?$", re.IGNORECASE)
+
+
+def _table_row_item(old: str, new: str) -> str:
+    """One table row ("old | what to do") as release-note text.
+
+    Only a plain "use ``X`` instead" / "still available as ``X``" / bare
+    ``X`` cell names a drop-in replacement. A cell with conditions ("Use
+    ``np.asarray`` with a float dtype") still marks a removal but gives no
+    replacement, so migrate never rewrites one behaviour into another.
+    """
+    old = old.strip()
+    if re.fullmatch(r"[a-zA-Z_][\w.]*(?:\(\))?", old):
+        old = f"``{old}``"  # bare name in the first column
+    new = new.strip()
+    m = _STRICT_REPLACEMENT.match(new)
+    if m:
+        return f"{old} replaced by ``{m.group(1)}``"
+    plain = re.sub(r"`+", "", new)  # keep the advice, drop the API markers
+    return f"{old} removed ({plain}){NO_DROP_IN}" if plain else f"{old} removed"
+
+
+def parse_changelog_text(text: str, version: str,
+                         default_section: Optional[str] = None) -> List[ChangeEntry]:
     """Parse a changelog/release notes body for breaking/deprecated changes.
 
     Understands section headings (Markdown, reST, bold, ``Heading:``): bullets
@@ -505,7 +575,7 @@ def parse_changelog_text(text: str, version: str) -> List[ChangeEntry]:
     entries: List[ChangeEntry] = []
     if not text:
         return entries
-    for section, item in _items(text):
+    for section, item in _items(text, default_section):
         entries.extend(_classify_item(item, section, version))
     return entries
 
@@ -696,6 +766,53 @@ def fetch_docs_release_notes(owner: str, repo: str, versions: List[str],
     return entries
 
 
+# Migration guides: per series ({major}{minor} / {major}_{minor}), per
+# version with a fixed section ({v}, e.g. Matplotlib's removals.rst), or one
+# guide for a major-version jump.
+MIGRATION_SERIES = [
+    "doc/source/numpy_{major}_{minor}_migration_guide.rst",   # NumPy 2.0
+    "doc/build/changelog/migration_{major}{minor}.rst",        # SQLAlchemy 2.0
+]
+MIGRATION_PER_VERSION = [
+    ("doc/api/prev_api_changes/api_changes_{v}/removals.rst", "removed"),        # Matplotlib
+    ("doc/api/prev_api_changes/api_changes_{v}/deprecations.rst", "deprecated"),
+]
+MIGRATION_MAJOR = ["docs/migration.md", "docs/migration.rst", "docs/migration_guide.md",
+                   "MIGRATION.md", "docs/upgrading.md"]
+
+
+def fetch_migration_guides(owner: str, repo: str, current: str, target: str,
+                           versions: List[str]) -> List[ChangeEntry]:
+    """Changes described in migration guides rather than release notes.
+    Each guide's entries are dated to the release it is about."""
+    from packaging.version import Version, InvalidVersion
+    try:
+        cur, tgt = Version(current), Version(target)
+    except InvalidVersion:
+        return []
+    entries: List[ChangeEntry] = []
+    series = sorted({(Version(v).major, Version(v).minor) for v in versions})
+    for major, minor in series:
+        for pattern in MIGRATION_SERIES:
+            text = _cached_raw(owner, repo, pattern.format(major=major, minor=minor))
+            if text:
+                entries.extend(parse_changelog_text(text, f"{major}.{minor}.0"))
+    for v in versions[-20:]:
+        for pattern, kind in MIGRATION_PER_VERSION:
+            text = _cached_raw(owner, repo, pattern.format(v=_three_part(v)))
+            if text:
+                entries.extend(parse_changelog_text(text, v, default_section=kind))
+    if tgt.major > cur.major:
+        # an unversioned guide describes the major jump ("Pydantic V1 -> V2")
+        first_of_major = next((v for v in versions if Version(v).major == tgt.major), f"{tgt.major}.0.0")
+        for path in MIGRATION_MAJOR:
+            text = _cached_raw(owner, repo, path)
+            if text:
+                entries.extend(parse_changelog_text(text, first_of_major))
+                break
+    return entries
+
+
 def _cached_raw(owner: str, repo: str, path: str) -> Optional[str]:
     key = f"gh-raw:{owner}/{repo}/{path}"
     cached = cache_get(key)
@@ -823,6 +940,15 @@ def collect_changes(package: str, current_version: str, target_version: str,
                     all_entries.extend(docs)
             except Exception as e:
                 failed.append(f"docs release notes ({_short_err(e)})")
+            try:
+                guides = fetch_migration_guides(
+                    owner, repo, current_version, target_version,
+                    _versions_between(pypi_info, current_version, target_version))
+                if guides:
+                    ok.append("migration guide")
+                    all_entries.extend(guides)
+            except Exception as e:
+                failed.append(f"migration guide ({_short_err(e)})")
 
     try:
         ver_info = get_pypi_version_info(package, target_version)

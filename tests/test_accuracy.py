@@ -773,3 +773,89 @@ def test_import_them_from_other_package():
         "- Importing ``escape`` and ``Markup`` from ``flask`` is deprecated. "
         "Import them directly from ``markupsafe`` instead.", "2.3.0")
     assert {(x.api, x.replacement) for x in e} == {("escape", "markupsafe.escape"), ("Markup", "markupsafe.Markup")}
+
+
+# ── migration guides ──────────────────────────────────────────────────────────
+
+def test_rst_table_header_marks_removals_and_strict_replacements():
+    text = textwrap.dedent("""\
+        Main namespace
+        --------------
+
+        ======================  ============================================
+        removed member          migration guideline
+        ======================  ============================================
+        alltrue                 Use ``np.all`` instead.
+        byte_bounds             Now it's available under ``np.lib.array_utils.byte_bounds``
+        asfarray                Use ``np.asarray`` with a float dtype instead.
+        ======================  ============================================
+        """)
+    got = {e.api: (e.kind, e.replacement) for e in parse_changelog_text(text, "2.0.0")}
+    assert got["alltrue"] == ("removed", "np.all")
+    assert got["byte_bounds"] == ("removed", "np.lib.array_utils.byte_bounds")
+    assert got["asfarray"] == ("removed", None)  # conditional advice: no automatic rewrite
+
+
+def test_markdown_table_under_moved_heading():
+    text = textwrap.dedent("""\
+        ## Moved in Pydantic V2
+
+        | Pydantic V1 | Pydantic V2 |
+        | --- | --- |
+        | `pydantic.BaseSettings` | [`pydantic_settings.BaseSettings`](#moved) |
+        | `pydantic.color` | [`pydantic_extra_types.color`][x] |
+
+        ## Other
+        Some prose that mentions `pydantic.Field`.
+        """)
+    got = {e.api: (e.kind, e.replacement) for e in parse_changelog_text(text, "2.0")}
+    assert got["pydantic.BaseSettings"] == ("removed", "pydantic_settings.BaseSettings")
+    assert got["pydantic.color"] == ("removed", "pydantic_extra_types.color")
+    assert "pydantic.Field" not in got
+
+
+def test_default_section_for_removals_file():
+    e = parse_changelog_text("- ``matplotlib.cm.get_cmap``; see the colormap registry.\n", "3.9.0",
+                             default_section="removed")
+    assert [(x.kind, x.api) for x in e] == [("removed", "matplotlib.cm.get_cmap")]
+
+
+def test_fetch_migration_guides_picks_versioned_and_major_guides(monkeypatch):
+    import depshift.changelog as cl
+    files = {
+        "doc/source/numpy_2_0_migration_guide.rst": "Removed\n-------\n- ``np.alltrue`` was removed. Use ``np.all``.\n",
+        "docs/migration.md": "## Removed\n- `pkg.old_thing` was removed.\n",
+        "doc/api/prev_api_changes/api_changes_2.0.0/removals.rst": "- ``pkg.cm.get_cmap``\n",
+    }
+    monkeypatch.setattr(cl, "_cached_raw", lambda o, r, path: files.get(path))
+    entries = cl.fetch_migration_guides("o", "r", "1.26.4", "2.0.0", ["2.0.0"])
+    assert {(e.api, e.version) for e in entries} >= {
+        ("np.alltrue", "2.0.0"), ("pkg.old_thing", "2.0.0"), ("pkg.cm.get_cmap", "2.0.0")}
+    # no major jump: the unversioned guide is not read
+    minor = cl.fetch_migration_guides("o", "r", "2.0.0", "2.1.0", ["2.1.0"])
+    assert all(e.api != "pkg.old_thing" for e in minor)
+
+
+def test_removals_list_entry_vs_sentence():
+    text = ("Removals\n--------\n\n"
+            "- ``matplotlib.cm.get_cmap``; use ``matplotlib.colormaps[name]`` instead.\n"
+            "- ``pkg.connect`` takes a ``Config`` object now.\n")
+    got = {e.api: (e.kind, e.confidence) for e in parse_changelog_text(text, "3.9.0")}
+    assert got["matplotlib.cm.get_cmap"] == ("removed", "high")
+    assert got["pkg.connect"][1] == "low"   # a sentence about it: behaviour change
+
+
+def test_sponsor_link_is_not_the_repo():
+    from depshift.changelog import extract_github_repo
+    info = {"info": {"project_urls": {"Funding": "https://github.com/sponsors/someone",
+                                      "Source": "https://github.com/org/project"}}}
+    assert extract_github_repo(info) == ("org", "project")
+
+
+@pytest.mark.parametrize("item", [
+    "- :func:`read_csv`: specifying an incorrect number of columns now raises ``ParserError``",
+    "- ``integrate.simpson``",
+])
+def test_colon_or_bare_name_in_breaking_section_is_not_a_removal(item):
+    text = "Backwards incompatible API changes\n----------------------------------\n\n" + item + "\n"
+    assert all(e.confidence == "low" for e in parse_changelog_text(text, "2.0.0"))
