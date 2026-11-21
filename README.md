@@ -72,6 +72,12 @@ pyupcheck outdated
 
 Flags major version bumps separately since they carry the most risk.
 
+```bash
+pyupcheck outdated --safe
+```
+
+Adds a **Highest safe** column: the newest version that breaks none of your code. If the latest release breaks you (`scipy 1.18` removes `simps`), you still learn you can move to `1.13.1` today. `pyupcheck fix` moves each `==` pin to exactly that version.
+
 ### `diff` - changelog diff between versions
 
 See breaking/deprecated changes between any two versions without scanning code:
