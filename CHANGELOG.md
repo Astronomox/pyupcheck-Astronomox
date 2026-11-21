@@ -4,6 +4,8 @@ All notable changes to pyupcheck are documented here.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-21
+
 ### Added
 - `-f sarif` (SARIF 2.1.0, validated against the official schema) for GitHub code scanning and other SARIF viewers, with stable per-issue fingerprints that survive code moving between lines
 - `-f github`: GitHub Actions annotations, one per finding, shown on the line in the PR diff
