@@ -26,7 +26,7 @@ from depshift.analyzer import analyze
 from depshift.deps import discover_dependencies, normalize_name, requirement_files
 from depshift.config import load_config
 from depshift import cache as cache_mod
-from depshift.report import render_markdown, render_html
+from depshift.report import render_markdown, render_html, render_sarif, render_github_annotations
 from depshift.apisurface import get_api_changes, get_return_types
 from depshift.precise import match_precise
 from depshift.names import import_names_for
@@ -390,6 +390,10 @@ def _emit(results: List[dict], fmt: str, output: Optional[str], quiet: bool):
         text = render_markdown(results)
     elif fmt == "html":
         text = render_html(results)
+    elif fmt == "sarif":
+        text = render_sarif(results)
+    elif fmt == "github":
+        text = render_github_annotations(results)
     else:
         text = None
 
@@ -488,7 +492,7 @@ def show_banner_cmd():
 @click.argument("target_version", required=False)
 @click.option("--dir", "-d", "directory", default=".", help="Directory to scan")
 @click.option("--github-token", envvar="GITHUB_TOKEN", default=None)
-@click.option("--format", "-f", "fmt", type=click.Choice(["terminal", "json", "md", "html"]), default="terminal")
+@click.option("--format", "-f", "fmt", type=click.Choice(["terminal", "json", "md", "html", "sarif", "github"]), default="terminal")
 @click.option("--output", "-o", default=None, help="Write report to file")
 @click.option("--fail-on", type=click.Choice(["breaking", "deprecated", "any", "never"]), default=None)
 @click.option("--min-severity", type=click.Choice(["breaking", "deprecated", "warning"]), default=None)
@@ -527,7 +531,7 @@ def check(package, target_version, directory, github_token, fmt, output, fail_on
 @main.command("check-all")
 @click.option("--dir", "-d", "directory", default=".", help="Project directory")
 @click.option("--github-token", envvar="GITHUB_TOKEN", default=None)
-@click.option("--format", "-f", "fmt", type=click.Choice(["terminal", "json", "md", "html"]), default="terminal")
+@click.option("--format", "-f", "fmt", type=click.Choice(["terminal", "json", "md", "html", "sarif", "github"]), default="terminal")
 @click.option("--output", "-o", default=None)
 @click.option("--fail-on", type=click.Choice(["breaking", "deprecated", "any", "never"]), default=None)
 @click.option("--min-severity", type=click.Choice(["breaking", "deprecated", "warning"]), default=None)
@@ -792,8 +796,11 @@ def _fixable_count(package: str, old: str, new: str, directory: str, cfg,
               show_default=True)
 @click.option("--github-token", envvar="GITHUB_TOKEN", default=None)
 @click.option("--jobs", "-j", type=click.IntRange(1, 64), default=8, show_default=True)
+@click.option("--annotations", is_flag=True,
+              help="Also print GitHub Actions annotations (one per finding, shown on the PR diff)")
+@click.option("--sarif", "sarif_out", default=None, help="Also write a SARIF file (GitHub code scanning)")
 @click.option("--no-cache", is_flag=True)
-def review(base, directory, deep, output, fail_on, github_token, jobs, no_cache):
+def review(base, directory, deep, output, fail_on, github_token, jobs, annotations, sarif_out, no_cache):
     """Check the dependency versions changed since BASE (for pull requests).
 
     Compares dependency files and lockfiles at --base with the working tree,
@@ -844,6 +851,13 @@ def review(base, directory, deep, output, fail_on, github_token, jobs, no_cache)
             f.write(text)
     else:
         print(text)
+    if sarif_out:
+        with open(sarif_out, "w", encoding="utf-8") as f:
+            f.write(render_sarif(results, directory))
+    if annotations:
+        notes = render_github_annotations(results, directory)
+        if notes:
+            print(notes)
     sys.exit(1 if _should_fail(results, fail_on) else 0)
 
 

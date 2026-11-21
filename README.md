@@ -99,6 +99,8 @@ pyupcheck cache-clear
 pyupcheck check flask -f json          # machine-readable
 pyupcheck check flask -f md -o r.md   # markdown report
 pyupcheck check flask -f html -o r.html # styled HTML report
+pyupcheck check-all -f sarif -o r.sarif # SARIF, for GitHub code scanning
+pyupcheck check-all -f github           # GitHub Actions annotations
 ```
 
 ## Review dependency pull requests
@@ -125,7 +127,13 @@ jobs:
         # with:
         #   fail-on: breaking   # make the check fail on breaking usages
         #   deep: "false"       # changelog only (faster)
+        #   sarif: pyupcheck.sarif  # then upload it for the Security tab:
+      # - uses: github/codeql-action/upload-sarif@v3
+      #   with:
+      #     sarif_file: pyupcheck.sarif
 ```
+
+Each finding is also annotated on its line in the PR diff (`annotations: "false"` to turn that off).
 
 The comment is updated in place on later pushes, and the same report is written to the job summary, so it is still visible when the token can't comment (for example on pull requests from forks). Locally:
 

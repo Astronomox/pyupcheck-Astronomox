@@ -4,6 +4,17 @@ All notable changes to pyupcheck are documented here.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-21
+
+### Added
+- `-f sarif` (SARIF 2.1.0, validated against the official schema) for GitHub code scanning and other SARIF viewers, with stable per-issue fingerprints that survive code moving between lines
+- `-f github`: GitHub Actions annotations, one per finding, shown on the line in the PR diff
+- `review --annotations` and `review --sarif FILE`; the GitHub Action annotates findings by default (`annotations: "false"` to turn off) and can write a SARIF file (`sarif: path`) for `github/codeql-action/upload-sarif`
+- Annotations and SARIF carry breaking and deprecated findings only, once per line and message, with release-note markup cleaned
+
+### Fixed
+- A `:pr:`/`:issue:` reference cut off by truncation was left in PR comments
+
 ## [0.8.3] - 2026-11-21
 
 ### Added

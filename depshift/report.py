@@ -3,7 +3,7 @@
 import html
 import os
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
 
 def _rel(path: str) -> str:
@@ -156,3 +156,117 @@ def render_html(results: List[dict]) -> str:
         n_deprecated=sum(r["deprecated_count"] for r in results),
         packages="\n".join(pkg_blocks),
     )
+
+
+# ── machine formats for CI: SARIF and GitHub annotations ──────────────────────
+
+_SARIF_LEVEL = {"breaking": "error", "deprecated": "warning", "warning": "note"}
+_GH_LEVEL = {"breaking": "error", "deprecated": "warning", "warning": "notice"}
+
+
+def _repo_rel(path: str, root: Optional[str] = None) -> str:
+    """Path relative to the repository root, with forward slashes.
+    In GitHub Actions the root is GITHUB_WORKSPACE, so a project in a
+    subdirectory still gets annotations on the right file."""
+    base = os.environ.get("GITHUB_WORKSPACE") or root or os.getcwd()
+    try:
+        rel = os.path.relpath(path, base)
+    except ValueError:
+        rel = path
+    return rel.replace(os.sep, "/")
+
+
+def _findings(results: List[dict]):
+    """Breaking and deprecated findings, once per (file, line, message).
+    Weak "mentioned in the changes" hints are left to the full reports."""
+    seen = set()
+    for r in results:
+        for risk in r.get("risks", []):
+            if risk["severity"] not in ("breaking", "deprecated"):
+                continue
+            key = (risk["file"], risk["line"], _message(r, risk))
+            if key in seen:
+                continue
+            seen.add(key)
+            yield r, risk
+
+
+def _message(r: dict, risk: dict) -> str:
+    from depshift.review import _clean
+    msg = f"{r['package']} {r.get('current_version') or '?'} -> {r['target_version']}: " \
+          f"{_clean(risk['change_description'])}"
+    if risk.get("replacement"):
+        msg += f" Use {risk['replacement']} instead."
+    return " ".join(msg.split())
+
+
+def render_sarif(results: List[dict], root: Optional[str] = None) -> str:
+    """SARIF 2.1.0, for GitHub code scanning and other SARIF viewers."""
+    import hashlib
+    import json
+    from depshift import __version__
+
+    rules = [
+        {"id": "pyupcheck/breaking", "name": "BreakingUpgrade",
+         "shortDescription": {"text": "Code that breaks with the dependency upgrade"},
+         "defaultConfiguration": {"level": "error"}},
+        {"id": "pyupcheck/deprecated", "name": "DeprecatedInUpgrade",
+         "shortDescription": {"text": "Code that uses an API deprecated in the upgrade"},
+         "defaultConfiguration": {"level": "warning"}},
+        {"id": "pyupcheck/warning", "name": "ChangedInUpgrade",
+         "shortDescription": {"text": "Code that touches an API mentioned in the upgrade's changes"},
+         "defaultConfiguration": {"level": "note"}},
+    ]
+    out = []
+    for r, risk in _findings(results):
+        sev = risk["severity"]
+        rel = _repo_rel(risk["file"], root)
+        # stable across commits: no line number, so moved code keeps its identity
+        key = "|".join([r["package"], risk.get("api", ""), rel, risk.get("code", "").strip()])
+        out.append({
+            "ruleId": f"pyupcheck/{sev}",
+            "level": _SARIF_LEVEL.get(sev, "note"),
+            "message": {"text": _message(r, risk)},
+            "locations": [{"physicalLocation": {
+                "artifactLocation": {"uri": rel},
+                "region": {"startLine": int(risk["line"])},
+            }}],
+            "partialFingerprints": {"pyupcheck/v1": hashlib.sha256(key.encode()).hexdigest()[:32]},
+            "properties": {
+                "package": r["package"], "from": r.get("current_version"), "to": r["target_version"],
+                "api": risk.get("api"), "verified": bool(risk.get("precise")),
+                **({"replacement": risk["replacement"]} if risk.get("replacement") else {}),
+            },
+        })
+    doc = {
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {"driver": {"name": "pyupcheck", "version": __version__,
+                                "informationUri": "https://github.com/Astronomox/pyupcheck-Astronomox",
+                                "rules": rules}},
+            "results": out,
+        }],
+    }
+    return json.dumps(doc, indent=2)
+
+
+def _gh_escape_data(s: str) -> str:
+    return s.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
+def _gh_escape_prop(s: str) -> str:
+    return _gh_escape_data(s).replace(":", "%3A").replace(",", "%2C")
+
+
+def render_github_annotations(results: List[dict], root: Optional[str] = None) -> str:
+    """GitHub Actions workflow commands: one annotation per finding, shown on
+    the line in the PR diff and in the run summary."""
+    lines = []
+    for r, risk in _findings(results):
+        level = _GH_LEVEL.get(risk["severity"], "notice")
+        title = f"pyupcheck: {r['package']} {r.get('current_version') or '?'} -> {r['target_version']}"
+        props = (f"file={_gh_escape_prop(_repo_rel(risk['file'], root))},"
+                 f"line={int(risk['line'])},title={_gh_escape_prop(title)}")
+        lines.append(f"::{level} {props}::{_gh_escape_data(_message(r, risk))}")
+    return "\n".join(lines)

@@ -113,7 +113,8 @@ def changed_dependencies(repo: str, base_ref: str) -> List[VersionChange]:
 
 # ── report ────────────────────────────────────────────────────────────────────
 
-_ROLE_REF = re.compile(r"\s*:(?:pr|issue|ghissue|bpo|user|cve):`[^`]*`")
+# also a reference cut off by truncation (":pr:" with no "`1234`" after it)
+_ROLE_REF = re.compile(r"\s*:(?:pr|issue|ghissue|bpo|user|cve):(?:`[^`]*`?)?")
 _ROLE = re.compile(r":[\w-]+:`~?\.?([^`]+)`")
 
 
