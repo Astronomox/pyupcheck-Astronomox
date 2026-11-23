@@ -44,7 +44,7 @@ pyupcheck check-all -j 16           # check 16 dependencies in parallel (default
 pyupcheck check-all --format html -o report.html
 ```
 
-If a lockfile is present (`uv.lock`, `poetry.lock`, `pdm.lock`, `pylock.toml`, `Pipfile.lock`), the locked versions are used as the starting point. Packages your code imports that are only in the lockfile because another dependency pulls them in (`urllib3` via `requests`) are checked too and marked **undeclared**: their version can change without you upgrading anything.
+If a lockfile is present (`uv.lock`, `poetry.lock`, `pdm.lock`, `pylock.toml`, `Pipfile.lock`, `conda-lock.yml`, `pixi.lock`), the locked versions are used as the starting point. Packages your code imports that are only in the lockfile because another dependency pulls them in (`urllib3` via `requests`) are checked too and marked **undeclared**: their version can change without you upgrading anything.
 
 Install names and import names don't have to match: `pyyaml` is scanned as `yaml`, `Pillow` as `PIL`, `scikit-learn` as `sklearn`, `protobuf` as `google.protobuf`. Names come from the installed package's metadata when available, then a built-in table of known mismatches.
 
@@ -248,6 +248,7 @@ These findings are marked `[FACT]` in the output because they come from the real
 - Real API surface diffing in `--deep` mode
 - Jupyter notebooks (`.ipynb`): code cells are scanned as one module, the way they run, so `import numpy as np` in the first cell is followed into every later one. `%magics`, `!shell` lines and `%%bash`-style cells are skipped. Findings point at the notebook file's line and name the cell, and `migrate --write` rewrites cells in place, leaving outputs and metadata untouched
 - Type stub (`.pyi`) scanning
+- conda and pixi projects: `environment.yml`, `conda-lock.yml`, `pixi.toml` (and `[tool.pixi]` in `pyproject.toml`) and `pixi.lock`. Only conda packages that are Python packages are checked (not `openssl` or `rust`), under their PyPI names (`pytorch` is `torch`, and pixi's lock says exactly which name each package has on PyPI). Manifests using TOML 1.1 syntax that Python's `tomllib` can't read are still read
 - Dynamic import detection (`importlib.import_module`, `__import__`)
 - Changelog sources: GitHub releases, raw changelog files, PyPI descriptions
 - Works for any PyPI package: resolves import names (`pyyaml` -> `yaml`), namespace packages, C extensions, `src/` layouts
@@ -285,7 +286,6 @@ Releases are published by GitHub Actions when a version tag is pushed, using PyP
 **Things that would genuinely improve the tool:**
 
 - Better changelog parsing for packages that use unconventional formats (Sphinx-based changelogs, HISTORY files)
-- `conda` lockfile support
 - Test coverage
 
 To contribute, open an issue describing what you want to work on, then submit a pull request. Include a short test or example showing the bug or feature.
@@ -347,7 +347,6 @@ No. pyupcheck needs to download the package from PyPI. Pre-release or private pa
 
 Items being actively considered for future versions:
 
-- conda-lock support
 - VS Code extension: inline warnings on imports
 - `pyupcheck explain` with AI-assisted migration guidance
 - Support for TypeScript / Node.js packages (npm ecosystem)

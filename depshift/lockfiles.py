@@ -3,7 +3,7 @@
 A lockfile says what the project actually runs, which is a better baseline
 than a version range or whatever happens to be installed where pyupcheck
 runs. Supported: poetry.lock, uv.lock, pdm.lock, pylock.toml (PEP 751),
-Pipfile.lock.
+Pipfile.lock, conda-lock.yml and pixi.lock.
 """
 
 import json
@@ -23,7 +23,9 @@ class LockedPackage:
 
 
 # checked in order; the first lockfile that lists a package wins
-LOCKFILES = ["uv.lock", "poetry.lock", "pdm.lock", "pylock.toml", "Pipfile.lock"]
+LOCKFILES = ["uv.lock", "poetry.lock", "pdm.lock", "pylock.toml", "Pipfile.lock",
+             "conda-lock.yml", "conda-lock.yaml", "pixi.lock"]
+_CONDA_LOCKS = {"conda-lock.yml", "conda-lock.yaml", "pixi.lock"}
 
 
 def _toml_packages(path: str, key: str = "package") -> List[dict]:
@@ -87,10 +89,19 @@ def locked_versions(directory: str) -> Dict[str, LockedPackage]:
     """{normalized name: LockedPackage} from every lockfile in directory."""
     out: Dict[str, LockedPackage] = {}
     for path in find_lockfiles(directory):
-        parser = parse_pipfile_lock if path.endswith("Pipfile.lock") else parse_toml_lock
-        for pkg in parser(path):
+        for pkg in parse_lockfile(path):
             out.setdefault(pkg.name, pkg)
     return out
+
+
+def parse_lockfile(path: str) -> List[LockedPackage]:
+    name = os.path.basename(path)
+    if name in _CONDA_LOCKS:
+        from .conda import lockfile_versions
+        return [LockedPackage(normalize_name(n), v, name) for n, v in lockfile_versions(path).items()]
+    if name == "Pipfile.lock":
+        return parse_pipfile_lock(path)
+    return parse_toml_lock(path)
 
 
 def locked_version(directory: str, package: str) -> Optional[str]:
