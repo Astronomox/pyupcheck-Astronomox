@@ -180,3 +180,35 @@ def test_diff_ignores_removed_dunder():
     old = make_surface("1.0", {"pkg.__getattr__": ["name"]})
     new = make_surface("2.0", {})
     assert diff_surfaces(old, new) == []
+
+
+# ── stub-only and meta-packages ───────────────────────────────────────────────
+
+def test_stub_package_folders_are_the_module_they_describe():
+    from depshift.apisurface import _module_path
+    assert _module_path("requests-stubs/__init__.pyi") == "requests"
+    assert _module_path("requests-stubs/adapters.pyi") == "requests.adapters"
+    assert _module_path("my-pkg/x.py") is None  # not an identifier, not -stubs
+
+
+def test_stub_distributions_name_the_modules_they_type():
+    from depshift.names import import_names_for
+    assert import_names_for("types-requests") == ["requests"]
+    assert import_names_for("pandas-stubs") == ["pandas"]
+
+
+def test_meta_package_uses_its_exactly_pinned_dependency(monkeypatch):
+    from depshift import apisurface as ap
+    info = {"meta": {"info": {"requires_dist": ["meta-core==2.0", "other>=1", "dev==1; extra == 'dev'"]}}}
+    monkeypatch.setattr(ap, "get_pypi_version_info", lambda p, v: info.get(p, {"info": {}}))
+    core = ap.build_surface("2.0", {"meta": ["def run(a): pass\n"]})
+    seen = []
+
+    def fake_extract(name, ver, _follow=True):
+        seen.append((name, ver, _follow))
+        return core if name == "meta-core" else None
+
+    monkeypatch.setattr(ap, "extract_surface", fake_extract)
+    surf = ap._surface_of_pinned_deps("meta", "2.0")
+    assert seen == [("meta-core", "2.0", False)]  # one level, == pins only, no extras
+    assert "meta.run" in surf.functions and surf.version == "2.0"

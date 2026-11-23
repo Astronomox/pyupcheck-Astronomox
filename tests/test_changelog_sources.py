@@ -171,3 +171,63 @@ def test_failed_docs_probe_is_not_cached_as_no_layout(monkeypatch):
     with pytest.raises(RuntimeError):
         cl.fetch_docs_release_notes("o", "r", ["2.0.0"])
     assert cl.cache_get("docs-layout5:o/r") is None
+
+
+# ── branches, pointers, list-item versions ────────────────────────────────────
+
+class _R:
+    def __init__(self, status, text="", data=None):
+        self.status_code, self.text, self._data = status, text, data
+
+    def json(self):
+        return self._data
+
+
+def test_default_branch_from_api_then_probes(monkeypatch):
+    monkeypatch.setattr(cl, "http_get", lambda url, **kw: _R(200, data={"default_branch": "trunk"})
+                        if "api.github.com" in url else _R(404))
+    assert cl.default_branch("o", "r") == "trunk"
+
+    def probes(url, **kw):
+        if "api.github.com" in url:
+            return _R(403)
+        return _R(200) if "/develop/setup.py" in url else _R(404)
+    monkeypatch.setattr(cl, "http_get", probes)
+    assert cl.default_branch("o", "r2") == "develop"
+
+
+def test_pointer_changelog_is_followed(monkeypatch):
+    pointer = ("Changelog\n=========\n\nThe source document can be found at: "
+               "https://github.com/o/r/blob/main/doc/en/changelog.rst\n")
+    real = "pytest 8.3.0 (2024-07-20)\n=========================\n\n- ``x`` was removed.\n" * 20
+
+    def fake_get(url, **kw):
+        if "api.github.com" in url:
+            return _R(404)
+        if url.endswith("/main/CHANGES.rst"):
+            return _R(200, pointer)
+        if url.endswith("/main/doc/en/changelog.rst"):
+            return _R(200, real)
+        if url.endswith("/main/pyproject.toml"):
+            return _R(200, "[project]")
+        return _R(404)
+    monkeypatch.setattr(cl, "http_get", fake_get)
+    assert cl.fetch_raw_changelog("o", "r") == real
+
+
+def test_list_item_versions():
+    text = "Changelog\n\n- 0.11.0:\n  Drop Python 3.9.\n- 0.10.0: Removed ``tabulate.old``.\n- 0.9.0: First.\n"
+    assert versions(text) == {"0.11.0", "0.10.0", "0.9.0"}
+
+
+def test_changelog_file_read_when_releases_miss_the_range(monkeypatch):
+    # releases exist but say nothing about this upgrade: the file still counts
+    monkeypatch.setattr(cl, "get_pypi_info", lambda p: {"info": {"project_urls": {"Source": "https://github.com/o/r"}},
+                                                         "releases": {"1.0.0": [{}], "2.0.0": [{}]}})
+    monkeypatch.setattr(cl, "fetch_github_releases", lambda *a, **k: [{"tag_name": "v0.5.0", "body": "- Removed ``a``."}])
+    monkeypatch.setattr(cl, "fetch_raw_changelog", lambda *a, **k: "## [2.0.0] - 2026\n\n- Removed ``b``.\n")
+    monkeypatch.setattr(cl, "fetch_docs_release_notes", lambda *a, **k: None)
+    monkeypatch.setattr(cl, "fetch_migration_guides", lambda *a, **k: [])
+    monkeypatch.setattr(cl, "get_pypi_version_info", lambda *a: {"info": {"description": ""}})
+    r = cl.collect_changes("pkg", "1.0.0", "2.0.0")
+    assert r.versions_read == ["2.0.0"] and [e.api for e in r.entries] == ["b"]

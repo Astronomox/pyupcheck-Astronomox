@@ -210,6 +210,15 @@ def import_names_for(dist_name: str) -> List[str]:
 
     names = _drop_namespace_parents(names)
 
+    if not names:
+        # typing stubs describe another package's modules: types-requests and
+        # requests-stubs are about `import requests` (PEP 561, typeshed)
+        norm_name = normalize_dist_name(dist_name)
+        base = norm_name[len("types-"):] if norm_name.startswith("types-") else \
+            norm_name[:-len("-stubs")] if norm_name.endswith("-stubs") else None
+        if base:
+            return import_names_for(base)
+
     guess = re.sub(r"[-.]", "_", dist_name)
     if not names:
         names.append(guess)

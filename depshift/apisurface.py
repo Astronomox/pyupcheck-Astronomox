@@ -196,6 +196,9 @@ def _module_path(rel: str) -> Optional[str]:
     else:
         return None
     parts = parts[:-1] if stem == "__init__" else parts[:-1] + [stem]
+    if parts and parts[0].endswith("-stubs") and parts[0][:-len("-stubs")].isidentifier():
+        # a stub-only package (PEP 561): requests-stubs/api.pyi is requests.api
+        parts = [parts[0][:-len("-stubs")]] + parts[1:]
     if not parts or not all(p.isidentifier() for p in parts):
         return None
     return ".".join(parts)
@@ -604,7 +607,7 @@ def _resolve_star_imports(surface: APISurface, stars: Dict[str, List[Tuple[int, 
             break
 
 
-def extract_surface(package: str, version: str) -> Optional[APISurface]:
+def extract_surface(package: str, version: str, _follow: bool = True) -> Optional[APISurface]:
     """Download a version and extract its public API surface (cached)."""
     key = f"surface8:{package}:{version}"
     cached = cache_get(key)
@@ -632,9 +635,13 @@ def extract_surface(package: str, version: str) -> Optional[APISurface]:
     members = _read_wheel(data) if kind == "wheel" else _read_sdist(data)
     sources, extensions = _collect(members)
     if not sources and not extensions:
-        return None
-
-    surface = build_surface(version, sources, extensions)
+        # a meta-package (fastmcp -> fastmcp-slim==4.2.5): its API is that of
+        # the packages it pins to an exact version
+        surface = _surface_of_pinned_deps(package, version) if _follow else None
+        if surface is None:
+            return None
+    else:
+        surface = build_surface(version, sources, extensions)
 
     cache_set(key, {
         "modules": list(surface.modules),
@@ -652,6 +659,48 @@ def extract_surface(package: str, version: str) -> Optional[APISurface]:
         "attributes": sorted(surface.attributes),
     })
     return surface
+
+
+def _pinned_deps(package: str, version: str) -> List[Tuple[str, str]]:
+    """(name, version) of each unconditional dependency pinned with ==."""
+    from packaging.requirements import InvalidRequirement, Requirement
+    try:
+        reqs = get_pypi_version_info(package, version).get("info", {}).get("requires_dist") or []
+    except Exception:
+        return []
+    out = []
+    for raw in reqs:
+        try:
+            req = Requirement(raw)
+        except InvalidRequirement:
+            continue
+        if req.marker is not None:
+            continue  # an extra or a platform condition: not the package itself
+        pins = [s.version for s in req.specifier if s.operator in ("==", "===") and "*" not in s.version]
+        if len(pins) == 1:
+            out.append((req.name, pins[0]))
+    return out
+
+
+def _surface_of_pinned_deps(package: str, version: str) -> Optional[APISurface]:
+    """The merged surfaces of a code-less package's exactly-pinned
+    dependencies (one level: those are where its code lives)."""
+    merged = None
+    for name, ver in _pinned_deps(package, version):
+        surf = extract_surface(name, ver, _follow=False)
+        if surf is None:
+            continue
+        if merged is None:
+            merged = APISurface(version=version)
+        merged.modules |= surf.modules
+        merged.classes |= surf.classes
+        merged.names |= surf.names
+        merged.functions.update(surf.functions)
+        for k, v in surf.exports.items():
+            merged.exports.setdefault(k, set()).update(v)
+        merged.bases.update(surf.bases)
+        merged.attributes |= surf.attributes
+    return merged
 
 
 def _is_public_api(dotted: str) -> bool:

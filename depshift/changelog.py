@@ -818,7 +818,7 @@ def _parallel(fn, items: list) -> list:
 
 def fetch_raw_changelog(owner: str, repo: str, token: Optional[str] = None) -> Optional[str]:
     """Try to fetch the raw changelog file from GitHub (cached)."""
-    key = f"gh-changelog2:{owner}/{repo}"
+    key = f"gh-changelog3:{owner}/{repo}"
     cached = cache_get(key)
     if cached is not None:
         return cached or None
@@ -830,8 +830,10 @@ def fetch_raw_changelog(owner: str, repo: str, token: Optional[str] = None) -> O
         attempts.append({"Authorization": f"Bearer {token}"})
 
     errors = 0
+    first = default_branch(owner, repo, token)
+    branches = [first] + [b for b in ("main", "master") if b != first]
     urls = [f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{fname}"
-            for branch in ("main", "master") for fname in CHANGELOG_FILENAMES]
+            for branch in branches for fname in CHANGELOG_FILENAMES]
     for headers in attempts:
         # all at once; the first in preference order that exists wins
         results = _parallel(lambda u: http_get(u, headers=headers, timeout=10, follow_redirects=True), urls)
@@ -839,8 +841,9 @@ def fetch_raw_changelog(owner: str, repo: str, token: Optional[str] = None) -> O
             if isinstance(resp, Exception):
                 errors += 1
             elif resp.status_code == 200 and len(resp.text) > 50:
-                cache_set(key, resp.text)
-                return resp.text
+                text = _follow_pointer(owner, repo, resp.text) or resp.text
+                cache_set(key, text)
+                return text
             elif resp.status_code not in (404, 400):
                 errors += 1
     if errors:
@@ -865,12 +868,16 @@ DOCS_NOTES_PATTERNS = [
     "doc/release/release_{v}.rst",           # NetworkX
     "docs/releases/{v}.txt",                 # Django (two-part names for x.y.0)
     "docs/releases/{v}.rst",
+    "docs/releases/v{v}.rst",                # tornado
+    "docs/source/release-notes/{v}.rst",     # flake8
+    "docs/release-notes/v{v}.rst",
 ]
 DOCS_SERIES_PATTERNS = [
     "doc/build/changelog/changelog_{major}{minor}.rst",  # SQLAlchemy
     "doc/whats_new/v{major}.{minor}.rst",                # scikit-learn
     "docs/whatsnew/{major}.{minor}.rst",                 # astropy
     "doc/whatsnew/{major}.{minor}.rst",
+    "docs/source/whatsnew/version{major}.rst",           # IPython
 ]
 DOCS_CHANGELOG_FILES = [
     "docs/changelog.md", "docs/changelog.rst", "docs/changes.rst", "docs/changes.md",
@@ -954,9 +961,66 @@ def fetch_linked_changelog(package: str, pypi_info: dict) -> Optional[str]:
     return None
 
 
-def _raw(owner: str, repo: str, path: str, branch: str = "main") -> Optional[str]:
+_BRANCHES = ("main", "master", "trunk", "develop")
+# files nearly every Python repository has at its root, to find its branch
+_ROOT_MARKERS = ("pyproject.toml", "setup.py", "README.md")
+
+
+_POINTER_PATH = re.compile(r"(?:github\.com/[^/\s]+/[^/\s]+/blob/[^/\s]+/|(?<![\w/:.]))"
+                           r"((?:[\w.-]+/)*[\w.-]+\.(?:rst|md|txt))\b")
+
+
+def _follow_pointer(owner: str, repo: str, text: str) -> Optional[str]:
+    """A short changelog that only says where the real one is ("The
+    changelog is in doc/en/changelog.rst"): that file, if it's in the repo."""
+    if len(text) > 1000:
+        return None
+    for path in _POINTER_PATH.findall(text):
+        if path.lower().startswith(("readme", "license")):
+            continue
+        try:
+            target = _raw(owner, repo, path)
+        except Exception:
+            continue
+        if target and len(target) > len(text):
+            return target
+    return None
+
+
+def default_branch(owner: str, repo: str, token: Optional[str] = None) -> str:
+    """The repository's default branch (cached): from the GitHub API when it
+    answers, else the first of main/master/trunk/develop that has the usual
+    root files. "main" when nothing can be told."""
+    key = f"gh-branch:{owner}/{repo}"
+    cached = cache_get(key)
+    if cached:
+        return cached
+    headers = {"Accept": "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        resp = http_get(f"https://api.github.com/repos/{owner}/{repo}", headers=headers, timeout=10)
+        if resp.status_code == 200:
+            branch = resp.json().get("default_branch")
+            if isinstance(branch, str) and branch:
+                cache_set(key, branch)
+                return branch
+    except Exception:
+        pass
+    probes = [(b, f) for b in _BRANCHES for f in _ROOT_MARKERS]
+    results = _parallel(lambda bf: http_get(
+        f"https://raw.githubusercontent.com/{owner}/{repo}/{bf[0]}/{bf[1]}", timeout=10).status_code, probes)
+    for (branch, _f), status in zip(probes, results):
+        if status == 200:
+            cache_set(key, branch)
+            return branch
+    return "main"
+
+
+def _raw(owner: str, repo: str, path: str, branch: Optional[str] = None) -> Optional[str]:
     """Fetch a public file from GitHub; None if it doesn't exist. Raises on
     network errors so callers can report them."""
+    branch = branch or default_branch(owner, repo)
     url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
     resp = http_get(url, timeout=10, follow_redirects=True)
     if resp.status_code == 200 and len(resp.text) > 50:
@@ -1033,7 +1097,7 @@ def fetch_docs_release_notes(owner: str, repo: str, versions: List[str],
     """
     if not versions:
         return None
-    key = f"docs-layout5:{owner}/{repo}"
+    key = f"docs-layout6:{owner}/{repo}"
     layout = cache_get(key)
     probe = _three_part(versions[-1])
     if layout is None:
@@ -1196,6 +1260,8 @@ def parse_sectioned_changelog(text: str, package: str, seen: Optional[set] = Non
         + ver + r"\b(?!\.\d)",
         re.IGNORECASE | re.MULTILINE,
     )
+    # "- 0.10.0: Add support for ..." (tabulate): a version as a list item
+    item_header = re.compile(r"^[-*]\s+v?" + ver + r":", re.MULTILINE)
     # "# Apache Arrow 26.0.1 (2026-11-03)": a display name before the version
     # in a Markdown heading, the version then dated or alone on the line
     named_header = re.compile(
@@ -1203,6 +1269,8 @@ def parse_sectioned_changelog(text: str, package: str, seen: Optional[set] = Non
         re.MULTILINE,
     )
     found = {m.start(): m for m in version_header.finditer(text)}
+    for m in item_header.finditer(text):
+        found.setdefault(m.start(), m)
     for m in named_header.finditer(text):
         if m.start() not in found and not re.search(r"\bpython\b", m.group(1), re.IGNORECASE):
             found[m.start()] = _Shift(m)
@@ -1319,12 +1387,14 @@ def collect_changes(package: str, current_version: str, target_version: str,
             except Exception as e:
                 failed.append(f"GitHub releases ({_short_err(e)})")
 
-            if not all_entries:
+            if not all_entries or not _seen_in_range(versions_seen, current_version, target_version):
+                # no releases on GitHub, or none for this upgrade (many
+                # projects tag without writing release notes)
                 try:
                     raw = fetch_raw_changelog(owner, repo, token=github_token)
                     if raw:
                         ok.append("changelog file")
-                        all_entries = parse_sectioned_changelog(raw, package, versions_seen)
+                        all_entries.extend(parse_sectioned_changelog(raw, package, versions_seen))
                 except Exception as e:
                     failed.append(f"changelog file ({_short_err(e)})")
 
