@@ -278,6 +278,8 @@ These findings are marked `[FACT]` in the output because they come from the real
 
 `benchmarks/` holds 52 real upgrades (103 breaking lines, plus 8 negative controls, and one Jupyter notebook) with known breaking changes (Django 4, Flask 3, NumPy 2, pandas 2, Pydantic 2, SQLAlchemy 2, SciPy 1.14, Pillow 10 and more). On the current set, `--deep` catches 100% of breaking lines with no false alarms; changelog-only mode catches 80.6%, also with no false alarms; `migrate` produces the exact expected rewrite in all 8 rewrite cases. Run it with `make bench`.
 
+**Reach.** `benchmarks/coverage.py` runs pyupcheck against the most-downloaded PyPI packages (latest release against the newest one of the previous minor series). On the top 100, deep mode compared the real API of all 97 packages that have two series to compare, and release notes for the upgrade were found for 73% with this session's limited GitHub access; the monthly *PyPI coverage* workflow measures the top 1,000 with a token and reports both in its run summary.
+
 Changelogs are read from GitHub releases, root CHANGES files, per-version release notes in project docs (NumPy, SciPy, pandas, Pillow, Django, SQLAlchemy, NetworkX layouts), and migration guides (NumPy 2, SQLAlchemy 2, Matplotlib removals, `docs/migration.md`).
 
 ## Limitations

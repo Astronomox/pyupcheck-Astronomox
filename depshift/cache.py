@@ -49,8 +49,11 @@ def cache_set(key: str, data: Any):
         path = _key_path(key)
         # write then rename: a reader on another thread never sees half a file
         tmp = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+        # dumps, not dump: dump streams through the pure-Python encoder, which
+        # took a third of a cold deep check for a large package
+        text = json.dumps({"ts": time.time(), "data": data}, separators=(",", ":"))
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"ts": time.time(), "data": data}, f)
+            f.write(text)
         os.replace(tmp, path)
     except Exception:
         pass

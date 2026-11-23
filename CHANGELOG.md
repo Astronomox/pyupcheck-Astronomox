@@ -4,6 +4,19 @@ All notable changes to pyupcheck are documented here.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-23
+
+### Added
+- Release notes in more places: Keep a Changelog headings (`## [15.0.0] - 2026-04-12`), linked versions (`## [26.1.0](url)`), `# Release 4.16.0 (date)`, `Revision 0.6.5, released ...`, reST link titles (`` `v2.15.1 <url>`__ ``), towncrier's centred titles, `pytest 8.3.0 (date)` and `# Apache Arrow 26.0.1 (date)`; `CHANGES.txt`, `NEWS`, `HISTORY` and more file names; pytest's `doc/en/changelog.rst` and other docs locations
+- The changelog a project links from PyPI: a GitHub file read raw, a Sphinx/Read the Docs page read from the source Sphinx publishes (`_sources/<page>.rst.txt`), and a package's own folder in a monorepo (`google-cloud-python/packages/google-auth`)
+- When GitHub's API rate-limits release lookups, the releases Atom feed is read instead (the latest releases)
+- `ChangeReport.versions_read`: the versions in the upgrade whose notes were read, with or without breaking changes
+- `benchmarks/coverage.py` and a monthly *PyPI coverage* workflow: how many of the most-downloaded packages pyupcheck can check, deep and by release notes
+
+### Changed
+- Top 100 PyPI packages: release notes found for the upgrade 53% -> 73% here (GitHub-releases-only projects need a token); deep mode compares all 97 comparable packages
+- Faster cold runs: release-note lookups probe candidate files concurrently and fetch their sources together (5x faster: 4 packages 20 s -> 4 s); surface extraction skips bundled test suites and writes its cache with the C JSON encoder (pandas 9.4 s -> 4.5 s); the API diff indexes names once instead of per lookup (SQLAlchemy 1.8 s -> 0.03 s). Results are identical
+
 ## [0.14.0] - 2026-11-23
 
 ### Added

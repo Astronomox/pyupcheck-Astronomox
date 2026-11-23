@@ -128,7 +128,13 @@ def fetch_github_releases(owner: str, repo: str, token: Optional[str] = None) ->
             resp = http_get(url, headers=headers, timeout=15, follow_redirects=True)
         if resp.status_code != 200:
             if page == 1 and resp.status_code in (401, 403, 429):
-                # rate limited or bad token: say so rather than "no breaking changes"
+                # rate limited: the releases feed isn't, though it only has
+                # the latest releases. If that fails too, say so rather than
+                # "no breaking changes"
+                feed = fetch_releases_feed(owner, repo)
+                if feed:
+                    cache_set(key, feed)
+                    return feed
                 resp.raise_for_status()
             break
         batch = resp.json()
@@ -139,6 +145,57 @@ def fetch_github_releases(owner: str, repo: str, token: Optional[str] = None) ->
     if releases:
         cache_set(key, releases)
     return releases
+
+
+GITHUB_RELEASES_FEED = "https://github.com/{owner}/{repo}/releases.atom"
+_ATOM = "{http://www.w3.org/2005/Atom}"
+
+
+def html_to_text(html_text: str) -> str:
+    """Release-note HTML as the Markdown-ish text the parser reads: headings
+    stay headings, list items become "- " bullets, code keeps backticks."""
+    import html as _html
+    t = re.sub(r"(?is)<(script|style)\b.*?</\1>", "", html_text)
+    t = re.sub(r"(?i)<h([1-6])[^>]*>", lambda m: "\n" + "#" * int(m.group(1)) + " ", t)
+    t = re.sub(r"(?i)</h[1-6]>", "\n", t)
+    t = re.sub(r"(?i)<li[^>]*>", "\n- ", t)
+    t = re.sub(r"(?i)</?(?:code|tt)[^>]*>", "`", t)
+    t = re.sub(r"(?i)<br\s*/?>|</p>|</li>|</ul>|</ol>|</div>|</pre>", "\n", t)
+    t = re.sub(r"<[^>]+>", "", t)
+    t = _html.unescape(t)
+    lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in t.splitlines()]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def parse_releases_feed(xml_text: str) -> List[dict]:
+    """GitHub's releases Atom feed as release dicts (``tag_name``, ``name``,
+    ``body``), like the API returns."""
+    import xml.etree.ElementTree as ET
+    from urllib.parse import unquote
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return []
+    out = []
+    for entry in root.findall(f"{_ATOM}entry"):
+        link = entry.find(f"{_ATOM}link")
+        href = link.get("href", "") if link is not None else ""
+        tag = unquote(href.rsplit("/tag/", 1)[-1]) if "/tag/" in href else ""
+        title = (entry.findtext(f"{_ATOM}title") or "").strip()
+        content = entry.findtext(f"{_ATOM}content") or ""
+        out.append({"tag_name": tag or title, "name": title, "body": html_to_text(content)})
+    return out
+
+
+def fetch_releases_feed(owner: str, repo: str) -> List[dict]:
+    """The latest releases from the Atom feed (no API rate limit)."""
+    try:
+        resp = http_get(GITHUB_RELEASES_FEED.format(owner=owner, repo=repo), timeout=15, follow_redirects=True)
+    except Exception:
+        return []
+    if resp.status_code != 200:
+        return []
+    return parse_releases_feed(resp.text)
 
 
 # headings that classify the bullet points beneath them
@@ -727,12 +784,41 @@ CHANGELOG_FILENAMES = [
     "CHANGES.rst", "CHANGELOG.rst", "CHANGELOG.md", "CHANGES.md",
     "CHANGES", "CHANGELOG", "HISTORY.rst", "HISTORY.md",
     "RELEASE_NOTES.md", "NEWS.rst", "NEWS.md",
+    "CHANGES.txt", "CHANGELOG.txt", "HISTORY.txt", "NEWS", "NEWS.txt", "HISTORY",
 ]
+
+
+PROBE_JOBS = 6  # concurrent probes per lookup (check-all runs packages in parallel too)
+
+
+def _parallel(fn, items: list) -> list:
+    """fn over items concurrently, results in the items' order; an exception
+    is returned in place of its result. Lookups probe many candidate paths
+    that mostly don't exist, and waiting for each 404 in turn was most of a
+    cold check's time."""
+    if len(items) <= 1:
+        out = []
+        for it in items:
+            try:
+                out.append(fn(it))
+            except Exception as e:  # noqa: BLE001 - the caller decides
+                out.append(e)
+        return out
+    from concurrent.futures import ThreadPoolExecutor
+
+    def safe(it):
+        try:
+            return fn(it)
+        except Exception as e:  # noqa: BLE001
+            return e
+
+    with ThreadPoolExecutor(max_workers=min(PROBE_JOBS, len(items))) as pool:
+        return list(pool.map(safe, items))
 
 
 def fetch_raw_changelog(owner: str, repo: str, token: Optional[str] = None) -> Optional[str]:
     """Try to fetch the raw changelog file from GitHub (cached)."""
-    key = f"gh-changelog:{owner}/{repo}"
+    key = f"gh-changelog2:{owner}/{repo}"
     cached = cache_get(key)
     if cached is not None:
         return cached or None
@@ -744,19 +830,19 @@ def fetch_raw_changelog(owner: str, repo: str, token: Optional[str] = None) -> O
         attempts.append({"Authorization": f"Bearer {token}"})
 
     errors = 0
+    urls = [f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{fname}"
+            for branch in ("main", "master") for fname in CHANGELOG_FILENAMES]
     for headers in attempts:
-        for branch in ["main", "master"]:
-            for fname in CHANGELOG_FILENAMES:
-                url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{fname}"
-                try:
-                    resp = http_get(url, headers=headers, timeout=10, follow_redirects=True)
-                    if resp.status_code == 200 and len(resp.text) > 50:
-                        cache_set(key, resp.text)
-                        return resp.text
-                    if resp.status_code not in (404, 400):
-                        errors += 1
-                except Exception:
-                    errors += 1
+        # all at once; the first in preference order that exists wins
+        results = _parallel(lambda u: http_get(u, headers=headers, timeout=10, follow_redirects=True), urls)
+        for resp in results:
+            if isinstance(resp, Exception):
+                errors += 1
+            elif resp.status_code == 200 and len(resp.text) > 50:
+                cache_set(key, resp.text)
+                return resp.text
+            elif resp.status_code not in (404, 400):
+                errors += 1
     if errors:
         # don't cache: a transient failure must not hide the changelog for 24h
         raise RuntimeError(f"{errors} changelog fetches failed")
@@ -791,7 +877,81 @@ DOCS_CHANGELOG_FILES = [
     "docs/history.rst", "docs/history.md", "docs/news.rst", "docs/release-notes.md",
     "docs/release_notes.md", "docs/source/changelog.rst", "doc/changelog.rst",
     "docs/CHANGELOG.md", "doc/source/changelog.rst",
+    "doc/en/changelog.rst", "docs/source/history.rst", "docs/versionhistory.rst", "docs/whatsnew.rst",
+    "docs/source/whatsnew.rst", "doc/changes.rst", "docs/project/changelog.rst",
 ]
+
+
+_CHANGELOG_LINK = re.compile(r"change|release|history|news|what'?s.?new", re.IGNORECASE)
+_GITHUB_TREE = re.compile(r"^https?://github\.com/([^/]+)/([^/]+)/tree/([^/]+)/(.+?)/?(?:[?#].*)?$")
+_GITHUB_BLOB = re.compile(r"^https?://github\.com/([^/]+)/([^/]+)/blob/([^/]+)/(.+?)(?:[?#].*)?$")
+# a Read the Docs page: /<language>/<version>/<page>.html
+_RTD_PAGE = re.compile(r"^(https?://[^/]+/[a-z]{2}(?:[-_][a-zA-Z]+)?/[^/]+/)(.+?)(?:\.html)?/?$")
+
+
+def changelog_link_candidates(pypi_info: dict) -> List[str]:
+    """Raw-text URLs to try for the changelog a project links from PyPI:
+    a GitHub file as its raw content; a Sphinx docs page as the source
+    Sphinx publishes next to it (``_sources/<page>.rst.txt``)."""
+    urls = (pypi_info.get("info") or {}).get("project_urls") or {}
+    out: List[str] = []
+    for label, url in urls.items():
+        if not isinstance(url, str):
+            continue
+        url = url.strip()
+        m = _GITHUB_TREE.match(url)
+        if m:
+            # a package's folder in a monorepo (google-cloud-python/packages/google-auth):
+            # its changelog is there, not at the repository root
+            o, r, branch, path = m.groups()
+            out += [f"https://raw.githubusercontent.com/{o}/{r}/{branch}/{path.rstrip('/')}/{f}"
+                    for f in ("CHANGELOG.md", "CHANGES.md", "CHANGELOG.rst", "CHANGES.rst")]
+            continue
+        if not _CHANGELOG_LINK.search(label):
+            continue
+        m = _GITHUB_BLOB.match(url)
+        if m:
+            o, r, branch, path = m.groups()
+            out.append(f"https://raw.githubusercontent.com/{o}/{r}/{branch}/{path}")
+            continue
+        if "github.com/" in url and url.rstrip("/").endswith("/releases"):
+            continue  # GitHub releases: read through the API or the feed
+        m = _RTD_PAGE.match(url)
+        if m:
+            root, page = m.groups()
+            page = page.rstrip("/") or "index"
+            out += [f"{root}_sources/{page}.rst.txt", f"{root}_sources/{page}.md.txt", f"{root}_sources/{page}.txt"]
+        elif url.endswith(".html"):
+            base, _, page = url.rpartition("/")
+            stem = page[:-5]
+            out += [f"{base}/_sources/{stem}.rst.txt", f"{base}/_sources/{stem}.md.txt"]
+        elif re.search(r"\.(md|rst|txt)$", url):
+            out.append(url)
+    return list(dict.fromkeys(out))
+
+
+def fetch_linked_changelog(package: str, pypi_info: dict) -> Optional[str]:
+    """The changelog the project links from PyPI, as text (cached)."""
+    key = f"linked-changelog2:{package}"
+    cached = cache_get(key)
+    if cached is not None:
+        return cached or None
+    errors = 0
+    for url in changelog_link_candidates(pypi_info):
+        try:
+            resp = http_get(url, timeout=10, follow_redirects=True)
+        except Exception:
+            errors += 1
+            continue
+        ctype = resp.headers.get("content-type", "")
+        if resp.status_code == 200 and len(resp.text) > 50 and "html" not in ctype:
+            cache_set(key, resp.text)
+            return resp.text
+        if resp.status_code not in (404, 400, 403):
+            errors += 1
+    if not errors:
+        cache_set(key, "")
+    return None
 
 
 def _raw(owner: str, repo: str, path: str, branch: str = "main") -> Optional[str]:
@@ -866,14 +1026,14 @@ def _short_version(v: str) -> str:
 
 
 def fetch_docs_release_notes(owner: str, repo: str, versions: List[str],
-                             max_files: int = 40) -> Optional[List[ChangeEntry]]:
+                             max_files: int = 40, seen: Optional[set] = None) -> Optional[List[ChangeEntry]]:
     """Release notes kept in the project's docs instead of a root CHANGES file.
 
     Returns None when the project has no recognised docs layout.
     """
     if not versions:
         return None
-    key = f"docs-layout4:{owner}/{repo}"
+    key = f"docs-layout5:{owner}/{repo}"
     layout = cache_get(key)
     probe = _three_part(versions[-1])
     if layout is None:
@@ -885,10 +1045,14 @@ def fetch_docs_release_notes(owner: str, repo: str, versions: List[str],
                       for form in dict.fromkeys([probe, short])]
         candidates += [("series", p, p.format(major=tv.major, minor=tv.minor)) for p in DOCS_SERIES_PATTERNS]
         candidates += [("file", p, p) for p in DOCS_CHANGELOG_FILES]
-        for kind, pattern, path in candidates:
-            if _raw(owner, repo, path) is not None:
+        found = _parallel(lambda c: _raw(owner, repo, c[2]), candidates)
+        errors = [r for r in found if isinstance(r, Exception)]
+        for (kind, pattern, _path), text in zip(candidates, found):
+            if text is not None and not isinstance(text, Exception):
                 layout = f"{kind}|{pattern}"
                 break
+        if not layout and errors:
+            raise errors[0]  # a failed probe isn't proof there's no layout: don't cache it
         cache_set(key, layout)
     if not layout:
         return None
@@ -896,11 +1060,15 @@ def fetch_docs_release_notes(owner: str, repo: str, versions: List[str],
     kind, pattern = layout.split("|", 1)
     entries: List[ChangeEntry] = []
     if kind == "version":
+        get = _prefetch(owner, repo, [pattern.format(v=form) for v in versions[-max_files:]
+                                      for form in dict.fromkeys([_three_part(v), _short_version(v)])])
         for v in versions[-max_files:]:
             for form in dict.fromkeys([_three_part(v), _short_version(v)]):
-                text = _cached_raw(owner, repo, pattern.format(v=form))
+                text = get(pattern.format(v=form))
                 if text:
                     entries.extend(parse_changelog_text(text, v))
+                    if seen is not None:
+                        seen.add(v)
                     break
     elif kind == "series":
         from packaging.version import Version
@@ -908,11 +1076,11 @@ def fetch_docs_release_notes(owner: str, repo: str, versions: List[str],
         for major, minor in series[-max_files:]:
             text = _cached_raw(owner, repo, pattern.format(major=major, minor=minor))
             if text:
-                entries.extend(parse_sectioned_changelog(text, repo))
+                entries.extend(parse_sectioned_changelog(text, repo, seen))
     else:
         text = _cached_raw(owner, repo, pattern)
         if text:
-            entries.extend(parse_sectioned_changelog(text, repo))
+            entries.extend(parse_sectioned_changelog(text, repo, seen))
     return entries
 
 
@@ -942,25 +1110,47 @@ def fetch_migration_guides(owner: str, repo: str, current: str, target: str,
         return []
     entries: List[ChangeEntry] = []
     series = sorted({(Version(v).major, Version(v).minor) for v in versions})
+    wanted = [p.format(major=ma, minor=mi) for ma, mi in series for p in MIGRATION_SERIES]
+    wanted += [p.format(v=_three_part(v)) for v in versions[-20:] for p, _k in MIGRATION_PER_VERSION]
+    if tgt.major > cur.major:
+        wanted += MIGRATION_MAJOR
+    get = _prefetch(owner, repo, wanted)
     for major, minor in series:
         for pattern in MIGRATION_SERIES:
-            text = _cached_raw(owner, repo, pattern.format(major=major, minor=minor))
+            text = get(pattern.format(major=major, minor=minor))
             if text:
                 entries.extend(parse_changelog_text(text, f"{major}.{minor}.0"))
     for v in versions[-20:]:
         for pattern, kind in MIGRATION_PER_VERSION:
-            text = _cached_raw(owner, repo, pattern.format(v=_three_part(v)))
+            text = get(pattern.format(v=_three_part(v)))
             if text:
                 entries.extend(parse_changelog_text(text, v, default_section=kind))
     if tgt.major > cur.major:
         # an unversioned guide describes the major jump ("Pydantic V1 -> V2")
         first_of_major = next((v for v in versions if Version(v).major == tgt.major), f"{tgt.major}.0.0")
         for path in MIGRATION_MAJOR:
-            text = _cached_raw(owner, repo, path)
+            text = get(path)
             if text:
                 entries.extend(parse_changelog_text(text, first_of_major))
                 break
     return entries
+
+
+def _prefetch(owner: str, repo: str, paths: List[str]):
+    """Fetch these repository files concurrently; returns a lookup that
+    gives each one's text (None if missing) and raises a fetch error only
+    when that file is asked for, as a sequential fetch would have."""
+    paths = list(dict.fromkeys(paths))
+    got = dict(zip(paths, _parallel(lambda path: _cached_raw(owner, repo, path), paths)))
+
+    def get(path: str) -> Optional[str]:
+        if path not in got:
+            return _cached_raw(owner, repo, path)
+        value = got[path]
+        if isinstance(value, Exception):
+            raise value
+        return value
+    return get
 
 
 def _cached_raw(owner: str, repo: str, path: str) -> Optional[str]:
@@ -973,22 +1163,58 @@ def _cached_raw(owner: str, repo: str, path: str) -> Optional[str]:
     return text
 
 
-def parse_sectioned_changelog(text: str, package: str) -> List[ChangeEntry]:
-    """Parse a full changelog file that's divided by version headers."""
+class _Shift:
+    """A named-header match whose version is its second group, presented
+    like a plain one (version in group 1)."""
+
+    def __init__(self, m):
+        self._m = m
+
+    def group(self, i):
+        return self._m.group(i + 1) if i else self._m.group(0)
+
+    def start(self):
+        return self._m.start()
+
+    def end(self):
+        return self._m.end()
+
+
+def parse_sectioned_changelog(text: str, package: str, seen: Optional[set] = None) -> List[ChangeEntry]:
+    """Parse a full changelog file that's divided by version headers.
+    ``seen`` collects the version of every section found, changes or not."""
     entries: List[ChangeEntry] = []
 
-    # match version headers like "Version 3.0.0", "## 3.0.0", "3.0.0 (2024-01-01)"
+    # version headers: "Version 3.0.0", "## 3.0.0", "3.0.0 (2024-01-01)", and
+    # Keep a Changelog "## [3.0.0] - 2024-01-01", linked "## [3.0.0](url)",
+    # "# Release 3.0.0 (date)", "pytest 8.3.0 (2024-07-20)", "**3.0.0**"
+    name = re.escape(package).replace(r"\-", "[-_]")
+    ver = r"(\d+\.\d+(?:\.\d+)*(?:(?:a|b|rc|alpha|beta|\.?post|\.?dev)\.?\d*)?)"
     version_header = re.compile(
-        r"^(?:#{1,3}\s+)?(?:version\s+)?v?(\d+\.\d+(?:\.\d+)?(?:[a-z]\d*)?)\b",
+        # " 4.3.0 (date)": towncrier centres reST titles with one space
+        r"^ ?(?:#{1,4}\s+)?(?:\*\*|`)?\[?(?:(?:version|release|revision)\s+|" + name + r"\s+)?v?"
+        + ver + r"\b(?!\.\d)",
         re.IGNORECASE | re.MULTILINE,
     )
+    # "# Apache Arrow 26.0.1 (2026-11-03)": a display name before the version
+    # in a Markdown heading, the version then dated or alone on the line
+    named_header = re.compile(
+        r"^#{1,4}\s+((?:[A-Za-z][\w.+-]*\s+){1,3})v?" + ver + r"\b(?!\.\d)\s*(?:\(|-|\u2013|\u2014|$)",
+        re.MULTILINE,
+    )
+    found = {m.start(): m for m in version_header.finditer(text)}
+    for m in named_header.finditer(text):
+        if m.start() not in found and not re.search(r"\bpython\b", m.group(1), re.IGNORECASE):
+            found[m.start()] = _Shift(m)
 
-    splits = list(version_header.finditer(text))
+    splits = [found[k] for k in sorted(found)]
     if not splits:
         return entries
 
     for i, m in enumerate(splits):
         ver = m.group(1)
+        if seen is not None:
+            seen.add(ver)
         start = m.end()
         end = splits[i + 1].start() if i + 1 < len(splits) else len(text)
         section = text[start:end]
@@ -1031,6 +1257,9 @@ class ChangeReport:
     # range: a deprecation announced before your version still names the
     # replacement for an API removed inside the range
     history: List[ChangeEntry] = field(default_factory=list)
+    # versions in the upgrade range whose release notes were read (with or
+    # without breaking changes): none means the range's notes weren't found
+    versions_read: List[str] = field(default_factory=list)
 
     @property
     def checked(self) -> bool:
@@ -1050,6 +1279,7 @@ def collect_changes(package: str, current_version: str, target_version: str,
     ok: List[str] = []
     failed: List[str] = []
     all_entries: List[ChangeEntry] = []
+    versions_seen: set = set()  # versions whose notes were read, changes or not
 
     try:
         pypi_info = get_pypi_info(package)
@@ -1057,62 +1287,84 @@ def collect_changes(package: str, current_version: str, target_version: str,
         return ChangeReport([], [], [f"PyPI metadata ({_short_err(e)})"])
 
     repo_info = extract_github_repo(pypi_info)
-    if repo_info:
-        owner, repo = repo_info
-        try:
-            releases = fetch_github_releases(owner, repo, token=github_token)
-            if releases:
-                ok.append("GitHub releases")
-            for rel in releases:
-                tag = rel.get("tag_name", "") or rel.get("name", "")
-                ver = version_from_tag(tag, package) or version_from_tag(rel.get("name", ""), package)
-                body = rel.get("body", "") or ""
-                if ver is None:
-                    # sectioned bodies still carry their own version headers
-                    all_entries.extend(parse_sectioned_changelog(body, package))
-                    continue
-                all_entries.extend(parse_changelog_text(body, ver))
-        except Exception as e:
-            failed.append(f"GitHub releases ({_short_err(e)})")
+    # the sources don't depend on each other: fetch them together, then
+    # combine them in a fixed order
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        if repo_info:
+            owner, repo = repo_info
+            f_releases = pool.submit(fetch_github_releases, owner, repo, token=github_token)
+            f_docs = pool.submit(fetch_docs_release_notes, owner, repo,
+                                 _docs_versions(pypi_info, current_version, target_version, lookback),
+                                 seen=versions_seen)
+            f_guides = pool.submit(fetch_migration_guides, owner, repo, current_version, target_version,
+                                   _versions_between(pypi_info, current_version, target_version))
+        f_desc = pool.submit(get_pypi_version_info, package, target_version)
 
-        if not all_entries:
+        if repo_info:
             try:
-                raw = fetch_raw_changelog(owner, repo, token=github_token)
-                if raw:
-                    ok.append("changelog file")
-                    all_entries = parse_sectioned_changelog(raw, package)
+                releases = f_releases.result()
+                if releases:
+                    ok.append("GitHub releases")
+                for rel in releases:
+                    tag = rel.get("tag_name", "") or rel.get("name", "")
+                    ver = version_from_tag(tag, package) or version_from_tag(rel.get("name", ""), package)
+                    body = rel.get("body", "") or ""
+                    if ver is None:
+                        # sectioned bodies still carry their own version headers
+                        all_entries.extend(parse_sectioned_changelog(body, package, versions_seen))
+                        continue
+                    versions_seen.add(ver)
+                    all_entries.extend(parse_changelog_text(body, ver))
             except Exception as e:
-                failed.append(f"changelog file ({_short_err(e)})")
+                failed.append(f"GitHub releases ({_short_err(e)})")
 
-        if True:
+            if not all_entries:
+                try:
+                    raw = fetch_raw_changelog(owner, repo, token=github_token)
+                    if raw:
+                        ok.append("changelog file")
+                        all_entries = parse_sectioned_changelog(raw, package, versions_seen)
+                except Exception as e:
+                    failed.append(f"changelog file ({_short_err(e)})")
+
             # release notes in docs/ are often far more detailed than the root
             # CHANGES file (Pillow, NumPy, pandas), so read them too
             try:
-                docs = fetch_docs_release_notes(
-                    owner, repo, _docs_versions(pypi_info, current_version, target_version, lookback))
+                docs = f_docs.result()
                 if docs is not None:
                     ok.append("docs release notes")
                     all_entries.extend(docs)
             except Exception as e:
                 failed.append(f"docs release notes ({_short_err(e)})")
             try:
-                guides = fetch_migration_guides(
-                    owner, repo, current_version, target_version,
-                    _versions_between(pypi_info, current_version, target_version))
+                guides = f_guides.result()
                 if guides:
                     ok.append("migration guide")
                     all_entries.extend(guides)
             except Exception as e:
                 failed.append(f"migration guide ({_short_err(e)})")
 
-    try:
-        ver_info = get_pypi_version_info(package, target_version)
-        desc = ver_info.get("info", {}).get("description", "")
-        ok.append("PyPI description")
-        if desc:
-            all_entries.extend(parse_sectioned_changelog(desc, package))
-    except Exception as e:
-        failed.append(f"PyPI description ({_short_err(e)})")
+        if not all_entries or not _seen_in_range(versions_seen, current_version, target_version):
+            # nothing from GitHub for this upgrade: the changelog the project links from PyPI
+            try:
+                linked = fetch_linked_changelog(package, pypi_info)
+                if linked:
+                    entries = parse_sectioned_changelog(linked, package, versions_seen)
+                    if entries:
+                        ok.append("linked changelog")
+                        all_entries.extend(entries)
+            except Exception as e:
+                failed.append(f"linked changelog ({_short_err(e)})")
+
+        try:
+            ver_info = f_desc.result()
+            desc = ver_info.get("info", {}).get("description", "")
+            ok.append("PyPI description")
+            if desc:
+                all_entries.extend(parse_sectioned_changelog(desc, package, versions_seen))
+        except Exception as e:
+            failed.append(f"PyPI description ({_short_err(e)})")
 
     from packaging.version import Version, InvalidVersion
 
@@ -1149,7 +1401,25 @@ def collect_changes(package: str, current_version: str, target_version: str,
                 history.append(entry)
         except InvalidVersion:
             continue
-    return ChangeReport(filtered, ok, failed, skipped, history)
+    return ChangeReport(filtered, ok, failed, skipped, history,
+                        sorted(v for v in versions_seen if _in_range(v, v_current, v_target)))
+
+
+def _in_range(v: str, lo, hi) -> bool:
+    from packaging.version import Version, InvalidVersion
+    try:
+        return lo < Version(v) <= hi
+    except InvalidVersion:
+        return False
+
+
+def _seen_in_range(seen: set, current: str, target: str) -> bool:
+    from packaging.version import Version, InvalidVersion
+    try:
+        lo, hi = Version(current), Version(target)
+    except InvalidVersion:
+        return bool(seen)
+    return any(_in_range(v, lo, hi) for v in seen)
 
 
 def _has_in_range(entries: List[ChangeEntry], current: str, target: str) -> bool:
