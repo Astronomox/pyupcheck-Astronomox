@@ -4,6 +4,16 @@ All notable changes to pyupcheck are documented here.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-23
+
+### Added
+- Deep mode for type-stub packages: `requests-stubs/api.pyi` is `requests.api` (PEP 561), and `types-requests`, `pandas-stubs` and the like are checked against the modules they describe (`import requests`, `import pandas`)
+- Deep mode for meta-packages that ship no code and pin the package that does (`fastmcp` -> `fastmcp-slim==4.2.5`, `logfire` -> `logfire-sdk==6.0.0`): their API is that package's
+- Release notes in more places: the repository's default branch is detected (API, else `main`/`master`/`trunk`/`develop`) instead of assuming `main`; a changelog that only points to another file is followed; per-version docs at `docs/releases/v{v}.rst` (tornado), `docs/source/release-notes/{v}.rst` (flake8) and `docs/source/whatsnew/version{major}.rst` (IPython); versions written as list items (`- 0.10.0: ...`, tabulate)
+
+### Fixed
+- When a project had GitHub releases that didn't cover the upgrade (tags without notes), its changelog file was never read (boto3, decorator, distlib in the top 1,000)
+
 ## [0.15.0] - 2026-11-23
 
 ### Added
