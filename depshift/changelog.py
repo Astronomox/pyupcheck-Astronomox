@@ -20,6 +20,11 @@ class ChangeEntry:
     # "Deprecate the ``urls`` module, except for ``iri_to_uri``": members that stay
     exceptions: List[str] = field(default_factory=list)
     replacement: Optional[str] = None  # suggested replacement API, when the text names one
+    # a deprecation's announced removal ("will be removed in 1.2")
+    removed_in: Optional[str] = None
+    # the parent item a nested one was listed under, when that is what says
+    # what happened ("The old names are deprecated.")
+    context: Optional[str] = None
 
 
 PYPI_API = "https://pypi.org/pypi/{package}/json"
@@ -177,6 +182,7 @@ _API_BACKTICK = re.compile(r"`{1,2}:?(?:\w+:)*`?~?\.?([a-zA-Z_][\w.]*(?:\(\))?)`
 _API_DOTTED = re.compile(r"(?:^|[\s(])([a-zA-Z_]\w*\.[a-zA-Z_][\w.]*(?:\(\))?)")
 _REPLACEMENT = re.compile(
     r"(?:use|in favou?r of|replaced (?:by|with)|superseded by|renamed to|moved to|instead,? use|"
+    r"merged\s+into(?:\s+the)?|"
     r"alias(?:es)?(?:\s+\([^)]*\))?\s+(?:of|for)|"
     r"(?:renam|mov)\w*\s+`{0,2}[\w.:~]+`{0,2}\s+(?:to|into))\s+"
     r"`{0,2}:?(?:\w+:)*`?~?\.?([a-zA-Z_][\w.]*)", re.IGNORECASE)
@@ -190,6 +196,27 @@ _QUALIFIED = re.compile(
 
 def _qualified(line: str, repl: "re.Match") -> bool:
     return bool(_QUALIFIED.match(line[repl.end(1):]))
+
+
+# "will be removed in 1.2", "scheduled for removal in version 2.0", "to be
+# dropped in v3", "removal in 1.4"; never "in a future version"
+_REMOVED_IN = re.compile(
+    r"\b(?:(?:will|shall|would)\s+be|to\s+be|is\s+(?:scheduled|slated|planned)\s+to\s+be|scheduled\s+for|"
+    r"slated\s+for|planned\s+for|marked\s+for|for)?\s*(?:removed|removal|dropped|deleted)\s+"
+    r"(?:in|from|with|by|as\s+of|starting\s+(?:with|in|from))\s+(?:(?!python\b)[A-Za-z][\w-]*\s+)?"
+    r"(?:version\s+|release\s+|v)?"
+    r"(\d+(?:\.\d+){0,2})(?![\d.]*\d)(?!\s+of\s+python)", re.IGNORECASE)
+
+
+_FUTURE_REMOVAL = re.compile(
+    r"\b(?:will|shall)\s+be\s+(?:removed|dropped|deleted)|\bto\s+be\s+(?:removed|dropped)|"
+    r"\b(?:scheduled|slated|planned|marked)\s+(?:for|to\s+be)\s+(?:removal|removed)", re.IGNORECASE)
+
+
+def removed_in_version(line: str) -> Optional[str]:
+    """The version a deprecation says its API will be removed in, if any."""
+    m = _REMOVED_IN.search(line)
+    return m.group(1).rstrip(".") if m else None
 
 
 _RANK = {"low": 0, "medium": 1, "high": 2}
@@ -291,9 +318,17 @@ def _items(text: str, default_section: Optional[str] = None) -> List[Tuple[Optio
                 return kind
         return default_section
 
+    # statement-parents of the current nested item: (indent, text)
+    parents: List[Tuple[int, str]] = []
+
     def flush():
         if cur:
-            out.append((cur_section, " ".join(cur)))
+            text = " ".join(cur)
+            if parents:
+                # the parent says what kind of change this is ("The old names
+                # are deprecated."); the child names the APIs
+                text += _CTX + parents[-1][1]
+            out.append((cur_section, text))
             cur.clear()
 
     skip_next = False
@@ -308,6 +343,7 @@ def _items(text: str, default_section: Optional[str] = None) -> List[Tuple[Optio
         heading = None if _in_table(table_borders) else _heading_text(lines, i)
         if heading is not None:
             flush()
+            parents.clear()
             md = _MD_HEADING.match(raw)
             if md:
                 level = len(raw.strip()) - len(raw.strip().lstrip("#"))
@@ -367,11 +403,23 @@ def _items(text: str, default_section: Optional[str] = None) -> List[Tuple[Optio
             flush()
             continue
         bullet = _BULLET.match(raw)
-        if bullet and cur and cur_indent is not None and len(bullet.group(1)) > cur_indent:
-            # nested bullet: part of its parent item ("Affected functions are:")
+        if bullet and cur and cur_indent is not None and len(bullet.group(1)) > cur_indent \
+                and _introduces_list(cur):
+            # nested bullet under "Affected functions are:": part of its parent
             cur.append(_BULLET.sub("", raw, count=1).strip())
         elif bullet:
+            # a top-level bullet, or a nested one under a parent that is a
+            # statement of its own ("Remove previously deprecated code."):
+            # each nested change is an item, and the parent stays a bare
+            # sweep, which removes everything deprecated before it
+            ind = len(bullet.group(1))
+            nested = bool(cur) and cur_indent is not None and ind > cur_indent
+            parent_text = _CTX_SPLIT(" ".join(cur)) if nested else None
             flush()
+            while parents and parents[-1][0] >= ind:
+                parents.pop()
+            if nested:
+                parents.append((cur_indent, parent_text))
             cur_section = section()
             cur_indent = len(bullet.group(1))
             cur.append(_BULLET.sub("", raw, count=1).strip())
@@ -379,9 +427,28 @@ def _items(text: str, default_section: Optional[str] = None) -> List[Tuple[Optio
             if not cur:
                 cur_section = section()
                 cur_indent = None
+                if not raw[:1].isspace():
+                    parents.clear()  # a paragraph at the margin: out of any list
             cur.append(raw.strip())
     flush()
     return out
+
+
+# separates an item from its parent's text (context for its kind only)
+_CTX = "\x1f"
+
+
+def _CTX_SPLIT(text: str) -> str:
+    return text.split(_CTX, 1)[0]
+
+
+_TRAILING_REFS = re.compile(r"(?:\s*:(?:pr|issue|ghissue|bpo|user|cve):`[^`]*`)+\s*$")
+
+
+def _introduces_list(parts: List[str]) -> bool:
+    """Does the item so far end by introducing a list ("...are:")?"""
+    text = _TRAILING_REFS.sub("", " ".join(parts)).rstrip()
+    return text.endswith(":")
 
 
 def _in_table(borders: int) -> bool:
@@ -389,18 +456,35 @@ def _in_table(borders: int) -> bool:
     return borders % 3 in (1, 2)
 
 
-def _classify_item(line: str, section: Optional[str], version: str) -> List[ChangeEntry]:
-    """Turn one release-note item into change entries (one per API it names)."""
-    kind, conf = None, "low"
+def _kind_of(text: str):
     for patterns, k in ((_BREAKING_PATTERNS, "removed"),
                         (_DEPRECATION_PATTERNS, "deprecated"),
                         (_RENAME_PATTERNS, "renamed")):
         for p, c in patterns:
-            if p.search(line):
-                kind, conf = k, c
-                break
-        if kind:
-            break
+            if p.search(text):
+                return k, c
+    return None, "low"
+
+
+def _classify_item(line: str, section: Optional[str], version: str) -> List[ChangeEntry]:
+    """Turn one release-note item into change entries (one per API it names)."""
+    line, _, parent = line.partition(_CTX)
+    kind, conf = _kind_of(line)
+    context = None
+    parent_words = len(_TRAILING_REFS.sub("", parent).split())
+    if parent and (parent_words <= 20 or _SWEEP.search(parent)):
+        # only a short statement ("Remove previously deprecated code.", "The
+        # old names are deprecated.") says what its list is; a paragraph that
+        # mentions "removal of a deprecated keyword" in passing doesn't
+        p_kind, p_conf = _kind_of(parent)
+        if kind is None or (p_kind == "removed" and kind in ("renamed", "deprecated")
+                            and not _FUTURE_REMOVAL.search(line)):
+            # "``pass_context`` replaces ``contextfunction``" under "The old
+            # names are deprecated."; "``contextfunction`` is replaced by
+            # ``pass_context``" under "Remove previously deprecated code.":
+            # the parent says what happened to the names the child lists
+            if p_kind:
+                kind, conf, context = p_kind, p_conf, parent
 
     apis = _extract_apis(line)
     # everything named after "in favor of" / "use" / "replaced by" is a
@@ -504,6 +588,25 @@ def _classify_item(line: str, section: Optional[str], version: str) -> List[Chan
     excepted = [a.rsplit(".", 1)[-1] for a in _extract_apis(line[exc.end():])] if exc else []
     if excepted:
         targets = [a for a in targets if a.rsplit(".", 1)[-1] not in excepted] or targets
+    if kind == "removed" and _FUTURE_REMOVAL.search(line) and re.search(r"\bdeprecat", line, re.IGNORECASE):
+        # "Deprecates X in 1.0 and it will be removed in 1.2": a notice of a
+        # removal to come, not a removal in this release
+        kind = "deprecated"
+    scheduled = removed_in_version(line) if kind == "deprecated" else None
+    # the removal date belongs to what its own sentence names: in
+    # ":class:`A` gains a method. `plot_a` is deprecated ... removed in 1.2",
+    # only plot_a goes away
+    scheduled_apis = set()
+    if scheduled:
+        m = _REMOVED_IN.search(line)
+        sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z:`*(])", line)
+        pos = 0
+        for sent in sentences:
+            start = line.find(sent, pos)
+            pos = start + len(sent)
+            if start <= m.start() < pos:
+                scheduled_apis = {a.rsplit(".", 1)[-1] for a in _extract_apis(sent)}
+                break
     seen = set()
     entries = []
     for api in targets[:8]:
@@ -512,6 +615,7 @@ def _classify_item(line: str, section: Optional[str], version: str) -> List[Chan
         seen.add(api)
         c = conf
         if api != "unknown" and kind in ("removed", "changed", "deprecated", "renamed") \
+                and context is None \
                 and not _is_subject(line, api.rsplit(".", 1)[-1]) \
                 and not (section in ("removed", "deprecated") and _leads_with(line, api)):
             # the item mentions the API but isn't about removing it
@@ -522,6 +626,8 @@ def _classify_item(line: str, section: Optional[str], version: str) -> List[Chan
             kind=kind, api=api, description=line[:200], version=version,
             confidence=c, exceptions=excepted, replacement=_pick_replacement(api, paired)
             or (f"{home}.{api.rsplit('.', 1)[-1]}" if home and api != "unknown" else None),
+            removed_in=scheduled if c != "low" and api.rsplit(".", 1)[-1] in scheduled_apis else None,
+            context=context,
         ))
     return entries
 
@@ -676,6 +782,9 @@ DOCS_NOTES_PATTERNS = [
 ]
 DOCS_SERIES_PATTERNS = [
     "doc/build/changelog/changelog_{major}{minor}.rst",  # SQLAlchemy
+    "doc/whats_new/v{major}.{minor}.rst",                # scikit-learn
+    "docs/whatsnew/{major}.{minor}.rst",                 # astropy
+    "doc/whatsnew/{major}.{minor}.rst",
 ]
 DOCS_CHANGELOG_FILES = [
     "docs/changelog.md", "docs/changelog.rst", "docs/changes.rst", "docs/changes.md",
@@ -716,10 +825,11 @@ def _versions_between(pypi_info: dict, current: str, target: str) -> List[str]:
     return [str(v) for v in sorted(out)]
 
 
-def _docs_versions(pypi_info: dict, current: str, target: str, lookback: bool) -> List[str]:
+def _docs_versions(pypi_info: dict, current: str, target: str, lookback) -> List[str]:
     """Versions whose per-version docs notes to read: the upgrade range, plus
     (with lookback) the x.y.0 releases of the current major series, where
-    deprecations and their replacements are usually announced."""
+    deprecations, their replacements and their removal dates are usually
+    announced. ``lookback`` True reads them all, a number the last that many."""
     versions = _versions_between(pypi_info, current, target)
     if not lookback:
         return versions
@@ -736,7 +846,10 @@ def _docs_versions(pypi_info: dict, current: str, target: str, lookback: bool) -
             continue
         if v.major == cur.major and v.micro == 0 and not v.is_prerelease and v <= cur:
             earlier.append(v)
-    return [str(v) for v in sorted(earlier)] + [v for v in versions if v not in {str(e) for e in earlier}]
+    earlier = sorted(earlier)
+    if lookback is not True and isinstance(lookback, int):
+        earlier = earlier[-lookback:]
+    return [str(v) for v in earlier] + [v for v in versions if v not in {str(e) for e in earlier}]
 
 
 def _three_part(v: str) -> str:
@@ -760,7 +873,7 @@ def fetch_docs_release_notes(owner: str, repo: str, versions: List[str],
     """
     if not versions:
         return None
-    key = f"docs-layout3:{owner}/{repo}"
+    key = f"docs-layout4:{owner}/{repo}"
     layout = cache_get(key)
     probe = _three_part(versions[-1])
     if layout is None:
@@ -926,9 +1039,14 @@ class ChangeReport:
 
 
 def collect_changes(package: str, current_version: str, target_version: str,
-                    github_token: Optional[str] = None, lookback: bool = False) -> ChangeReport:
+                    github_token: Optional[str] = None, lookback=3) -> ChangeReport:
     """Get breaking/deprecated changes between two versions, reporting which
-    sources worked and which failed instead of silently returning nothing."""
+    sources worked and which failed instead of silently returning nothing.
+
+    ``lookback`` also reads the notes of feature releases before
+    ``current_version`` (True: all of the current major series; a number:
+    the last that many), for deprecations whose announced removal falls in
+    the upgrade and for the replacements they name."""
     ok: List[str] = []
     failed: List[str] = []
     all_entries: List[ChangeEntry] = []
@@ -1006,6 +1124,7 @@ def collect_changes(package: str, current_version: str, target_version: str,
         return ChangeReport([], ok, failed)
 
     all_entries = _promote_swept_deprecations(all_entries, v_current, v_target)
+    all_entries = _promote_scheduled_removals(all_entries, v_current, v_target)
 
     filtered: List[ChangeEntry] = []
     seen = set()
@@ -1052,6 +1171,21 @@ _SWEEP = re.compile(r"\bremov\w*\b.*\b(previously|all|the)\s+deprecated\b|"
                     r"\bdeprecated\b.*\b(?:have been|are|were)\s+removed\b", re.IGNORECASE)
 
 
+_DEPRECATES = re.compile(r"\bdeprecat(?!ion\s+warnings?\b)\w*", re.IGNORECASE)
+
+
+def _deprecates(text: str, api: str) -> bool:
+    """Is ``api`` deprecated by the sentence that names it? Not when the
+    deprecation is in another sentence, or is only "a deprecation warning"
+    about some behaviour ("``iri_to_uri`` shows a deprecation warning when
+    passing bytes")."""
+    name = api.rsplit(".", 1)[-1]
+    for sent in re.split(r"(?<=[.!?])\s+(?=[A-Z:`*(])", text):
+        if re.search(rf"\b{re.escape(name)}\b", sent) and _DEPRECATES.search(sent):
+            return True
+    return False
+
+
 def _promote_swept_deprecations(entries: List[ChangeEntry], v_current, v_target) -> List[ChangeEntry]:
     """Many projects remove deprecated APIs with a single line ("Remove
     previously deprecated code.") instead of listing them. When such a sweep
@@ -1072,19 +1206,50 @@ def _promote_swept_deprecations(entries: List[ChangeEntry], v_current, v_target)
 
     out = list(entries)
     for e in entries:
-        if e.kind != "deprecated" or e.api == "unknown":
-            continue
+        if e.kind != "deprecated" or e.api == "unknown" or e.confidence == "low":
+            continue  # low: the item only mentions it, it isn't what was deprecated
+        if not _deprecates(e.description, e.api) and not (e.context and _DEPRECATES.search(e.context)):
+            continue  # "``f`` supports scrypt. Plain hash methods are deprecated"
         try:
             v_dep = Version(e.version)
         except InvalidVersion:
             continue
-        later = [v for v in sweeps if v > v_dep]
+        # a sweep removes what its own deprecation window covers: the same
+        # major series, or the one before for an x.0 release. Projects don't
+        # keep deprecated code for decades ("Everything in ``wrappers`` is
+        # deprecated" in Werkzeug 0.15 was gone long before 2.1's sweep)
+        later = [v for v in sweeps if v > v_dep
+                 and v_dep.major >= v.major - (1 if v.minor == 0 else 0)]
         if later:
             sweep_v = min(later)
             out.append(ChangeEntry(
                 kind="removed", api=e.api, version=str(sweep_v),
                 confidence="low" if e.confidence == "low" else "medium",
                 description=f"Removed in {sweep_v} (deprecated in {e.version}: {e.description[:120]})",
+                replacement=e.replacement, exceptions=list(e.exceptions),
+            ))
+    return out
+
+
+def _promote_scheduled_removals(entries: List[ChangeEntry], v_current, v_target) -> List[ChangeEntry]:
+    """A deprecation that names its removal ("deprecated in 1.0 and will be
+    removed in 1.2") is a removal in that version, whether or not that
+    release's notes mention it again; many projects don't."""
+    from packaging.version import Version, InvalidVersion
+
+    out = list(entries)
+    for e in entries:
+        if e.kind != "deprecated" or not e.removed_in or e.api == "unknown":
+            continue
+        try:
+            v_rm, v_dep = Version(e.removed_in), Version(e.version)
+        except InvalidVersion:
+            continue
+        if v_dep < v_rm and v_current < v_rm <= v_target:
+            out.append(ChangeEntry(
+                kind="removed", api=e.api, version=_three_part(e.removed_in),
+                confidence=e.confidence,
+                description=f"Removed in {e.removed_in} (deprecated in {e.version}: {e.description[:140]})",
                 replacement=e.replacement, exceptions=list(e.exceptions),
             ))
     return out

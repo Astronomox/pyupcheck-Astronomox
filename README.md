@@ -104,6 +104,19 @@ See breaking/deprecated changes between any two versions without scanning code:
 pyupcheck diff django 4.2.0 5.0.0
 ```
 
+### `explain` - ask Claude how to fix what breaks
+
+For what `migrate` can't change by itself (no drop-in replacement, an argument whose meaning changed), `explain` sends each breaking usage to Claude with the release note behind it and the replacement pyupcheck verified, and streams back a before/after for each:
+
+```bash
+pip install "pyupcheck[ai]"
+export ANTHROPIC_API_KEY=...      # or: ant auth login
+pyupcheck explain numpy 2.0.0
+pyupcheck explain numpy 2.0.0 --dry-run   # shows exactly what would be sent, sends nothing
+```
+
+Only the few lines around each breaking usage are sent (`--max` caps how many usages), and the command says how much before it sends anything. `--effort` trades speed for thoroughness. Check the advice before applying it: `pyupcheck check` verifies the result.
+
 ### `scan` - list your usages of a package
 
 ```bash
@@ -116,6 +129,10 @@ pyupcheck scan requests
 pyupcheck versions flask
 pyupcheck cache-clear
 ```
+
+## Editor: VS Code
+
+`editors/vscode` is a VS Code extension: breaking usages show as errors on their lines (deprecations as warnings, notebook findings on their cell), a quick fix runs `pyupcheck migrate`, and it re-checks when a requirements file, `pyproject.toml` or lockfile is saved. CI builds it as a `.vsix` (the `pyupcheck-vscode` artifact): install it with `code --install-extension pyupcheck-vscode.vsix`. See [editors/vscode/README.md](editors/vscode/README.md).
 
 ## Output formats
 
@@ -259,14 +276,14 @@ These findings are marked `[FACT]` in the output because they come from the real
 
 ## Accuracy
 
-`benchmarks/` holds 52 real upgrades (103 breaking lines, plus 8 negative controls, and one Jupyter notebook) with known breaking changes (Django 4, Flask 3, NumPy 2, pandas 2, Pydantic 2, SQLAlchemy 2, SciPy 1.14, Pillow 10 and more). On the current set, `--deep` catches 100% of breaking lines with no false alarms; changelog-only mode catches 70.9%, also with no false alarms; `migrate` produces the exact expected rewrite in all 8 rewrite cases. Run it with `make bench`.
+`benchmarks/` holds 52 real upgrades (103 breaking lines, plus 8 negative controls, and one Jupyter notebook) with known breaking changes (Django 4, Flask 3, NumPy 2, pandas 2, Pydantic 2, SQLAlchemy 2, SciPy 1.14, Pillow 10 and more). On the current set, `--deep` catches 100% of breaking lines with no false alarms; changelog-only mode catches 80.6%, also with no false alarms; `migrate` produces the exact expected rewrite in all 8 rewrite cases. Run it with `make bench`.
 
 Changelogs are read from GitHub releases, root CHANGES files, per-version release notes in project docs (NumPy, SciPy, pandas, Pillow, Django, SQLAlchemy, NetworkX layouts), and migration guides (NumPy 2, SQLAlchemy 2, Matplotlib removals, `docs/migration.md`).
 
 ## Limitations
 
 - Changelog parsing relies on maintainers writing structured changelogs
-- Dynamic attribute access (`getattr(pkg, name)`) is not detected
+- Dynamic attribute access is detected when the name is written out (`getattr(np, "float_")`), not when it's computed at run time (`getattr(np, name)`); `getattr` with a default is a compatibility shim and isn't reported
 - GitHub API is rate limited to 60 req/hr unauthenticated; pass `--github-token` or set `GITHUB_TOKEN` for higher limits
 
 ## Contributing
@@ -347,6 +364,4 @@ No. pyupcheck needs to download the package from PyPI. Pre-release or private pa
 
 Items being actively considered for future versions:
 
-- VS Code extension: inline warnings on imports
-- `pyupcheck explain` with AI-assisted migration guidance
 - Support for TypeScript / Node.js packages (npm ecosystem)

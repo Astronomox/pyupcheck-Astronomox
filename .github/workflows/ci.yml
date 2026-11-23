@@ -24,7 +24,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -e "."
+          pip install -e ".[ai]"
           pip install pytest
 
       - name: Run tests
@@ -34,3 +34,19 @@ jobs:
         run: |
           pyupcheck --version
           pyupcheck --help
+
+  vscode-extension:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: editors/vscode
+    steps:
+      - uses: actions/checkout@v7
+      - name: Test
+        run: npm test
+      - name: Package
+        run: npx --yes @vscode/vsce package --out pyupcheck-vscode.vsix
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pyupcheck-vscode
+          path: editors/vscode/pyupcheck-vscode.vsix

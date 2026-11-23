@@ -1,0 +1,100 @@
+{
+  "results": [
+    {
+      "package": "numpy",
+      "current_version": "1.26.4",
+      "target_version": "2.5.5",
+      "risks": [
+        {
+          "file": "/project/analysis.ipynb",
+          "line": 27,
+          "code": "[cell 3] x = np.float_(3)",
+          "cell": 3,
+          "cell_line": 2,
+          "api": "numpy.float_",
+          "severity": "breaking",
+          "change_kind": "removed",
+          "change_description": "Alias ``np.float_`` has been removed. Use ``np.float64`` instead.",
+          "change_version": "2.0.0",
+          "confidence": "high",
+          "replacement": "np.float64"
+        },
+        {
+          "file": "/project/analysis.ipynb",
+          "line": 28,
+          "code": "[cell 3] y = np.asfarray([1, 2])",
+          "cell": 3,
+          "cell_line": 3,
+          "api": "numpy.asfarray",
+          "severity": "breaking",
+          "change_kind": "removed",
+          "change_description": "``np.asfarray`` has been removed. Use ``np.asarray`` with a proper dtype instead.",
+          "change_version": "2.0.0",
+          "confidence": "high",
+          "replacement": null
+        },
+        {
+          "file": "/project/analysis.ipynb",
+          "line": 48,
+          "code": "[cell 5] np.product([1, 2])",
+          "cell": 5,
+          "cell_line": 1,
+          "api": "numpy.product",
+          "severity": "breaking",
+          "change_kind": "removed",
+          "change_description": "``product`` replaced by ``np.prod``",
+          "change_version": "2.0.0",
+          "confidence": "high",
+          "replacement": "np.prod"
+        },
+        {
+          "file": "/project/analysis.ipynb",
+          "line": 49,
+          "code": "[cell 5] np.NaN",
+          "cell": 5,
+          "cell_line": 2,
+          "api": "numpy.NaN",
+          "severity": "breaking",
+          "change_kind": "removed",
+          "change_description": "Alias ``np.NaN`` has been removed. Use ``np.nan`` instead.",
+          "change_version": "2.0.0",
+          "confidence": "high",
+          "replacement": "np.nan"
+        },
+        {
+          "file": "/project/app.py",
+          "line": 2,
+          "code": "x = np.float_(1)",
+          "api": "numpy.float_",
+          "severity": "breaking",
+          "change_kind": "removed",
+          "change_description": "Alias ``np.float_`` has been removed. Use ``np.float64`` instead.",
+          "change_version": "2.0.0",
+          "confidence": "high",
+          "replacement": "np.float64"
+        },
+        {
+          "file": "/project/app.py",
+          "line": 3,
+          "code": "y = np.cumproduct([1])",
+          "api": "numpy.cumproduct",
+          "severity": "breaking",
+          "change_kind": "removed",
+          "change_description": "``cumproduct`` replaced by ``np.cumprod``",
+          "change_version": "2.0.0",
+          "confidence": "high",
+          "replacement": "np.cumprod"
+        }
+      ],
+      "safe_count": 2,
+      "breaking_count": 6,
+      "deprecated_count": 0,
+      "deep": false,
+      "current_source": "pinned",
+      "warnings": [
+        "could not read: GitHub releases (HTTP 403)"
+      ],
+      "unchecked": false
+    }
+  ]
+}

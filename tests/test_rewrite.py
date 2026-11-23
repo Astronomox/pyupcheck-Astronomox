@@ -262,3 +262,21 @@ def test_method_called_on_moved_name(tmp_path):
                               verify=lambda d: True)
     assert "x = markupsafe.Markup('<b>{}</b>').format(1)" in after
     assert len(plan.fixes) == 1 and not plan.manual
+
+
+# ── getattr with a literal name ───────────────────────────────────────────────
+
+def test_getattr_literal_is_a_usage_and_is_rewritten(tmp_path):
+    old = {"numpy": "float_ = float\nfloat64 = float"}
+    new = {"numpy": "float64 = float"}
+    plan, after = migrate(tmp_path, """
+        import numpy as np
+        a = getattr(np, 'float_')
+        b = getattr(np, "float_", float)
+        name = "float_"
+        c = getattr(np, name)
+        """, old, new, changelog="- ``np.float_`` has been removed, use ``np.float64`` instead.", pkg="numpy")
+    assert "a = getattr(np, 'float64')" in after   # the quote style is kept
+    assert 'b = getattr(np, "float_", float)' in after  # a shim with a default survives the removal
+    assert "c = getattr(np, name)" in after
+    assert not plan.manual

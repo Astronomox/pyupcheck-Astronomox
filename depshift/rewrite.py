@@ -105,6 +105,7 @@ class _Index:
 
     def __init__(self, source: str):
         self.tree = ast.parse(source)
+        self.lines = source.splitlines()
         self.n_lines = len(source.splitlines())
         self.ends_with_newline = source.endswith("\n")
         self.calls: Dict[Tuple[int, int], ast.Call] = {}
@@ -354,6 +355,12 @@ def plan_migration(usages: List[Usage], changes: List[APIChange], new_surface: A
     return plan
 
 
+def idx_text_quote(idx: "_Index", node) -> str:
+    """The quote character a string literal was written with."""
+    line = idx.lines[node.lineno - 1].encode("utf-8")
+    return line[node.col_offset:node.col_offset + 1].decode("utf-8", "replace")
+
+
 def _plain_dotted(node) -> bool:
     """``a.b.c`` made only of names, nothing called or subscripted."""
     while isinstance(node, ast.Attribute):
@@ -476,6 +483,19 @@ def _fix_moved_name(u: Usage, ch: APIChange, idx: _Index, repl_map: Dict[str, st
                    [Edit((node.lineno, node.col_offset), (node.end_lineno, node.end_col_offset), new_text)])
 
     old_mod = old_api.rpartition(".")[0]
+    if u.usage_type == "dynamic_attribute":
+        # getattr(np, "float_") -> getattr(np, "float64"): only a new name in
+        # the same place can be swapped inside the string
+        call = idx.call(u)
+        if call is None or new_mod != old_mod or len(call.args) != 2:
+            return None
+        lit = call.args[1]
+        if not (isinstance(lit, ast.Constant) and lit.value == old_short) or lit.lineno != lit.end_lineno:
+            return None
+        quote = '"' if idx_text_quote(idx, lit) == '"' else "'"
+        return Fix(u.file, u.line, f"use {new_short} instead of {old_short}",
+                   [Edit((lit.lineno, lit.col_offset), (lit.end_lineno, lit.end_col_offset),
+                         f"{quote}{new_short}{quote}")])
     if external:
         # flask.Markup(...) -> markupsafe.Markup(...), plus `import markupsafe`
         attr = idx.attribute(u, old_short)

@@ -4,6 +4,26 @@ All notable changes to pyupcheck are documented here.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-23
+
+### Added
+- `pyupcheck explain PACKAGE [VERSION]`: sends each breaking usage (a few lines of code around it), the release note behind it and the verified replacement to Claude (`claude-opus-5-5`) and streams back a before/after for each. Optional: `pip install "pyupcheck[ai]"` and `ANTHROPIC_API_KEY` (or `ant auth login`); says how much code it sends before sending, `--dry-run` sends nothing, `--max`, `--effort`. Requests a safety classifier declines are retried on another model (`--no-fallbacks` to turn off)
+- VS Code extension (`editors/vscode`): diagnostics on breaking and deprecated lines (on the right cell for notebooks), a quick fix that runs `pyupcheck migrate`, a status bar count, re-checks when dependency files are saved. Built as a `.vsix` in CI
+- `getattr(np, "float_")` with a literal name is a usage of `np.float_`: checked like any other, and `migrate` rewrites the string for a rename in the same place. `getattr` with a default (a compatibility shim) and computed names are left alone
+- Scheduled removals: "deprecated in 1.0 and will be removed in 1.2" counts as a removal in 1.2 even when 1.2's notes don't repeat it (scikit-learn's `load_boston`, `plot_confusion_matrix`). `check` reads the notes of the last three feature releases before yours for these
+- scikit-learn and astropy release notes in their docs (`doc/whats_new/v1.2.rst`, `docs/whatsnew/5.0.rst`)
+- Findings in JSON output carry `cell` and `cell_line` for notebooks
+
+### Changed
+- Changelog-only recall on the benchmark: 70.9% -> 80.6%, still with no false alarms (`--deep` stays at 100%)
+- A nested list under a statement ("Remove previously deprecated code.") is one item per change, so each is classified on its own and the parent is a bare sweep; a child that doesn't say what happened takes its parent's kind ("The old names are deprecated.")
+- Release notes that name an API bare (`BaseResponse`) match it wherever your code reaches it, when the name is distinctive (not `get`, `load`, `Request`...)
+- A "removed previously deprecated code" sweep removes only what was deprecated in the same major series (or the previous one, for x.0), and only APIs the deprecating sentence names
+
+### Fixed
+- "Deprecates X in 1.0 and it will be removed in 1.2" was read as a removal in 1.0
+- A list's destination ("merged into the ``Request`` and ``Response`` classes") is not something that was removed
+
 ## [0.13.0] - 2026-11-23
 
 ### Added

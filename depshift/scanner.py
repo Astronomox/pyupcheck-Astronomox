@@ -280,8 +280,27 @@ class PackageVisitor(ast.NodeVisitor):
                 kwargs=kwargs,
             ))
 
-        # detect dynamic imports: importlib.import_module("pkg"), __import__("pkg")
+        # getattr(np, "float_") reads np.float_. With a default
+        # (getattr(np, "float_", np.float64)) it is a compatibility shim that
+        # survives the name going away, so it isn't a use; nor is a name only
+        # known at run time
         func = node.func
+        if isinstance(func, ast.Name) and func.id == "getattr" and len(node.args) == 2 \
+                and not node.keywords:
+            obj, name = node.args
+            if isinstance(name, ast.Constant) and isinstance(name.value, str) \
+                    and name.value.isidentifier():
+                base = self._resolve_attr_chain(obj) if isinstance(obj, (ast.Name, ast.Attribute)) else None
+                if base and self._is_package_ref(base):
+                    self.usages.append(Usage(
+                        file=self.filepath,
+                        line=node.lineno, col=node.col_offset,
+                        code=self.lines[node.lineno - 1].strip(),
+                        attr_chain=f"{base}.{name.value}",
+                        usage_type="dynamic_attribute",
+                    ))
+
+        # detect dynamic imports: importlib.import_module("pkg"), __import__("pkg")
         is_import_module = (
             isinstance(func, ast.Attribute) and func.attr == "import_module"
         ) or (
