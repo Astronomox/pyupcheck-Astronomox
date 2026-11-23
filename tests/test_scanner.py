@@ -201,3 +201,13 @@ def test_star_import_recorded():
         assert [u.attr_chain for u in scan_file(path, "yaml")] == ["yaml"]
     finally:
         cleanup(path)
+
+
+def test_getattr_with_literal_name(tmp_path):
+    from depshift.scanner import scan_file
+    f = tmp_path / "a.py"
+    f.write_text("import numpy as np\nfrom numpy import linalg\n"
+                 "a = getattr(np, 'float_')\nb = getattr(np, 'float_', 0)\n"
+                 "c = getattr(linalg, 'norm')\nd = getattr(np, x)\ne = getattr(obj, 'float_')\n")
+    dyn = [(u.line, u.attr_chain) for u in scan_file(str(f), "numpy") if u.usage_type == "dynamic_attribute"]
+    assert dyn == [(3, "numpy.float_"), (5, "numpy.linalg.norm")]

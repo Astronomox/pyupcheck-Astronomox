@@ -218,6 +218,14 @@ def _baseline_version(package: str, directory: str, pinned: Optional[str] = None
     return None, None
 
 
+def _cell_fields(usage) -> dict:
+    """A notebook finding's cell and line within it (its "line" is the
+    .ipynb file's); nothing for a .py file."""
+    if getattr(usage, "cell", None) is None:
+        return {}
+    return {"cell": usage.cell, "cell_line": usage.cell_line}
+
+
 def _run_single_check(package: str, target_version: Optional[str], directory: str,
                       github_token: Optional[str], cfg, suppress_errors: bool = False,
                       since: Optional[str] = None, deep: bool = False,
@@ -311,6 +319,7 @@ def _run_single_check(package: str, target_version: Optional[str], directory: st
                 existing_keys.add(key)
                 precise_findings.append({
                     "file": pr.usage.file, "line": pr.usage.line,
+                    **_cell_fields(pr.usage),
                     "code": pr.usage.code, "api": pr.usage.attr_chain,
                     "severity": "breaking", "change_kind": pr.change.kind,
                     "change_description": pr.reason,
@@ -322,6 +331,7 @@ def _run_single_check(package: str, target_version: Optional[str], directory: st
     risk_dicts = [
         {
             "file": r.usage.file, "line": r.usage.line, "code": r.usage.code,
+            **_cell_fields(r.usage),
             "api": r.usage.attr_chain, "severity": r.severity,
             "change_kind": r.change.kind,
             "change_description": r.change.description,
@@ -968,6 +978,83 @@ def watch(directory, interval, releases_every, deep, bell, quiet, jobs, github_t
                     console.bell()
     except KeyboardInterrupt:
         console.print("[dim]Stopped.[/]")
+
+
+# ── explain ───────────────────────────────────────────────────────────────────
+
+@main.command()
+@click.argument("package")
+@click.argument("target_version", required=False)
+@click.option("--dir", "-d", "directory", default=".", help="Project directory")
+@click.option("--deep/--no-deep", default=True, show_default=True,
+              help="Find breaking usages from the real API diff too (more accurate)")
+@click.option("--max", "max_findings", type=click.IntRange(1, 100), default=20, show_default=True,
+              help="Explain at most this many findings")
+@click.option("--effort", type=click.Choice(["low", "medium", "high", "xhigh", "max"]), default="high",
+              show_default=True, help="How hard Claude thinks (higher: slower, more thorough)")
+@click.option("--model", default=None, help="Claude model (default: claude-opus-5-5)")
+@click.option("--no-fallbacks", is_flag=True,
+              help="Don't retry on another model when a request is declined")
+@click.option("--dry-run", is_flag=True, help="Print what would be sent, and send nothing")
+@click.option("--github-token", envvar="GITHUB_TOKEN", default=None)
+@click.option("--no-cache", is_flag=True)
+def explain(package, target_version, directory, deep, max_findings, effort, model, no_fallbacks,
+            dry_run, github_token, no_cache):
+    """Ask Claude how to fix what upgrading PACKAGE breaks.
+
+    For the changes `pyupcheck migrate` can't make by itself. Sends each
+    breaking usage (a few lines of your code around it), the release note
+    that explains it and the verified replacement to the Claude API, and
+    streams back a before/after for each. Needs `pip install "pyupcheck[ai]"`
+    and ANTHROPIC_API_KEY (or `ant auth login`). Use --dry-run to see exactly
+    what would be sent.
+    """
+    from depshift import explain as ex
+
+    directory = os.path.abspath(directory)
+    cfg = load_config(directory)
+    if no_cache or not cfg.cache:
+        cache_mod.disable_cache()
+    dep = next((d for d in discover_dependencies(directory) if d.name == normalize_name(package)), None)
+    spec = specifier_of(dep.raw) if dep else None
+    with console.status(f"Checking what upgrading [bold]{package}[/] breaks..."):
+        r = _run_single_check(package, target_version, directory, github_token, cfg, deep=deep, spec=spec)
+    if r is None:
+        sys.exit(2)
+    if r.get("up_to_date") or r.get("no_usages") or not r.get("breaking_count"):
+        _print_terminal_result(r, quiet=False)
+        console.print("[green]Nothing breaks, so there's nothing to explain.[/]")
+        return
+    findings = ex.findings_from(r, directory, limit=max_findings)
+    prompt = ex.build_prompt(package, r.get("current_version") or "?", r["target_version"], findings)
+    if dry_run:
+        console.print(f"[dim]Would send to {model or ex.MODEL} (system prompt, then):[/]")
+        print(prompt)
+        return
+
+    try:
+        client = ex.make_client()
+    except ex.ExplainError as e:
+        console.print(f"[red]{_esc(str(e))}[/]")
+        sys.exit(2)
+    lines = sum(f["code"].count("\n") + 1 for f in findings if f["code"])
+    more = r["breaking_count"] - len(findings)
+    console.print(f"[dim]Sending {len(findings)} finding(s) and {lines} lines of your code to the Claude API "
+                  f"({model or ex.MODEL})" + (f"; {more} more not sent (--max)" if more > 0 else "") + ".[/]\n")
+    try:
+        info = ex.stream_advice(client, prompt, lambda t: (sys.stdout.write(t), sys.stdout.flush()),
+                                model=model or ex.MODEL, effort=effort, fallbacks=not no_fallbacks)
+    except ex.ExplainError as e:
+        console.print(f"\n[red]{_esc(str(e))}[/]")
+        sys.exit(2)
+    print()
+    if info["stop_reason"] == "refusal":
+        console.print("[yellow]Claude declined this request.[/] The findings are still listed by "
+                      f"`pyupcheck check {package} {r['target_version']}`.")
+    elif info["stop_reason"] == "max_tokens":
+        console.print("[yellow]The answer was cut off;[/] use --max to explain fewer findings at once.")
+    console.print(f"[dim]{info['model']}: {info['input_tokens']} tokens in, {info['output_tokens']} out. "
+                  "Check the advice before applying it; `pyupcheck check` verifies the result.[/]")
 
 
 # ── migrate ───────────────────────────────────────────────────────────────────

@@ -108,7 +108,30 @@ def match_usage_to_change(usage: Usage, change: ChangeEntry,
         severity = "warning"
         return Risk(usage=usage, change=change, severity=severity)
 
+    # release notes often name things bare ("``BaseResponse`` is removed"):
+    # match the name your code uses, wherever it lives in the package, when
+    # the name is distinctive enough not to be a coincidence
+    bare = change.api.strip().rstrip("()")
+    if "." not in bare and _distinctive(bare) and usage.attr_chain.rsplit(".", 1)[-1] == bare:
+        return Risk(usage=usage, change=change, severity=sev())
+
     return None
+
+
+_COMMON_NAMES = {
+    "get", "set", "load", "loads", "dump", "dumps", "open", "close", "read", "write", "run", "call",
+    "copy", "update", "items", "keys", "values", "append", "extend", "format", "parse", "send",
+    "request", "response", "session", "config", "settings", "connect", "execute", "query", "filter",
+    "Request", "Response", "Session", "Config", "Settings", "Client", "Error", "Exception", "Base",
+}
+
+
+def _distinctive(name: str) -> bool:
+    """Is a bare name specific enough to identify one API ("BaseResponse",
+    "before_first_request", "contextfunction"), unlike "get" or "Request"?"""
+    if not name.isidentifier() or name in _COMMON_NAMES or name.startswith("__"):
+        return False
+    return (any(c.isupper() for c in name[1:]) or "_" in name.strip("_") or len(name) >= 10)
 
 
 def analyze(usages: List[Usage], changes: List[ChangeEntry],

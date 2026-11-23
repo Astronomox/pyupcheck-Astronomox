@@ -1,0 +1,73 @@
+{
+  "name": "pyupcheck",
+  "displayName": "pyupcheck",
+  "description": "See the lines of your Python code that a dependency upgrade breaks, and fix them with pyupcheck migrate.",
+  "version": "0.1.0",
+  "publisher": "astronomox",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Astronomox/pyupcheck-Astronomox"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Linters"],
+  "keywords": ["python", "dependencies", "upgrade", "breaking changes", "pip"],
+  "main": "./extension.js",
+  "activationEvents": [
+    "workspaceContains:**/requirements*.txt",
+    "workspaceContains:pyproject.toml",
+    "workspaceContains:setup.cfg",
+    "workspaceContains:setup.py",
+    "workspaceContains:Pipfile",
+    "workspaceContains:environment.yml",
+    "workspaceContains:pixi.toml",
+    "onCommand:pyupcheck.check"
+  ],
+  "contributes": {
+    "commands": [
+      { "command": "pyupcheck.check", "title": "pyupcheck: Check dependency upgrades" }
+    ],
+    "configuration": {
+      "title": "pyupcheck",
+      "properties": {
+        "pyupcheck.path": {
+          "type": "string",
+          "default": "pyupcheck",
+          "description": "The pyupcheck executable (pip install pyupcheck). Set a full path if it isn't on PATH, e.g. a virtual environment's."
+        },
+        "pyupcheck.deep": {
+          "type": "boolean",
+          "default": false,
+          "description": "Diff the real API of each version (slower, more accurate)."
+        },
+        "pyupcheck.checkOnSave": {
+          "type": "string",
+          "enum": ["dependencies", "all", "off"],
+          "default": "dependencies",
+          "enumDescriptions": [
+            "Re-check when a requirements file, pyproject.toml or lockfile is saved",
+            "Also re-check when a Python file or notebook is saved",
+            "Only check on startup and with the command"
+          ],
+          "description": "When to re-check."
+        },
+        "pyupcheck.minSeverity": {
+          "type": "string",
+          "enum": ["breaking", "deprecated"],
+          "default": "deprecated",
+          "description": "The least severe finding to show."
+        },
+        "pyupcheck.showWarnings": {
+          "type": "boolean",
+          "default": false,
+          "description": "Also show low-confidence mentions (code that touches an API the changelog mentions)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}
