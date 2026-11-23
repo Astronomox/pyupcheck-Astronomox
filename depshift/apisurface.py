@@ -509,6 +509,8 @@ def build_surface(version: str, sources: Dict[str, List[str]],
     surface.modules.update(extensions)
     for module_path, srcs in sources.items():
         surface.modules.add(module_path)
+        if any(seg in ("tests", "test") for seg in module_path.split(".")):
+            continue  # a bundled test suite is never public API: don't parse it (pandas has ~1000 files)
         for src in srcs:  # a module may have both a .py and a .pyi stub
             try:
                 with warnings.catch_warnings():
@@ -604,7 +606,7 @@ def _resolve_star_imports(surface: APISurface, stars: Dict[str, List[Tuple[int, 
 
 def extract_surface(package: str, version: str) -> Optional[APISurface]:
     """Download a version and extract its public API surface (cached)."""
-    key = f"surface7:{package}:{version}"
+    key = f"surface8:{package}:{version}"
     cached = cache_get(key)
     if cached is not None:
         surf = APISurface(version=version)
@@ -682,11 +684,34 @@ def _reachable(surface: APISurface, dotted: str) -> bool:
     return False
 
 
+def _memo(surface: APISurface, name: str, build):
+    """An index built once per surface (it was rebuilt thousands of times in
+    one diff), rebuilt if the surface has grown since."""
+    size = (len(surface.classes), len(surface.functions), len(surface.attributes))
+    cached = surface.__dict__.get(name)
+    if cached is None or cached[0] != size:
+        cached = (size, build())
+        surface.__dict__[name] = cached
+    return cached[1]
+
+
 def _classes_by_short(surface: APISurface) -> Dict[str, List[str]]:
-    idx: Dict[str, List[str]] = {}
-    for c in surface.classes:
-        idx.setdefault(c.rsplit(".", 1)[-1], []).append(c)
-    return idx
+    def build():
+        idx: Dict[str, List[str]] = {}
+        for c in surface.classes:
+            idx.setdefault(c.rsplit(".", 1)[-1], []).append(c)
+        return idx
+    return _memo(surface, "_idx_classes", build)
+
+
+def _defs_by_short(surface: APISurface) -> Dict[str, List[str]]:
+    """Every function, class and attribute by its last name segment."""
+    def build():
+        idx: Dict[str, List[str]] = {}
+        for k in list(surface.functions) + list(surface.classes) + list(surface.attributes):
+            idx.setdefault(k.rsplit(".", 1)[-1], []).append(k)
+        return idx
+    return _memo(surface, "_idx_defs", build)
 
 
 def _inherited(surface: APISurface, cls: str, member: str,
@@ -725,8 +750,7 @@ def _member_of(surface: APISurface, dotted: str) -> Optional[str]:
 def _still_at(new: APISurface, short: str) -> List[str]:
     """Import paths through which ``short`` is still reachable in ``new``."""
     paths = [f"{m}.{short}" for m, names in new.exports.items() if short in names]
-    paths += [k for k in list(new.functions) + list(new.classes) + list(new.attributes)
-              if k.rsplit(".", 1)[-1] == short]
+    paths += _defs_by_short(new).get(short, [])
     return sorted(set(paths))
 
 
@@ -744,7 +768,7 @@ def _new_home(new: APISurface, old: str, kind: str) -> Optional[str]:
     same-named function elsewhere (numpy.ma.core.round_) is a different API."""
     short = old.rsplit(".", 1)[-1]
     pool = new.functions if kind == "function" else new.classes
-    hits = [k for k in pool if k.rsplit(".", 1)[-1] == short and _is_public_api(k)
+    hits = [k for k in _defs_by_short(new).get(short, []) if k in pool and _is_public_api(k)
             and _package_of(k) == _package_of(old)]
     return hits[0] if len(hits) == 1 else None
 

@@ -1,0 +1,39 @@
+name: PyPI coverage
+
+# How many of the most-downloaded PyPI packages pyupcheck can check. Needs
+# network access and a while to run: monthly and on demand, not per PR.
+on:
+  workflow_dispatch:
+    inputs:
+      top:
+        description: How many of the most-downloaded packages
+        default: "1000"
+  schedule:
+    - cron: "43 5 1 * *"
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Install
+        run: pip install -e .
+      - name: Measure
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TOP: ${{ inputs.top || '1000' }}
+        run: python benchmarks/coverage.py --top "$TOP" --json coverage.json --markdown coverage.md
+      - name: Summary
+        if: always()
+        run: test -f coverage.md && cat coverage.md >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: coverage-results
+          path: |
+            coverage.json
+            coverage.md
