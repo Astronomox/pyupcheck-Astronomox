@@ -4,6 +4,15 @@ All notable changes to pyupcheck are documented here.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-23
+
+### Added
+- `pyupcheck watch`: watches requirements files, `pyproject.toml` and lockfiles, and when a version changes checks each package that moved, from its old version to its new one, with what `migrate` can fix. Packages added or removed are listed. A file is read once it stops changing, and one that can't be read never replaces the last good state
+- `watch --releases MINUTES` (default 60, `0` off): looks for new PyPI releases your constraints allow for each direct dependency, and checks each new one against your code before you upgrade. Moving to a release yourself silences it. `--bell` rings on breakage, `-q` prints only what breaks
+
+### Fixed
+- Terminal output dropped text in square brackets (rich read `[cell 3]` in notebook code as a style tag) and showed release-note markup (`:pr:` references, ``` ``double backticks`` ```)
+
 ## [0.11.0] - 2026-11-21
 
 ### Added

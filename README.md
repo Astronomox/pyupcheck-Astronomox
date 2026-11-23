@@ -78,6 +78,24 @@ pyupcheck outdated --safe
 
 Adds a **Highest safe** column: the newest version that breaks none of your code. If the latest release breaks you (`scipy 1.18` removes `simps`), you still learn you can move to `1.13.1` today. `pyupcheck fix` moves each `==` pin to exactly that version.
 
+### `watch` - re-check as your dependencies change
+
+```bash
+pyupcheck watch
+```
+
+Leave it running in a terminal while you work. When a version in your requirements files, `pyproject.toml` or lockfile changes (`pip-compile`, `uv lock`, `poetry update`, a merged Dependabot PR, an edit), it checks each package that moved, from its old version to its new one, and says what breaks and what `migrate` can fix:
+
+```
+10:24:10 requirements.txt changed: 1 version change(s)
+flask 2.2.5 -> 3.0.0  1 BREAKING
+  x app.py:3  x = flask.Markup("<b>")
+    -> use markupsafe.Markup
+    pyupcheck migrate flask 3.0.0 --write fixes 1 of these
+```
+
+Every hour (`--releases MINUTES`, `0` to turn off) it also asks PyPI for new releases your constraints allow, and tells you whether each one breaks your code before you upgrade. `--bell` rings the terminal bell when something breaks; `-q` prints only what breaks. A lockfile written in several steps is read once it stops changing, and a half-written one never replaces the last good state.
+
 ### `diff` - changelog diff between versions
 
 See breaking/deprecated changes between any two versions without scanning code:
@@ -268,7 +286,6 @@ Releases are published by GitHub Actions when a version tag is pushed, using PyP
 
 - Better changelog parsing for packages that use unconventional formats (Sphinx-based changelogs, HISTORY files)
 - `conda` lockfile support
-- A `--watch` mode that monitors your lockfile for changes and alerts on risky upgrades
 - Test coverage
 
 To contribute, open an issue describing what you want to work on, then submit a pull request. Include a short test or example showing the bug or feature.
@@ -330,7 +347,6 @@ No. pyupcheck needs to download the package from PyPI. Pre-release or private pa
 
 Items being actively considered for future versions:
 
-- `--watch` mode: monitor your lockfile and alert when a new version would break your code
 - conda-lock support
 - VS Code extension: inline warnings on imports
 - `pyupcheck explain` with AI-assisted migration guidance

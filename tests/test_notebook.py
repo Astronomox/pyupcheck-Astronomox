@@ -94,3 +94,15 @@ def test_manual_items_carry_the_cell(tmp_path):
     plan, _ = migrate_nb(path, {"numpy": "def gone(x): pass"}, {"numpy": "x = 1"},
                          "- ``np.gone`` has been removed.", "numpy")
     assert [(m.cell, m.line) for m in plan.manual] == [(2, 1)]
+
+
+def test_terminal_output_keeps_cell_prefix_and_cleans_notes(capsys):
+    from depshift.cli import _print_terminal_result
+    risk = {"file": "a.ipynb", "line": 27, "code": "[cell 3] x = np.float_(3)", "severity": "breaking",
+            "change_description": "Removed ``np.float_`` [bold]. :pr:`12`", "api": "numpy.float_"}
+    _print_terminal_result({"package": "numpy", "current_version": "1.26.4", "target_version": "2.0.0",
+                            "risks": [risk], "breaking_count": 1, "deprecated_count": 0, "safe_count": 0},
+                           quiet=False)
+    out = capsys.readouterr().out
+    assert "[cell 3] x = np.float_(3)" in out
+    assert "Removed `np.float_` [bold]." in out and ":pr:" not in out

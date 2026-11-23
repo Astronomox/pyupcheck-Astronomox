@@ -35,7 +35,9 @@ class VersionChange:
     raw: str  # requirement text at head, for its specifier
 
 
-def _is_dep_file(path: str) -> bool:
+def is_dep_file(path: str) -> bool:
+    """Is this path (relative to the project root, '/'-separated) a file
+    pyupcheck reads dependencies from?"""
     parts = path.split("/")
     name = parts[-1]
     if len(parts) == 1:
@@ -55,7 +57,7 @@ def export_dependency_files(repo: str, ref: str, dest: str) -> List[str]:
     listed = _git(repo, "ls-tree", "-r", "--name-only", ref).splitlines()
     written = []
     for path in listed:
-        if not _is_dep_file(path):
+        if not is_dep_file(path):
             continue
         content = subprocess.run(["git", "-C", repo, "show", f"{ref}:{path}"], check=True,
                                  capture_output=True).stdout
@@ -101,7 +103,11 @@ def changed_dependencies(repo: str, base_ref: str) -> List[VersionChange]:
     with tempfile.TemporaryDirectory() as base_dir:
         export_dependency_files(repo, base_ref, base_dir)
         before = resolved_versions(base_dir)
-    after = resolved_versions(repo)
+    return version_changes(before, resolved_versions(repo))
+
+
+def version_changes(before: Dict[str, tuple], after: Dict[str, tuple]) -> List[VersionChange]:
+    """Packages in both :func:`resolved_versions` results whose version differs."""
     changes = []
     for name in sorted(set(before) & set(after)):
         old, _ = before[name]

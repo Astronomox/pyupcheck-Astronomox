@@ -80,7 +80,7 @@ def _filter_by_since(changes, since_str: str, package: str):
     return filtered
 
 
-def latest_allowed_version(package: str, spec: Optional[str] = None) -> Optional[str]:
+def latest_allowed_version(package: str, spec: Optional[str] = None, fresh: bool = False) -> Optional[str]:
     """Newest non-yanked, non-prerelease version on PyPI that satisfies spec.
 
     With no spec this is the latest release. A constraint like ``>=2,<3`` means
@@ -88,7 +88,7 @@ def latest_allowed_version(package: str, spec: Optional[str] = None) -> Optional
     """
     from packaging.specifiers import SpecifierSet, InvalidSpecifier
     from packaging.version import Version, InvalidVersion
-    info = get_pypi_info(package)
+    info = get_pypi_info(package, fresh=True) if fresh else get_pypi_info(package)
     try:
         spec_set = SpecifierSet(spec or "")
     except InvalidSpecifier:
@@ -411,6 +411,20 @@ def _emit(results: List[dict], fmt: str, output: Optional[str], quiet: bool):
         _print_terminal_result(r, quiet)
 
 
+def _esc(text: str) -> str:
+    """Text shown as is, never read as rich markup ("[cell 3] x = a[0]")."""
+    from rich.markup import escape
+    return escape(text)
+
+
+def _clean_note(text: str) -> str:
+    """Release-note text for the terminal: no :pr:/:issue: references or
+    reST markup, and nothing rich would read as a style tag."""
+    from rich.markup import escape
+    from depshift.review import _clean
+    return escape(_clean(text).replace("\\|", "|"))
+
+
 def _print_terminal_result(r: dict, quiet: bool):
     if r.get("up_to_date"):
         if not quiet:
@@ -454,8 +468,8 @@ def _print_terminal_result(r: dict, quiet: bool):
             tag = " [dim](low confidence)[/]"
         else:
             tag = ""
-        console.print(f"  [{color}]{mark}[/]{tag} [bold]{rel}:{risk['line']}[/]  {risk['code']}")
-        console.print(f"    [dim]{risk['change_description']}[/]")
+        console.print(f"  [{color}]{mark}[/]{tag} [bold]{rel}:{risk['line']}[/]  {_esc(risk['code'])}")
+        console.print(f"    [dim]{_clean_note(risk['change_description'])}[/]")
         if risk.get("replacement"):
             console.print(f"    [green]-> use {risk['replacement']}[/]")
     if not quiet:
@@ -768,6 +782,28 @@ def _fixable_count(package: str, old: str, new: str, directory: str, cfg,
     return len(plan.fixes)
 
 
+def _check_change(change, directory: str, cfg, github_token: Optional[str], deep: bool) -> Optional[dict]:
+    """Check one version change (a review.VersionChange) from its old version
+    to its new one, with what migrate could fix."""
+    r = _run_single_check(change.name, change.new, directory, github_token, cfg,
+                          suppress_errors=True, deep=deep, spec=specifier_of(change.raw),
+                          locked=change.old)
+    if r is None:
+        return None
+    r["current_source"] = "previous"  # the version before the change, not a lockfile's
+    if r.get("up_to_date"):
+        # a downgrade or no-op: nothing new to break
+        r.setdefault("warnings", []).append(f"{change.old} -> {change.new} is not an upgrade; not checked")
+        r["current_version"] = change.old
+    elif deep and r["breaking_count"]:
+        try:
+            r["fixable"] = _fixable_count(change.name, change.old, change.new, directory, cfg,
+                                          github_token)
+        except Exception:
+            r["fixable"] = None
+    return r
+
+
 @main.command()
 @click.option("--base", required=True, help="Git ref to compare against (e.g. origin/main, the PR base SHA)")
 @click.option("--dir", "-d", "directory", default=".", help="Repository root")
@@ -807,22 +843,7 @@ def review(base, directory, deep, output, fail_on, github_token, jobs, annotatio
     changes = [c for c in changes if c.name not in ignored]
 
     def one(change):
-        r = _run_single_check(change.name, change.new, directory, github_token, cfg,
-                              suppress_errors=True, deep=deep, spec=specifier_of(change.raw),
-                              locked=change.old)
-        if r is None:
-            return None
-        if r.get("up_to_date"):
-            # a downgrade or no-op: nothing new to break
-            r.setdefault("warnings", []).append(f"{change.old} -> {change.new} is not an upgrade; not checked")
-            r["current_version"] = change.old
-        elif deep and r["breaking_count"]:
-            try:
-                r["fixable"] = _fixable_count(change.name, change.old, change.new, directory, cfg,
-                                              github_token)
-            except Exception:
-                r["fixable"] = None
-        return r
+        return _check_change(change, directory, cfg, github_token, deep)
 
     with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
         results = [r for r in pool.map(one, changes) if r]
@@ -841,6 +862,112 @@ def review(base, directory, deep, output, fail_on, github_token, jobs, annotatio
         if notes:
             print(notes)
     sys.exit(1 if _should_fail(results, fail_on) else 0)
+
+
+# ── watch ─────────────────────────────────────────────────────────────────────
+
+def _print_watch_event(ev, directory: str, quiet: bool) -> bool:
+    """Print one watcher event; True if it found something breaking."""
+    import datetime as _dt
+    stamp = _dt.datetime.now().strftime("%H:%M:%S")
+    if ev.kind == "error":
+        console.print(f"[dim]{stamp}[/] [yellow]{', '.join(ev.files) or 'dependency files'}:[/] {ev.message}"
+                      " [dim](keeping the last good state)[/]")
+        return False
+    if ev.kind == "release":
+        c = ev.changes[0]
+        console.print(f"[dim]{stamp}[/] [bold]new release:[/] {c.name} {c.new} [dim](you have {c.old})[/]")
+    else:
+        moved = f"{len(ev.changes)} version change(s)" if ev.changes else "no version changes"
+        console.print(f"[dim]{stamp}[/] [bold]{', '.join(ev.files)}[/] changed: {moved}")
+        if ev.added:
+            console.print(f"  [green]+[/] added: {', '.join(ev.added)} [dim](nothing to compare with)[/]")
+        if ev.removed:
+            console.print(f"  [red]-[/] removed: {', '.join(ev.removed)}")
+    breaking = False
+    for r in ev.results:
+        _print_terminal_result(r, quiet)
+        if r.get("breaking_count"):
+            breaking = True
+            if r.get("fixable"):
+                console.print(f"    [green]pyupcheck migrate {r['package']} {r['target_version']} --write[/] "
+                              f"fixes {r['fixable']} of these")
+    if ev.kind == "release" and ev.results and not breaking and not ev.results[0].get("unchecked"):
+        console.print("  [green]safe to upgrade:[/] nothing in your code breaks")
+    return breaking
+
+
+@main.command()
+@click.option("--dir", "-d", "directory", default=".", help="Project directory")
+@click.option("--interval", type=click.FloatRange(0.2, 3600), default=2.0, show_default=True,
+              help="Seconds between looks at the dependency files")
+@click.option("--releases", "releases_every", type=click.FloatRange(0, 7 * 24 * 60), default=60,
+              show_default=True, metavar="MINUTES",
+              help="Look for new PyPI releases of your direct dependencies this often (0: off)")
+@click.option("--deep/--no-deep", default=True, show_default=True,
+              help="Diff real API surfaces and count what migrate can fix")
+@click.option("--bell", is_flag=True, help="Ring the terminal bell when something breaks")
+@click.option("--quiet", "-q", is_flag=True, help="Only print what breaks")
+@click.option("--jobs", "-j", type=click.IntRange(1, 64), default=8, show_default=True)
+@click.option("--github-token", envvar="GITHUB_TOKEN", default=None)
+@click.option("--no-cache", is_flag=True)
+@click.option("--cycles", type=int, default=None, hidden=True)  # for tests: stop after N polls
+def watch(directory, interval, releases_every, deep, bell, quiet, jobs, github_token, no_cache, cycles):
+    """Re-check your code whenever a dependency version changes.
+
+    Watches requirements files, pyproject.toml and lockfiles. When a version
+    in them changes (pip-compile, uv lock, poetry update, Dependabot, an
+    edit), each package that moved is checked from its old version to its
+    new one. Every --releases minutes it also looks for new PyPI releases
+    your constraints allow, and tells you whether they break your code
+    before you upgrade. Stop with Ctrl+C.
+    """
+    import time as _time
+    from depshift.watch import Watcher, dep_file_signature
+
+    directory = os.path.abspath(directory)
+    cfg = load_config(directory)
+    if no_cache or not cfg.cache:
+        cache_mod.disable_cache()
+    ignored = {normalize_name(p) for p in cfg.ignore_packages}
+
+    def check(change):
+        if change.name in ignored:
+            return None
+        return _check_change(change, directory, cfg, github_token, deep)
+
+    def latest(name, raw):
+        spec = specifier_of(raw)
+        return latest_allowed_version(name, None if _is_exact_pin(spec) else spec, fresh=True)
+
+    def direct():
+        return [d.name for d in discover_dependencies(directory) if d.name not in ignored]
+
+    watcher = Watcher(directory, check, latest=latest, direct=direct,
+                      releases_every=releases_every * 60, jobs=jobs)
+    with console.status("Reading dependencies" + (" and their latest releases" if releases_every else "") + "..."):
+        events = watcher.start()
+    for ev in events:
+        _print_watch_event(ev, directory, quiet)
+    files = sorted(dep_file_signature(directory))
+    if not files:
+        console.print(f"[yellow]No dependency files in {directory}[/] (requirements*.txt, pyproject.toml, "
+                      "lockfiles...). Watching for one to appear.")
+    else:
+        rel = "" if not releases_every else \
+            f", and PyPI every {releases_every:g} min for {len(watcher.known_latest)} direct dependencies"
+        console.print(f"Watching [bold]{', '.join(files)}[/] ({len(watcher.snapshot)} packages){rel}. "
+                      "[dim]Ctrl+C to stop.[/]")
+    n = 0
+    try:
+        while cycles is None or n < cycles:
+            n += 1
+            _time.sleep(interval)
+            for ev in watcher.poll():
+                if _print_watch_event(ev, directory, quiet) and bell:
+                    console.bell()
+    except KeyboardInterrupt:
+        console.print("[dim]Stopped.[/]")
 
 
 # ── migrate ───────────────────────────────────────────────────────────────────
@@ -937,7 +1064,7 @@ def migrate(package, target_version, directory, write, exclude, github_token, no
             continue
         rel = os.path.relpath(path, directory)
         for fx in sorted(fixes, key=lambda x: (x.cell or 0, x.line)):
-            console.print(f"  [green]fix[/] {where(fx)}  {fx.description}")
+            console.print(f"  [green]fix[/] {where(fx)}  {_esc(fx.description)}")
         if nb is not None:
             print(unified_diff(rel, notebook.cells_text(nb, before), notebook.cells_text(nb, after)))
         else:
@@ -950,8 +1077,9 @@ def migrate(package, target_version, directory, write, exclude, github_token, no
     if plan.manual:
         console.print(f"[yellow]{len(plan.manual)} change(s) need you:[/]")
         for m in sorted(plan.manual, key=lambda m: (m.file, m.cell or 0, m.line)):
-            console.print(f"  [yellow]![/] {where(m)}  {m.code}")
-            console.print(f"    [dim]{m.reason}[/]")
+            code = re.sub(r"^\[cell \d+\] ", "", m.code) if m.cell else m.code  # the cell is in where()
+            console.print(f"  [yellow]![/] {where(m)}  {_esc(code)}")
+            console.print(f"    [dim]{_esc(m.reason)}[/]")
 
     if not plan.fixes and not plan.manual:
         console.print("[green]Nothing to change:[/] no breaking API changes hit your code.")
