@@ -4,6 +4,16 @@ All notable changes to pyupcheck are documented here.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-23
+
+### Added
+- conda and pixi support: `conda-lock.yml` and `pixi.lock` (format versions 4 to 7) give locked versions, and `pixi.toml` and `[tool.pixi]` in `pyproject.toml` give declared dependencies (conda and PyPI, every feature, environment and target). `review` and `watch` follow changes to all four files
+- Only Python packages are taken from a conda environment: conda packages that don't depend on `python`, or that pixi's lock records as not on PyPI (`purls: []`), are skipped, so `openssl`, `libblas` or `rust` are never looked up on PyPI
+- Conda names become PyPI names: from the lock's package URLs where pixi records them (`python-build` is `build`), and a built-in list otherwise (`pytorch` is `torch`, `matplotlib-base` is `matplotlib`). Also applied to `environment.yml`
+- Conda version specs become PEP 440 ones (`2.1.*`, `=1.11` is `1.11.*`, a bare version is exact)
+- A lock with several versions of a package for this platform (pixi locks several environments) gives the highest
+- A `pixi.toml` that Python's TOML parser rejects (pixi accepts TOML 1.1, such as an inline table over several lines) is read line by line for its dependency tables
+
 ## [0.12.0] - 2026-11-23
 
 ### Added

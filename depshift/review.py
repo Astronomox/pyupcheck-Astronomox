@@ -23,6 +23,7 @@ COMMENT_MARKER = "<!-- pyupcheck-review -->"
 _ROOT_FILES = {
     "pyproject.toml", "Pipfile", "Pipfile.lock", "setup.cfg", "setup.py",
     "environment.yml", "environment.yaml", "uv.lock", "poetry.lock", "pdm.lock",
+    "conda-lock.yml", "conda-lock.yaml", "pixi.lock", "pixi.toml",
 }
 _SUBDIRS = {"requirements", "reqs"}
 

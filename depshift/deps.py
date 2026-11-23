@@ -1,8 +1,8 @@
 """Parse project dependency declarations.
 
 Supported: requirements*.txt (with -r/-c includes), pyproject.toml (PEP 621,
-PEP 735 dependency-groups, Poetry, PDM, uv), Pipfile, setup.cfg, setup.py,
-and conda environment.yml.
+PEP 735 dependency-groups, Poetry, PDM, uv, pixi), Pipfile, setup.cfg,
+setup.py, conda environment.yml and pixi.toml.
 """
 
 import ast
@@ -166,6 +166,12 @@ def parse_pyproject_toml(path: str) -> List[Dependency]:
     for table in poetry_tables:
         raw_deps.extend(_poetry_style(table))
 
+    pixi = tool.get("pixi")
+    if isinstance(pixi, dict):
+        from .conda import pixi_lock_names, pixi_requirements
+        lock = os.path.join(os.path.dirname(path), "pixi.lock")
+        raw_deps.extend(pixi_requirements(pixi, pixi_lock_names(lock) if os.path.isfile(lock) else None))
+
     for raw in raw_deps:
         d = parse_requirement_line(raw, source=os.path.basename(path))
         if d:
@@ -315,8 +321,9 @@ def parse_conda_env(path: str) -> List[Dependency]:
                 spec = stripped.lstrip("- ").strip().split("::")[-1]
                 m = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(==?|>=|<=|>|<)?\s*([\w.*+!]+)?", spec)
                 if m and m.group(1).lower() not in ("python", "pip"):
+                    from .conda import pypi_name
                     ver = m.group(3) if m.group(2) in ("=", "==") and m.group(3) and "*" not in m.group(3) else None
-                    deps.append(Dependency(name=normalize_name(m.group(1)), pinned_version=ver,
+                    deps.append(Dependency(name=normalize_name(pypi_name(m.group(1))), pinned_version=ver,
                                            raw=spec, source="environment.yml"))
                 continue
             if in_pip:
@@ -350,6 +357,12 @@ def requirement_files(directory: str) -> List[str]:
     return out
 
 
+def parse_pixi_toml(path: str) -> List[Dependency]:
+    """Conda and PyPI dependencies declared in pixi.toml."""
+    from .conda import read_pixi_toml
+    return [d for d in (parse_requirement_line(r, "pixi.toml") for r in read_pixi_toml(path)) if d]
+
+
 def discover_dependencies(directory: str) -> List[Dependency]:
     """Find and parse all dependency files in a directory."""
     deps: List[Dependency] = []
@@ -363,6 +376,7 @@ def discover_dependencies(directory: str) -> List[Dependency]:
         (os.path.join(directory, "setup.py"), parse_setup_py),
         (os.path.join(directory, "environment.yml"), parse_conda_env),
         (os.path.join(directory, "environment.yaml"), parse_conda_env),
+        (os.path.join(directory, "pixi.toml"), parse_pixi_toml),
     ]
 
     seen_req: Set[str] = set()
