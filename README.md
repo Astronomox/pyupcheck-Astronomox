@@ -1,22 +1,20 @@
 # pyupcheck
 
-Check if upgrading a Python dependency will break your code.
+**Know what breaks before you upgrade.** pyupcheck reads your code and the real API of both versions of each dependency, shows you the exact lines an upgrade breaks, and rewrites the ones it safely can.
 
-```
-$ pyupcheck check-all
+[![PyPI](https://img.shields.io/pypi/v/pyupcheck?color=BEF264&labelColor=1a1a1a)](https://pypi.org/project/pyupcheck/)
+[![Python](https://img.shields.io/pypi/pyversions/pyupcheck?color=7DD3FC&labelColor=1a1a1a)](https://pypi.org/project/pyupcheck/)
+[![CI](https://github.com/Astronomox/pyupcheck-Astronomox/actions/workflows/ci.yml/badge.svg)](https://github.com/Astronomox/pyupcheck-Astronomox/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-FDE047?labelColor=1a1a1a)](LICENSE)
 
-Found 12 dependencies to check
+<p align="center"><img src="docs/check-all.svg" alt="pyupcheck check-all --deep: flask and numpy upgrades break 3 lines, requests and click are safe, and it prints the migrate commands that fix them" width="820"></p>
 
-flask 2.3.3 -> 3.1.3  OK (15 usages safe)
-requests 2.28.0 -> 2.34.2  2 BREAKING
-  x src/api.py:23  resp = requests.get(url, verify=False)
-    Removed: `verify` parameter no longer accepted
-django 4.2.0 -> 5.0.6  1 deprecated
-  ! core/models.py:8  from django.utils import timezone
-    Deprecated: use datetime.timezone instead
+- **Accurate:** on 52 real upgrades (Django, Flask, NumPy, pandas, Pydantic, SQLAlchemy and more), deep mode catches **100%** of breaking lines with **no false alarms**.
+- **Fixes, not just warnings:** `pyupcheck migrate` rewrites moved names, renamed arguments and keyword-only calls, checked against the new version's real API.
+- **Wide reach:** **96.7%** of the 1,000 most-downloaded PyPI packages can be deep-checked. It works with pip, uv, Poetry, PDM, Pipenv, conda and pixi, plus Jupyter notebooks.
+- **Fits your workflow:** a GitHub Action that comments on dependency PRs, `watch` mode, and a VS Code extension.
 
-2 breaking | 1 deprecated across 12 packages
-```
+Website: [pyupcheck.vercel.app](https://pyupcheck.vercel.app)
 
 ## Install
 
@@ -164,7 +162,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: Astronomox/pyupcheck-Astronomox@v0.8.0
+      - uses: Astronomox/pyupcheck-Astronomox@v0.16.1
         # with:
         #   fail-on: breaking   # make the check fail on breaking usages
         #   deep: "false"       # changelog only (faster)

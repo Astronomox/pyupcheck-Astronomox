@@ -4,6 +4,13 @@ All notable changes to pyupcheck are documented here.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-25
+
+### Changed
+- Terminal output redesigned. Each package shows a status badge (`✗ 2 BREAKING`, `! 1 DEPRECATED`, `✓ OK`, `? NOT CHECKED`), and notes wrap indented under their finding instead of at column 0. `check-all` ends with one summary line, a single note for a source that couldn't be read (rather than the same note under every package), and the `pyupcheck migrate` commands for the packages that break. Rich's automatic highlighting is off, so versions are no longer split into coloured fragments. Consoles that can't print Unicode get ASCII symbols
+- Website redesigned (`index.html`). It's a normal scrolling page instead of sliding panels, current for every feature, with the measured accuracy, a terminal replaying real output, `migrate` and pull-request examples, dark mode, and phone layouts. It respects reduced motion
+- README opens with a real screenshot of `check-all` (`docs/check-all.svg`) and the measured numbers, instead of an invented example
+
 ## [0.16.1] - 2026-11-25
 
 ### Fixed

@@ -10,7 +10,6 @@ from typing import Dict, List, Optional
 import click
 from rich.console import Console
 from rich.table import Table
-from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 
 from depshift import __version__
@@ -34,7 +33,9 @@ from depshift.lockfiles import locked_version, locked_versions
 from depshift.scanner import imported_top_modules
 
 
-console = Console()
+# highlight=False: pyupcheck picks its colours; rich's automatic highlighting
+# split versions into coloured fragments (2.2 . 5) and recoloured code
+console = Console(highlight=False)
 
 SEVERITY_RANK = {"breaking": 0, "deprecated": 1, "warning": 2}
 
@@ -435,56 +436,125 @@ def _clean_note(text: str) -> str:
     return escape(_clean(text).replace("\\|", "|"))
 
 
-def _print_terminal_result(r: dict, quiet: bool):
+def _print_summary(results: List[dict]) -> None:
+    """The end of a check-all: totals, sources that couldn't be read (once,
+    not under every package), and the commands that fix what can be fixed."""
+    breaking = [r for r in results if r.get("breaking_count")]
+    total_breaking = sum(r["breaking_count"] for r in results)
+    total_deprecated = sum(r["deprecated_count"] for r in results)
+    unchecked = [r for r in results if r.get("unchecked") and not r.get("risks")]
+    safe = sum(1 for r in results if not r.get("breaking_count") and not r.get("deprecated_count")
+               and not (r.get("unchecked") and not r.get("risks")))
+
+    console.print()
+    console.rule(style="dim")
+    parts = [f"[bold red]{total_breaking} breaking[/]" if total_breaking else "[green]0 breaking[/]",
+             f"[yellow]{total_deprecated} deprecated[/]" if total_deprecated else "[dim]0 deprecated[/]",
+             f"[green]{safe} safe[/]"]
+    if unchecked:
+        parts.append(f"[magenta]{len(unchecked)} not checked[/]")
+    dot = _sym(" · ", " | ")
+    console.print(dot.join(parts) + f" [dim]across {len(results)} package{'s' if len(results) != 1 else ''}[/]")
+
+    # "could not read: GitHub releases (HTTP 403)" under every package is
+    # noise: say it once, with what to do about it
+    failed: Dict[str, int] = {}
+    for r in results:
+        for w in r.get("warnings", []):
+            if w.startswith("could not read: "):
+                for src in w[len("could not read: "):].split(", "):
+                    failed[src] = failed.get(src, 0) + 1
+    for src, n in sorted(failed.items(), key=lambda kv: -kv[1]):
+        hint = " Set GITHUB_TOKEN for GitHub's higher limits." if "GitHub" in src and ("403" in src or "429" in src) else ""
+        console.print(f"[magenta]note:[/] [dim]couldn't read {_esc(src)} for {n} package{'s' if n != 1 else ''}.{hint}[/]")
+    if unchecked:
+        console.print("[magenta]note:[/] [dim]packages that couldn't be checked are not counted as safe[/]")
+
+    if breaking:
+        console.print("\n[dim]Fix what can be fixed automatically (shows the diff first):[/]")
+        for r in breaking:
+            console.print(f"  [cyan]pyupcheck migrate {r['package']} {r['target_version']}[/]")
+    elif not total_deprecated and not unchecked:
+        console.print(f"[green]{_sym('✓', 'OK:')} Every checked package is safe to upgrade.[/]")
+
+
+def _sym(fancy: str, plain: str) -> str:
+    """A symbol the console can print: ✗ ✓ → where it can, x ok -> where not."""
+    enc = (getattr(console.file, "encoding", None) or "utf-8").lower()
+    try:
+        fancy.encode(enc)
+        return fancy
+    except (UnicodeEncodeError, LookupError):
+        return plain
+
+
+def _badge(text: str, style: str) -> str:
+    return f"[{style}] {text} [/]"
+
+
+def _print_terminal_result(r: dict, quiet: bool, hide_source_notes: bool = False):
+    """One package's result. ``hide_source_notes`` leaves out "could not
+    read: ..." notes, for a caller that summarises them once."""
+    from rich.padding import Padding
+
+    arrow = _sym("→", "->")
+    cur = r.get("current_version") or "?"
     if r.get("up_to_date"):
         if not quiet:
-            console.print(f"[green]{r['package']}[/] already on {r['target_version']}")
+            console.print(f"[bold]{r['package']}[/] {r['target_version']}  "
+                          f"{_badge(_sym('✓', '') + ' UP TO DATE', 'black on green')}")
         return
     if r.get("no_usages"):
         if not quiet:
-            console.print(f"[dim]{r['package']}[/] no usages found, safe to upgrade to {r['target_version']}")
+            console.print(f"[bold]{r['package']}[/] {cur} {arrow} {r['target_version']}  "
+                          f"[dim]not used in your code, safe to upgrade[/]")
         return
 
+    notes = [w for w in r.get("warnings", [])
+             if not (hide_source_notes and w.startswith("could not read: "))]
+
     if r.get("unchecked") and not r["risks"]:
-        cur = r.get("current_version") or "?"
-        console.print(f"[magenta]{r['package']}[/] {cur} -> {r['target_version']}  "
-                      f"[magenta]NOT CHECKED[/]")
-        for w in r.get("warnings", []):
-            console.print(f"    [dim]{w}[/]")
+        console.print(f"[bold]{r['package']}[/] {cur} {arrow} {r['target_version']}  "
+                      f"{_badge('? NOT CHECKED', 'black on magenta')}")
+        for w in notes:
+            console.print(Padding(f"[dim]{_esc(w)}[/]", (0, 0, 0, 4)))
         return
 
     via = " [dim](locked)[/]" if r.get("current_source") == "lockfile" else ""
     undeclared = " [magenta](undeclared)[/]" if r.get("undeclared") else ""
-    header = f"[bold]{r['package']}[/]{undeclared} {r['current_version']}{via} -> {r['target_version']}"
+    header = f"[bold]{r['package']}[/]{undeclared} {cur}{via} [dim]{arrow}[/] {r['target_version']}"
     if r["breaking_count"]:
-        console.print(f"{header}  [red bold]{r['breaking_count']} BREAKING[/]")
+        console.print(f"{header}  {_badge(_sym('✗', 'x') + ' ' + str(r['breaking_count']) + ' BREAKING', 'bold white on red')}")
     elif r["deprecated_count"]:
-        console.print(f"{header}  [yellow]{r['deprecated_count']} deprecated[/]")
+        console.print(f"{header}  {_badge('! ' + str(r['deprecated_count']) + ' DEPRECATED', 'black on yellow')}")
     else:
         if quiet:
             return
-        console.print(f"{header}  [green]OK[/] ({r['safe_count']} usages safe)")
+        safe = r["safe_count"]
+        console.print(f"{header}  {_badge(_sym('✓', '') + ' OK', 'black on green')} "
+                      f"[dim]{safe} usage{'s' if safe != 1 else ''} safe[/]")
 
     for risk in r["risks"]:
         color = {"breaking": "red", "deprecated": "yellow", "warning": "blue"}[risk["severity"]]
-        mark = {"breaking": "x", "deprecated": "!", "warning": "?"}[risk["severity"]]
+        mark = {"breaking": _sym("✗", "x"), "deprecated": "!", "warning": "?"}[risk["severity"]]
         try:
             rel = os.path.relpath(risk["file"])
         except ValueError:
             rel = risk["file"]
         if risk.get("precise"):
-            tag = " [cyan][FACT][/]"
+            tag = " [cyan]verified[/]"
         elif risk.get("confidence") == "low":
             tag = " [dim](low confidence)[/]"
         else:
             tag = ""
-        console.print(f"  [{color}]{mark}[/]{tag} [bold]{rel}:{risk['line']}[/]  {_esc(risk['code'])}")
-        console.print(f"    [dim]{_clean_note(risk['change_description'])}[/]")
+        console.print(f"  [{color}]{mark}[/] [bold]{rel}:{risk['line']}[/]{tag}  {_esc(risk['code'])}")
+        # indented as a block, so a long note wraps under itself, not at column 0
+        console.print(Padding(f"[dim]{_clean_note(risk['change_description'])}[/]", (0, 0, 0, 4)))
         if risk.get("replacement"):
-            console.print(f"    [green]-> use {risk['replacement']}[/]")
+            console.print(Padding(f"[green]{arrow} use {_esc(risk['replacement'])}[/]", (0, 0, 0, 4)))
     if not quiet:
-        for w in r.get("warnings", []):
-            console.print(f"    [magenta]note:[/] [dim]{w}[/]")
+        for w in notes:
+            console.print(Padding(f"[magenta]note:[/] [dim]{_esc(w)}[/]", (0, 0, 0, 4)))
 
 
 @click.group()
@@ -593,7 +663,8 @@ def check_all(directory, github_token, fmt, output, fail_on, min_severity, exclu
     # JSON/Markdown/HTML on stdout must be nothing but the report
     chatty = not quiet and (fmt == "terminal" or bool(output))
     if chatty:
-        console.print(f"Found [bold]{len(deps)}[/] dependencies to check\n")
+        where = os.path.relpath(directory) if directory != os.getcwd() else "this project"
+        console.print(f"[dim]Checking[/] [bold]{len(deps)}[/] [dim]dependencies in {_esc(where)}[/]\n")
 
     # collect all results with progress bar, then print
     results = []
@@ -644,27 +715,9 @@ def check_all(directory, github_token, fmt, output, fail_on, min_severity, exclu
     # print results after progress bar closes cleanly
     if fmt == "terminal":
         for r in results:
-            _print_terminal_result(r, quiet)
-
-        total_breaking = sum(r["breaking_count"] for r in results)
-        total_deprecated = sum(r["deprecated_count"] for r in results)
-        total_unchecked = sum(1 for r in results if r.get("unchecked"))
+            _print_terminal_result(r, quiet, hide_source_notes=True)
         if not quiet:
-            console.print()
-            if total_unchecked:
-                console.print(f"[magenta]{total_unchecked} package(s) could not be checked[/] "
-                              "(see notes above); they are not counted as safe")
-            if total_breaking:
-                console.print(Panel(
-                    f"[red bold]{total_breaking} breaking[/] | [yellow]{total_deprecated} deprecated[/] across {len(results)} packages",
-                    border_style="red"))
-            elif total_deprecated:
-                console.print(Panel(f"[yellow]{total_deprecated} deprecated[/] across {len(results)} packages",
-                                    border_style="yellow"))
-            else:
-                checked = len(results) - total_unchecked
-                console.print(Panel(f"[green]{checked} checked packages safe to upgrade[/]",
-                                    border_style="green" if not total_unchecked else "magenta"))
+            _print_summary(results)
         if output:
             _emit(results, "md", output, quiet)
     else:
