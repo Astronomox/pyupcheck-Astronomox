@@ -42,3 +42,36 @@ def test_json_stdout_is_pure_json(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_run_single_check", fake_check)
     res = CliRunner().invoke(cli.main, ["check-all", "-d", str(tmp_path), "-f", "json"])
     json.loads(res.output)  # no "Found N dependencies" banner mixed in
+
+
+def test_429_is_retried_after_the_wait_asked_for(monkeypatch):
+    from depshift import http
+
+    class R:
+        def __init__(self, status, headers=None):
+            self.status_code, self.headers = status, headers or {}
+
+    answers = [R(429, {"retry-after": "1"}), R(200)]
+    slept = []
+
+    class C:
+        def get(self, url, **kw):
+            return answers.pop(0)
+    monkeypatch.setattr(http, "client", lambda: C())
+    monkeypatch.setattr(http.time, "sleep", slept.append)
+    assert http._http_get("https://raw.githubusercontent.com/o/r/HEAD/x").status_code == 200
+    assert slept == [1.0]
+
+
+def test_long_retry_after_is_not_waited_for(monkeypatch):
+    from depshift import http
+
+    class R:
+        status_code, headers = 429, {"retry-after": "3600"}
+
+    class C:
+        def get(self, url, **kw):
+            return R()
+    monkeypatch.setattr(http, "client", lambda: C())
+    monkeypatch.setattr(http.time, "sleep", lambda s: (_ for _ in ()).throw(AssertionError("waited")))
+    assert http._http_get("https://x/y").status_code == 429
