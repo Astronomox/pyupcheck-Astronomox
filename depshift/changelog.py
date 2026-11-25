@@ -818,7 +818,7 @@ def _parallel(fn, items: list) -> list:
 
 def fetch_raw_changelog(owner: str, repo: str, token: Optional[str] = None) -> Optional[str]:
     """Try to fetch the raw changelog file from GitHub (cached)."""
-    key = f"gh-changelog3:{owner}/{repo}"
+    key = f"gh-changelog4:{owner}/{repo}"
     cached = cache_get(key)
     if cached is not None:
         return cached or None
@@ -830,10 +830,11 @@ def fetch_raw_changelog(owner: str, repo: str, token: Optional[str] = None) -> O
         attempts.append({"Authorization": f"Bearer {token}"})
 
     errors = 0
-    first = default_branch(owner, repo, token)
-    branches = [first] + [b for b in ("main", "master") if b != first]
-    urls = [f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{fname}"
-            for branch in branches for fname in CHANGELOG_FILENAMES]
+    names = list(CHANGELOG_FILENAMES)
+    listed = repo_files(owner, repo)
+    if listed is not None:
+        names = [n for n in names if n in listed or not _LISTED.search(n)]
+    urls = [f"https://raw.githubusercontent.com/{owner}/{repo}/{DEFAULT_BRANCH}/{fname}" for fname in names]
     for headers in attempts:
         # all at once; the first in preference order that exists wins
         results = _parallel(lambda u: http_get(u, headers=headers, timeout=10, follow_redirects=True), urls)
@@ -961,9 +962,14 @@ def fetch_linked_changelog(package: str, pypi_info: dict) -> Optional[str]:
     return None
 
 
-_BRANCHES = ("main", "master", "trunk", "develop")
-# files nearly every Python repository has at its root, to find its branch
-_ROOT_MARKERS = ("pyproject.toml", "setup.py", "README.md")
+# GitHub's raw host resolves HEAD to the repository's default branch, whatever
+# it is called (main, master, trunk...)
+DEFAULT_BRANCH = "HEAD"
+
+# set from collect_changes: lets a lookup list a repository's files once
+# instead of probing for each candidate path
+_github_token: Optional[str] = None
+_LISTED = re.compile(r"(?i)(change|histor|news|release|what'?s.?new|migrat|upgrad|api_changes)")
 
 
 _POINTER_PATH = re.compile(r"(?:github\.com/[^/\s]+/[^/\s]+/blob/[^/\s]+/|(?<![\w/:.]))"
@@ -987,40 +993,40 @@ def _follow_pointer(owner: str, repo: str, text: str) -> Optional[str]:
     return None
 
 
-def default_branch(owner: str, repo: str, token: Optional[str] = None) -> str:
-    """The repository's default branch (cached): from the GitHub API when it
-    answers, else the first of main/master/trunk/develop that has the usual
-    root files. "main" when nothing can be told."""
-    key = f"gh-branch:{owner}/{repo}"
+def repo_files(owner: str, repo: str) -> Optional[set]:
+    """The repository's changelog-like files (paths that look like release
+    notes), from one GitHub API call, when a token allows it (cached). None
+    when unknown: callers then probe for each candidate."""
+    if not _github_token:
+        return None
+    key = f"gh-files:{owner}/{repo}"
     cached = cache_get(key)
-    if cached:
-        return cached
-    headers = {"Accept": "application/vnd.github+json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    if cached is not None:
+        return set(cached) if isinstance(cached, list) else None
     try:
-        resp = http_get(f"https://api.github.com/repos/{owner}/{repo}", headers=headers, timeout=10)
-        if resp.status_code == 200:
-            branch = resp.json().get("default_branch")
-            if isinstance(branch, str) and branch:
-                cache_set(key, branch)
-                return branch
+        resp = http_get(f"https://api.github.com/repos/{owner}/{repo}/git/trees/HEAD?recursive=1",
+                        headers={"Accept": "application/vnd.github+json",
+                                 "Authorization": f"Bearer {_github_token}"}, timeout=20)
     except Exception:
-        pass
-    probes = [(b, f) for b in _BRANCHES for f in _ROOT_MARKERS]
-    results = _parallel(lambda bf: http_get(
-        f"https://raw.githubusercontent.com/{owner}/{repo}/{bf[0]}/{bf[1]}", timeout=10).status_code, probes)
-    for (branch, _f), status in zip(probes, results):
-        if status == 200:
-            cache_set(key, branch)
-            return branch
-    return "main"
+        return None
+    if resp.status_code != 200:
+        return None
+    data = resp.json()
+    if data.get("truncated"):
+        cache_set(key, "truncated")  # too big to list: probe instead
+        return None
+    files = sorted(t["path"] for t in data.get("tree", [])
+                   if t.get("type") == "blob" and _LISTED.search(t.get("path", "")))
+    cache_set(key, files)
+    return set(files)
 
 
-def _raw(owner: str, repo: str, path: str, branch: Optional[str] = None) -> Optional[str]:
+def _raw(owner: str, repo: str, path: str, branch: str = DEFAULT_BRANCH) -> Optional[str]:
     """Fetch a public file from GitHub; None if it doesn't exist. Raises on
     network errors so callers can report them."""
-    branch = branch or default_branch(owner, repo)
+    listed = repo_files(owner, repo)
+    if listed is not None and _LISTED.search(path) and path not in listed:
+        return None  # the listing says it isn't there: no request
     url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
     resp = http_get(url, timeout=10, follow_redirects=True)
     if resp.status_code == 200 and len(resp.text) > 50:
@@ -1097,7 +1103,7 @@ def fetch_docs_release_notes(owner: str, repo: str, versions: List[str],
     """
     if not versions:
         return None
-    key = f"docs-layout6:{owner}/{repo}"
+    key = f"docs-layout7:{owner}/{repo}"
     layout = cache_get(key)
     probe = _three_part(versions[-1])
     if layout is None:
@@ -1344,6 +1350,9 @@ def collect_changes(package: str, current_version: str, target_version: str,
     ``current_version`` (True: all of the current major series; a number:
     the last that many), for deprecations whose announced removal falls in
     the upgrade and for the replacements they name."""
+    global _github_token
+    if github_token:
+        _github_token = github_token
     ok: List[str] = []
     failed: List[str] = []
     all_entries: List[ChangeEntry] = []

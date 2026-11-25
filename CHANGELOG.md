@@ -4,6 +4,16 @@ All notable changes to pyupcheck are documented here.
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-11-25
+
+### Fixed
+- Release-note lookups sent bursts of requests that GitHub's raw file host answered with 429 Too Many Requests (about 450 lookups in the top-1,000 run, and a large project's `check-all` could hit it too). Requests to one host are now capped at 8 at a time, and a 429 is retried once after the wait the server asks for (up to 20 s)
+- With a GitHub token, a repository's release-note files are listed with one API call, so lookups skip paths that don't exist instead of probing each one
+- Files are read from `HEAD`, which GitHub resolves to the default branch: no more branch detection requests
+
+### Changed
+- Top 1,000 PyPI packages (0.16.0, with a token): deep mode 94.5% -> 96.7%; without a token, release notes for the top 100 are now found for 79%
+
 ## [0.16.0] - 2026-11-23
 
 ### Added

@@ -150,15 +150,15 @@ def test_first_existing_changelog_wins_in_preference_order(monkeypatch):
     class Resp:
         def __init__(self, status, text=""):
             self.status_code, self.text = status, text
-    hits = {"master/CHANGES.rst": "x" * 60, "main/NEWS": "y" * 60}
+    hits = {"HEAD/NEWS": "y" * 60, "HEAD/CHANGELOG.md": "x" * 60}
 
     def fake_get(url, **kw):
         tail = url.split("/o/r/", 1)[1]
         return Resp(200, hits[tail]) if tail in hits else Resp(404)
 
     monkeypatch.setattr(cl, "http_get", fake_get)
-    # main/ is preferred over master/, whatever finishes first
-    assert cl.fetch_raw_changelog("o", "r") == "y" * 60
+    # CHANGELOG.md comes before NEWS in the list, whatever finishes first
+    assert cl.fetch_raw_changelog("o", "r") == "x" * 60
 
 
 def test_failed_docs_probe_is_not_cached_as_no_layout(monkeypatch):
@@ -183,17 +183,28 @@ class _R:
         return self._data
 
 
-def test_default_branch_from_api_then_probes(monkeypatch):
-    monkeypatch.setattr(cl, "http_get", lambda url, **kw: _R(200, data={"default_branch": "trunk"})
-                        if "api.github.com" in url else _R(404))
-    assert cl.default_branch("o", "r") == "trunk"
+def test_listing_skips_files_that_are_not_there(monkeypatch):
+    calls = []
 
-    def probes(url, **kw):
-        if "api.github.com" in url:
-            return _R(403)
-        return _R(200) if "/develop/setup.py" in url else _R(404)
-    monkeypatch.setattr(cl, "http_get", probes)
-    assert cl.default_branch("o", "r2") == "develop"
+    def fake_get(url, **kw):
+        calls.append(url)
+        if "git/trees/HEAD" in url:
+            assert kw["headers"]["Authorization"] == "Bearer t"
+            return _R(200, data={"truncated": False, "tree": [
+                {"type": "blob", "path": "CHANGES.rst"}, {"type": "blob", "path": "src/x.py"}]})
+        return _R(200, "z" * 60) if url.endswith("/HEAD/CHANGES.rst") else _R(404)
+    monkeypatch.setattr(cl, "http_get", fake_get)
+    monkeypatch.setattr(cl, "_github_token", "t")
+    assert cl.fetch_raw_changelog("o", "r") == "z" * 60
+    raw = [u for u in calls if "raw.githubusercontent" in u]
+    assert raw == ["https://raw.githubusercontent.com/o/r/HEAD/CHANGES.rst"]  # no probing
+    assert cl._raw("o", "r", "docs/changelog.rst") is None  # listed as absent: no request
+    assert len([u for u in calls if "raw.githubusercontent" in u]) == 1
+
+
+def test_no_token_means_probing(monkeypatch):
+    monkeypatch.setattr(cl, "_github_token", None)
+    assert cl.repo_files("o", "r") is None
 
 
 def test_pointer_changelog_is_followed(monkeypatch):
@@ -204,12 +215,10 @@ def test_pointer_changelog_is_followed(monkeypatch):
     def fake_get(url, **kw):
         if "api.github.com" in url:
             return _R(404)
-        if url.endswith("/main/CHANGES.rst"):
+        if url.endswith("/HEAD/CHANGES.rst"):
             return _R(200, pointer)
-        if url.endswith("/main/doc/en/changelog.rst"):
+        if url.endswith("/HEAD/doc/en/changelog.rst"):
             return _R(200, real)
-        if url.endswith("/main/pyproject.toml"):
-            return _R(200, "[project]")
         return _R(404)
     monkeypatch.setattr(cl, "http_get", fake_get)
     assert cl.fetch_raw_changelog("o", "r") == real
