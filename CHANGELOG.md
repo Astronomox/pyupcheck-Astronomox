@@ -4,6 +4,14 @@ All notable changes to pyupcheck are documented here.
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-11-25
+
+### Changed
+- `pyupcheck banner` fits any terminal. The block logo is drawn in one row when there's room, stacked as PYUP over CHECK on medium widths, and as a one-line wordmark on phones and split panes. Below the logo, the version box, links, releases and commands all reflow to the width, and links are clickable in terminals that support them. The logo has a colour gradient, and terminals that can't print block characters get plain text. PyPI is asked in the background while the logo is drawn, so the banner shows up faster. `PYUPCHECK_NO_ANIMATION=1` turns the animation off
+- The first logo row no longer starts one column to the right of the others
+- `pyupcheck --help` lists commands in a sensible order with descriptions short enough to read on narrow terminals, and `-h` works as well as `--help`
+- The banner suggests `python -m pip install -U pyupcheck`, which also works on Windows when `pip.exe` can't update itself
+
 ## [0.17.0] - 2026-11-25
 
 ### Changed
