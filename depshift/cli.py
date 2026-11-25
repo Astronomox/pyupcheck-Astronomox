@@ -557,7 +557,14 @@ def _print_terminal_result(r: dict, quiet: bool, hide_source_notes: bool = False
             console.print(Padding(f"[magenta]note:[/] [dim]{_esc(w)}[/]", (0, 0, 0, 4)))
 
 
-@click.group()
+class _Ordered(click.Group):
+    """Lists commands in the order they're defined: the everyday ones first."""
+
+    def list_commands(self, ctx):
+        return list(self.commands)
+
+
+@click.group(cls=_Ordered, context_settings={"help_option_names": ["-h", "--help"], "max_content_width": 100})
 @click.version_option(__version__, prog_name="pyupcheck")
 @click.pass_context
 def main(ctx):
@@ -572,7 +579,7 @@ def main(ctx):
             show_if_first_run(console)
 
 
-@main.command("banner")
+@main.command("banner", short_help="Show the logo and version info")
 def show_banner_cmd():
     """Show the pyupcheck banner with live version info."""
     from depshift.welcome import show_banner
@@ -581,7 +588,7 @@ def show_banner_cmd():
 
 # ── check ─────────────────────────────────────────────────────────────────────
 
-@main.command()
+@main.command(short_help="Check one package upgrade")
 @click.argument("package")
 @click.argument("target_version", required=False)
 @click.option("--dir", "-d", "directory", default=".", help="Directory to scan")
@@ -622,7 +629,7 @@ def check(package, target_version, directory, github_token, fmt, output, fail_on
 
 # ── check-all ─────────────────────────────────────────────────────────────────
 
-@main.command("check-all")
+@main.command("check-all", short_help="Check every dependency")
 @click.option("--dir", "-d", "directory", default=".", help="Project directory")
 @click.option("--github-token", envvar="GITHUB_TOKEN", default=None)
 @click.option("--format", "-f", "fmt", type=click.Choice(["terminal", "json", "md", "html", "sarif", "github"]), default="terminal")
@@ -728,7 +735,7 @@ def check_all(directory, github_token, fmt, output, fail_on, min_severity, exclu
 
 # ── fix ───────────────────────────────────────────────────────────────────────
 
-@main.command()
+@main.command(short_help="Move pins to the highest safe version")
 @click.option("--dir", "-d", "directory", default=".")
 @click.option("--dry-run", is_flag=True, help="Show what would change without writing")
 @click.option("--deep/--no-deep", default=True, show_default=True,
@@ -867,7 +874,7 @@ def _check_change(change, directory: str, cfg, github_token: Optional[str], deep
     return r
 
 
-@main.command()
+@main.command(short_help="Check dependency changes in a PR")
 @click.option("--base", required=True, help="Git ref to compare against (e.g. origin/main, the PR base SHA)")
 @click.option("--dir", "-d", "directory", default=".", help="Repository root")
 @click.option("--deep/--no-deep", default=True, show_default=True,
@@ -960,7 +967,7 @@ def _print_watch_event(ev, directory: str, quiet: bool) -> bool:
     return breaking
 
 
-@main.command()
+@main.command(short_help="Re-check as dependencies change")
 @click.option("--dir", "-d", "directory", default=".", help="Project directory")
 @click.option("--interval", type=click.FloatRange(0.2, 3600), default=2.0, show_default=True,
               help="Seconds between looks at the dependency files")
@@ -1035,7 +1042,7 @@ def watch(directory, interval, releases_every, deep, bell, quiet, jobs, github_t
 
 # ── explain ───────────────────────────────────────────────────────────────────
 
-@main.command()
+@main.command(short_help="Ask Claude how to fix breaks")
 @click.argument("package")
 @click.argument("target_version", required=False)
 @click.option("--dir", "-d", "directory", default=".", help="Project directory")
@@ -1112,7 +1119,7 @@ def explain(package, target_version, directory, deep, max_findings, effort, mode
 
 # ── migrate ───────────────────────────────────────────────────────────────────
 
-@main.command()
+@main.command(short_help="Rewrite code for an upgrade")
 @click.argument("package")
 @click.argument("target_version", required=False)
 @click.option("--dir", "-d", "directory", default=".", help="Project directory")
@@ -1278,7 +1285,7 @@ repos:
 """
 
 
-@main.command("ci-setup")
+@main.command("ci-setup", short_help="Write CI config for pyupcheck")
 @click.option("--type", "ci_type", type=click.Choice(["github", "pre-commit", "all"]), default="all",
               help="Which CI config to generate")
 @click.option("--dir", "-d", "directory", default=".")
@@ -1394,7 +1401,7 @@ def highest_safe_version(package: str, current: str, directory: str, cfg,
     return out
 
 
-@main.command()
+@main.command(short_help="List dependencies with newer versions")
 @click.option("--dir", "-d", "directory", default=".")
 @click.option("--safe", is_flag=True,
               help="Also find the highest version that breaks none of your code (runs deep checks)")
@@ -1490,7 +1497,7 @@ def outdated(directory, safe, jobs, github_token, no_cache):
 
 # ── diff ──────────────────────────────────────────────────────────────────────
 
-@main.command()
+@main.command(short_help="Show changes between two versions")
 @click.argument("package")
 @click.argument("from_version")
 @click.argument("to_version")
@@ -1546,7 +1553,7 @@ def diff(package, from_version, to_version, github_token, no_cache, since):
 
 # ── scan ──────────────────────────────────────────────────────────────────────
 
-@main.command()
+@main.command(short_help="Find where your code uses a package")
 @click.argument("package")
 @click.option("--dir", "-d", "directory", default=".")
 @click.option("--exclude", "-e", multiple=True)
@@ -1584,7 +1591,7 @@ def scan(package, directory, exclude):
 
 # ── versions ──────────────────────────────────────────────────────────────────
 
-@main.command()
+@main.command(short_help="List a package's versions")
 @click.argument("package")
 def versions(package):
     """List available versions for PACKAGE."""
@@ -1613,7 +1620,7 @@ def versions(package):
 
 # ── cache-clear ───────────────────────────────────────────────────────────────
 
-@main.command("cache-clear")
+@main.command("cache-clear", short_help="Clear the local cache")
 def cache_clear_cmd():
     """Clear the local response cache."""
     n = cache_mod.cache_clear()
@@ -1622,7 +1629,7 @@ def cache_clear_cmd():
 
 # ── shell completion ──────────────────────────────────────────────────────────
 
-@main.command("install-completion")
+@main.command("install-completion", short_help="Print shell completion script")
 @click.argument("shell", type=click.Choice(["bash", "zsh", "fish", "powershell"]))
 def install_completion(shell):
     """Print shell completion script. Pipe it to your shell config.
