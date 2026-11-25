@@ -3,760 +3,653 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>pyupcheck: know before you upgrade</title>
-<meta name="description" content="pyupcheck scans your code, reads changelogs, and tells you exactly what will break before you run pip install.">
-<meta property="og:title" content="pyupcheck: know before you upgrade">
-<meta property="og:description" content="pyupcheck scans your code, reads changelogs, and tells you exactly what will break.">
+<title>pyupcheck: know what breaks before you upgrade</title>
+<meta name="description" content="pyupcheck reads your code and the real API of both versions, then tells you exactly which lines a Python dependency upgrade breaks, and rewrites what it safely can.">
+<meta name="theme-color" content="#FFF8F0" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#141414" media="(prefers-color-scheme: dark)">
+<meta property="og:title" content="pyupcheck: know what breaks before you upgrade">
+<meta property="og:description" content="Finds every line a Python dependency upgrade breaks, before you run pip install. 100% of breaking lines caught on 52 real upgrades, zero false alarms.">
 <meta property="og:image" content="https://pyupcheck.vercel.app/banner.png">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://pyupcheck.vercel.app/">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="pyupcheck: know before you upgrade">
-<meta name="twitter:description" content="pyupcheck scans your code, reads changelogs, and tells you exactly what will break.">
+<meta name="twitter:title" content="pyupcheck: know what breaks before you upgrade">
+<meta name="twitter:description" content="Finds every line a Python dependency upgrade breaks, before you run pip install.">
 <meta name="twitter:image" content="https://pyupcheck.vercel.app/banner.png">
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=Sora:wght@400;500&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cpath d='M32 4 56 14 52 40Q46 56 32 60 18 56 12 40L8 14Z' fill='%23BEF264' stroke='%231a1a1a' stroke-width='5'/%3E%3Cpath d='M21 33 29 41 44 24' fill='none' stroke='%231a1a1a' stroke-width='6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Sora:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <style>
-/* ── reset ── */
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-
-/* ── tokens ── */
+/* ── tokens ─────────────────────────────────────────────────────────── */
 :root{
-  --cream:#FFF8F0;--black:#1a1a1a;
-  --mint:#A7F3D0;--lav:#C4B5FD;--peach:#FBBF77;
-  --pink:#FCA5A5;--sky:#7DD3FC;--yel:#FDE047;--lime:#BEF264;
-  --b:3px solid var(--black);
-  --sh:5px 5px 0 var(--black);--sh-sm:3px 3px 0 var(--black);
-  --r:12px;
-  --ff-title:'Space Grotesk',sans-serif;
-  --ff-body:'Sora',sans-serif;
+  --bg:#FFF8F0; --surface:#FFFFFF; --ink:#1a1a1a; --muted:#57534e; --line:#1a1a1a;
+  --mint:#A7F3D0; --lav:#C4B5FD; --peach:#FBBF77; --pink:#FCA5A5;
+  --sky:#7DD3FC; --yel:#FDE047; --lime:#BEF264; --cyan:#5EEAD4;
+  --term-bg:#111214; --term-ink:#E7E5E4; --term-dim:#8a8f98;
+  --t-red:#FF6B6B; --t-green:#7EE787; --t-yel:#F2CC60; --t-cyan:#5EEAD4; --t-blue:#79C0FF;
+  --b:3px solid var(--line);
+  --sh:6px 6px 0 var(--line); --sh-sm:3px 3px 0 var(--line);
+  --r:14px; --r-sm:10px;
+  --ff-title:'Space Grotesk',system-ui,sans-serif;
+  --ff-body:'Sora',system-ui,sans-serif;
+  --ff-mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  --wrap:1160px;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#141414; --surface:#1d1d1f; --ink:#F5F0E8; --muted:#b6afa6; --line:#F5F0E8;
+    --term-bg:#0b0c0d;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#141414; --surface:#1d1d1f; --ink:#F5F0E8; --muted:#b6afa6; --line:#F5F0E8;
+  --term-bg:#0b0c0d;
 }
 
-/* ── viewport container ── */
-html{
-  width:100%;height:100%;
-  /* prevent rubber-band scroll bleeding panels */
-  overflow:hidden;overscroll-behavior:none;
-  background:var(--black);
-}
-body{
-  width:100%;height:100%;
-  font-family:var(--ff-body);
-  overflow:hidden;overscroll-behavior:none;
-  background:var(--black);
-  /* safe area for notched phones */
-  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
-}
+/* ── base ───────────────────────────────────────────────────────────── */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+body{background:var(--bg);color:var(--ink);font-family:var(--ff-body);font-size:17px;line-height:1.6;
+  overflow-x:hidden;-webkit-font-smoothing:antialiased}
+a{color:inherit}
+img,svg{display:block;max-width:100%}
+code,kbd,pre{font-family:var(--ff-mono)}
+:focus-visible{outline:3px solid var(--sky);outline-offset:3px;border-radius:6px}
+.wrap{width:100%;max-width:var(--wrap);margin:0 auto;padding:0 20px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+h1,h2,h3{font-family:var(--ff-title);line-height:1.08;letter-spacing:-.02em}
+h2{font-size:clamp(2rem,4.6vw,3.2rem)}
+h3{font-size:1.2rem;letter-spacing:-.01em}
+.kicker{display:inline-flex;align-items:center;gap:8px;font:600 .8rem/1 var(--ff-title);letter-spacing:.06em;
+  text-transform:uppercase;border:var(--b);border-radius:999px;padding:8px 14px;background:var(--surface);box-shadow:var(--sh-sm)}
+.kicker .ver{text-transform:none;letter-spacing:0;font-family:var(--ff-mono);font-weight:600;border-left:2px solid var(--line);padding-left:8px;margin-left:2px}
+.kicker .dot{width:8px;height:8px;border-radius:50%;background:#22c55e;box-shadow:0 0 0 3px rgba(34,197,94,.25)}
+.lead{font-size:clamp(1.05rem,1.7vw,1.25rem);color:var(--muted);max-width:60ch}
+section{padding:96px 0;position:relative}
+.sec-head{display:grid;gap:16px;margin-bottom:48px;max-width:760px}
+.sec-head .tag{font:600 .82rem/1 var(--ff-title);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
 
-/* ── stage: single clip window ── */
-#stage{
-  position:fixed;
-  top:0;left:0;right:0;bottom:0;
-  overflow:hidden;
-}
+/* ── buttons ────────────────────────────────────────────────────────── */
+.btn{display:inline-flex;align-items:center;gap:10px;font:600 1rem/1 var(--ff-title);text-decoration:none;
+  border:var(--b);border-radius:var(--r-sm);padding:14px 20px;background:var(--surface);color:var(--ink);
+  box-shadow:var(--sh-sm);transition:transform .12s ease,box-shadow .12s ease;cursor:pointer}
+.btn:hover{transform:translate(-2px,-2px);box-shadow:5px 5px 0 var(--line)}
+.btn:active{transform:translate(2px,2px);box-shadow:0 0 0 var(--line)}
+.btn.primary{background:var(--ink);color:var(--bg)}
+.btn.lime{background:var(--lime);color:#1a1a1a}
 
-/* ── track: the moving strip ── */
-/* Direction map:
-   P1 → P2 : horizontal (track slides left)
-   P2 → P3 : vertical   (track slides up within col-1 column)
-   P3 → P4 : vertical   (track slides down)
-   P4 → P5 : horizontal (track slides left again)
+/* ── nav ────────────────────────────────────────────────────────────── */
+.nav{position:sticky;top:0;z-index:50;background:color-mix(in srgb,var(--bg) 88%,transparent);
+  backdrop-filter:saturate(1.4) blur(10px);-webkit-backdrop-filter:saturate(1.4) blur(10px);
+  border-bottom:3px solid transparent;transition:border-color .2s}
+.nav.scrolled{border-bottom-color:var(--line)}
+.nav .wrap{display:flex;align-items:center;justify-content:space-between;height:68px;gap:16px}
+.logo{display:flex;align-items:center;gap:10px;font:700 1.25rem/1 var(--ff-title);text-decoration:none;letter-spacing:-.02em}
+.logo svg{width:34px;height:34px}
+.nav-links{display:flex;align-items:center;gap:6px}
+.nav-links a{text-decoration:none;font:500 .95rem/1 var(--ff-title);padding:10px 12px;border-radius:8px}
+.nav-links a:hover{background:color-mix(in srgb,var(--ink) 8%,transparent)}
+.nav .btn{padding:10px 14px;font-size:.92rem}
+.theme-btn{width:42px;height:42px;padding:0;justify-content:center}
+@media (max-width:860px){.nav-links .hide-sm{display:none}}
+@media (max-width:520px){.nav .gh-btn span{display:none}}
 
-   We use a 2-column, 2-row grid of cells.
-   Col 0: P1 (top), P2 (bottom — vertical pair)
-   Col 1: P3 (top), P4 (bottom — vertical pair), P5 beside
-   
-   Simpler: use a flat approach with nested tracks.
-   Outer track: horizontal between [col-A] and [col-B]
-   col-A: vertical between P1 and P2
-   col-B: vertical between (P3,P4 vertical pair) and nothing ... complex.
+/* ── hero ───────────────────────────────────────────────────────────── */
+.hero{padding:64px 0 88px;overflow:hidden}
+.hero .wrap{display:grid;grid-template-columns:1.02fr 1fr;gap:56px;align-items:center}
+.hero h1{font-size:clamp(2.5rem,5.6vw,4.3rem);margin:22px 0 20px}
+.hero h1 .mark{background:var(--lime);color:#1a1a1a;padding:0 .18em;border:var(--b);border-radius:12px;
+  box-shadow:var(--sh-sm);display:inline-block;transform:rotate(-1.5deg)}
+.install{display:flex;align-items:stretch;margin:30px 0 18px;max-width:440px;border:var(--b);border-radius:var(--r-sm);
+  background:var(--surface);box-shadow:var(--sh)}
+.install code{flex:1;display:flex;align-items:center;gap:10px;padding:16px 18px;font-size:1rem;white-space:nowrap;overflow:auto}
+.install code::before{content:"$";color:var(--muted)}
+.copy{border:0;border-left:var(--b);background:var(--yel);color:#1a1a1a;font:600 .9rem/1 var(--ff-title);
+  padding:0 18px;cursor:pointer;border-radius:0 7px 7px 0;min-width:86px}
+.copy:hover{background:var(--lime)}
+.cta-row{display:flex;flex-wrap:wrap;gap:12px;margin-top:6px}
+.works-with{margin-top:26px;font-size:.92rem;color:var(--muted)}
+.works-with b{color:var(--ink);font-weight:600}
 
-   CLEANEST approach for 5 panels with mixed directions:
-   Use absolute positioning but drive transforms with pixel coords
-   computed once on load and on resize, stored as data.
-   The key fix: clamp every panel to its OFF-SCREEN position
-   using the ACTUAL clientWidth/clientHeight at transform time.
-*/
-
-.panel{
-  position:fixed;
-  top:0;left:0;
-  width:100%;
-  height:100%;
-  overflow:hidden;
-  /* hardware-accelerate */
-  transform:translate3d(0,0,0);
-  will-change:transform;
-  backface-visibility:hidden;
-  /* no transition by default — JS adds it */
-}
-
-/* ── panel colours ── */
-#p1{background:var(--cream)}
-#p2{background:#fff5fb}
-#p3{background:#f0eaff}
-#p4{background:#fffbea}
-#p5{background:#eafff0}
-
-/* ── panel inner: flex centred, clips content ── */
-.pi{
-  width:100%;height:100%;
-  display:flex;align-items:center;justify-content:center;
-  padding:24px;
-  overflow:hidden;
-  position:relative;
-}
-
-/* ── cartoons ── */
-.c{position:absolute;pointer-events:none;z-index:2}
-.bob{animation:bob 2.8s ease-in-out infinite}
-.wig{animation:wig 2.4s ease-in-out infinite}
-.spn{animation:spn 9s linear infinite}
-.pls{animation:pls 2s ease-in-out infinite}
-@keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-9px)}}
-@keyframes wig{0%,100%{transform:rotate(-6deg)}50%{transform:rotate(6deg)}}
-@keyframes spn{to{transform:rotate(360deg)}}
-@keyframes pls{0%,100%{transform:scale(1)}50%{transform:scale(1.1)}}
-
-/* ── sticker badges ── */
-.stk{
-  position:absolute;z-index:3;
-  font-family:var(--ff-title);font-weight:700;font-size:11px;
-  padding:6px 13px;border:var(--b);border-radius:40px;
-  box-shadow:var(--sh-sm);white-space:nowrap;
-  animation:bob 3s ease-in-out infinite;
+/* ── terminal ───────────────────────────────────────────────────────── */
+.term{position:relative;border:var(--b);border-radius:var(--r);background:var(--term-bg);color:var(--term-ink);
+  box-shadow:10px 10px 0 var(--line);overflow:hidden}
+.term-bar{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:2px solid #2a2c30;background:#191a1d}
+.term-bar i{width:12px;height:12px;border-radius:50%;display:block}
+.term-bar i:nth-child(1){background:#ff5f57}.term-bar i:nth-child(2){background:#febc2e}.term-bar i:nth-child(3){background:#28c840}
+.term-bar span{margin-left:8px;font:500 .8rem/1 var(--ff-mono);color:var(--term-dim)}
+.term pre{font-size:clamp(.72rem,1.25vw,.86rem);line-height:1.62;padding:18px 18px 22px;min-height:430px;white-space:pre-wrap;word-break:break-word}
+.t-dim{color:var(--term-dim)}.t-red{color:var(--t-red)}.t-green{color:var(--t-green)}.t-yel{color:var(--t-yel)}
+.t-cyan{color:var(--t-cyan)}.t-blue{color:var(--t-blue)}.t-b{font-weight:600;color:#fff}
+.t-badge{background:var(--t-red);color:#111;font-weight:600;padding:0 6px;border-radius:4px}
+.t-badge.ok{background:var(--t-green)}
+.caret{display:inline-block;width:.6em;height:1.1em;vertical-align:-.18em;background:var(--t-green);animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.hero-art{position:relative}
+.mascot{position:absolute;z-index:2;filter:drop-shadow(3px 3px 0 var(--line))}
+.m-shield{width:78px;right:-22px;top:-34px;animation:bob 4s ease-in-out infinite}
+.m-lens{width:64px;left:-30px;bottom:-26px;animation:bob 4.6s ease-in-out infinite .6s}
+@keyframes bob{0%,100%{transform:translateY(0) rotate(-3deg)}50%{transform:translateY(-10px) rotate(3deg)}}
+@media (max-width:960px){
+  .hero .wrap{grid-template-columns:1fr;gap:48px}
+  .term pre{min-height:0}
+  .m-shield{right:-8px}.m-lens{left:-8px}
 }
 
-/* ── nav dots ── */
-#nav{
-  position:fixed;right:14px;top:50%;transform:translateY(-50%);
-  z-index:999;display:flex;flex-direction:column;gap:9px;
-}
-.dot{
-  width:8px;height:8px;border-radius:50%;
-  background:rgba(0,0,0,.15);border:2px solid rgba(0,0,0,.3);
-  cursor:pointer;transition:all .3s;
-}
-.dot.on{background:var(--lav);transform:scale(1.5);box-shadow:0 0 0 3px rgba(196,181,253,.25)}
+/* ── proof strip ────────────────────────────────────────────────────── */
+.proof{padding:0 0 24px}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}
+.stat{border:var(--b);border-radius:var(--r);background:var(--surface);box-shadow:var(--sh);padding:22px 22px 20px}
+.stat .num{font:700 clamp(2.2rem,4vw,3rem)/1 var(--ff-title);letter-spacing:-.03em}
+.stat .lbl{margin-top:10px;font-size:.93rem;color:var(--muted);line-height:1.45}
+.stat:nth-child(1) .num{color:#15803d}.stat:nth-child(2) .num{color:#b91c1c}
+.stat .chip{display:inline-block;margin-top:12px;font:600 .72rem/1 var(--ff-title);text-transform:uppercase;letter-spacing:.06em;
+  padding:6px 9px;border:2px solid var(--line);border-radius:999px}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .stat:nth-child(1) .num{color:#86efac}:root:not([data-theme="light"]) .stat:nth-child(2) .num{color:#fca5a5}}
+:root[data-theme="dark"] .stat:nth-child(1) .num{color:#86efac}:root[data-theme="dark"] .stat:nth-child(2) .num{color:#fca5a5}
+@media (max-width:900px){.stats{grid-template-columns:repeat(2,1fr)}}
+@media (max-width:480px){.stats{grid-template-columns:1fr}}
+.proof-note{margin-top:18px;font-size:.88rem;color:var(--muted)}
 
-/* ── dir hint ── */
-#hint{
-  position:fixed;bottom:16px;left:50%;transform:translateX(-50%);
-  z-index:999;font-family:var(--ff-title);font-size:11px;font-weight:700;
-  letter-spacing:.08em;background:var(--black);color:var(--cream);
-  padding:7px 16px;border-radius:40px;border:2px solid rgba(255,255,255,.12);
-  opacity:.6;pointer-events:none;transition:opacity .3s;
-}
+/* ── how it works ───────────────────────────────────────────────────── */
+.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:22px;counter-reset:step}
+.step{border:var(--b);border-radius:var(--r);background:var(--surface);box-shadow:var(--sh);padding:28px;position:relative}
+.step::before{counter-increment:step;content:counter(step);position:absolute;top:-20px;left:22px;width:42px;height:42px;
+  display:grid;place-items:center;font:700 1.15rem/1 var(--ff-title);border:var(--b);border-radius:50%;background:var(--yel);color:#1a1a1a}
+.step:nth-child(2)::before{background:var(--sky)}.step:nth-child(3)::before{background:var(--lime)}
+.step h3{margin:10px 0 10px;font-size:1.35rem}
+.step p{color:var(--muted);font-size:.98rem}
+.step code{font-size:.85em;background:color-mix(in srgb,var(--ink) 8%,transparent);padding:2px 6px;border-radius:5px}
+@media (max-width:900px){.steps{grid-template-columns:1fr;gap:34px}}
 
-/* ══════════ HERO (P1) ══════════ */
-.hero{text-align:center;z-index:10;max-width:min(600px,92vw)}
-.hero-banner{
-  display:block;margin:0 auto 20px;
-  max-width:min(500px,88vw);
-  border:var(--b);border-radius:var(--r);box-shadow:var(--sh);
-  image-rendering:pixelated;
-}
-.hero h1{
-  font-family:var(--ff-title);font-weight:700;
-  font-size:clamp(36px,7vw,84px);
-  line-height:.94;letter-spacing:-.04em;margin-bottom:14px;
-}
-.acc{color:#7c3aed}
-.hero-sub{font-size:clamp(13px,1.8vw,16px);color:#555;margin:0 auto 22px;max-width:400px;line-height:1.55}
-.ibox{
-  display:inline-flex;align-items:center;gap:9px;
-  background:var(--black);color:var(--cream);
-  font-family:var(--ff-title);font-size:clamp(13px,2vw,15px);font-weight:600;
-  padding:13px 24px;border-radius:var(--r);border:var(--b);box-shadow:var(--sh);
-  cursor:text;user-select:all;margin-bottom:8px;
-}
-.dol{color:#666}
-.sub-note{font-size:11px;color:#bbb;font-weight:500}
+/* ── showcase (migrate + review) ────────────────────────────────────── */
+.show{display:grid;grid-template-columns:1fr 1.15fr;gap:56px;align-items:center}
+.show.flip{grid-template-columns:1.15fr 1fr}
+.show.flip .show-text{order:2}
+.show-text h2{margin:14px 0 18px}
+.show-text ul{list-style:none;display:grid;gap:12px;margin-top:22px}
+.show-text li{display:grid;grid-template-columns:28px 1fr;gap:10px;align-items:start;color:var(--muted)}
+.show-text li b{color:var(--ink);font-weight:600}
+.tick{width:26px;height:26px;border:2px solid var(--line);border-radius:7px;display:grid;place-items:center;background:var(--mint);color:#1a1a1a}
+.tick svg{width:14px;height:14px}
+@media (max-width:960px){.show,.show.flip{grid-template-columns:1fr;gap:36px}.show.flip .show-text{order:0}}
 
-/* ══════════ FEATURES (P2) ══════════ */
-.feat-wrap{z-index:10;width:100%;max-width:min(800px,96vw)}
-.pt{font-family:var(--ff-title);font-size:clamp(20px,3.5vw,34px);font-weight:700;
-  letter-spacing:-.03em;margin-bottom:20px;text-align:center}
-.fg{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
-.fc{background:white;border:var(--b);border-radius:var(--r);box-shadow:var(--sh);
-  padding:16px;transition:transform .15s,box-shadow .15s}
-.fc:hover{transform:translate(-2px,-2px);box-shadow:7px 7px 0 var(--black)}
-.fi{width:38px;height:38px;border:var(--b);border-radius:9px;box-shadow:var(--sh-sm);
-  display:flex;align-items:center;justify-content:center;margin-bottom:10px}
-.fc h3{font-family:var(--ff-title);font-size:13px;font-weight:700;margin-bottom:4px}
-.fc p{font-size:11px;color:#555;line-height:1.5}
+.diff{border:var(--b);border-radius:var(--r);background:var(--term-bg);color:var(--term-ink);box-shadow:var(--sh);overflow:hidden}
+.diff pre{font-size:clamp(.74rem,1.2vw,.86rem);line-height:1.7;padding:16px 0;overflow-x:auto}
+.diff .ln{display:block;padding:0 18px;white-space:pre}
+.diff .add{background:rgba(46,160,67,.18);color:#aff5b4}
+.diff .del{background:rgba(248,81,73,.16);color:#ffc1bc}
+.diff .hunk{color:var(--t-blue)}
+.diff .fix{color:var(--t-green)}
 
-/* ══════════ TERMINAL (P3) ══════════ */
-.tw{max-width:min(660px,94vw);width:100%;z-index:10}
-.twin{background:#0a0d12;border:var(--b);border-radius:var(--r);
-  box-shadow:7px 7px 0 var(--lav);overflow:hidden}
-.tbar{display:flex;align-items:center;gap:6px;padding:10px 14px;
-  background:#111;border-bottom:2px solid #222}
-.td{width:11px;height:11px;border-radius:50%}
-.td.r{background:#ff5f57}.td.y{background:#febc2e}.td.g{background:#28c840}
-.tbl{flex:1;text-align:center;font-family:var(--ff-title);font-size:10px;color:#444;letter-spacing:.1em}
-.tbody{padding:16px 20px 22px;font-family:'Space Grotesk',monospace;
-  font-size:clamp(11px,1.5vw,13px);line-height:1.75;color:#eee;min-height:200px}
-.tl{display:block;min-height:1.75em}
-.tp{color:#7DD3FC}.tp::before{content:"$ "}
-.tok{color:#A7F3D0}.tw2{color:#FBBF77}.te{color:#FCA5A5}.td2{color:#555}.twh{color:#ddd}
-.tc{display:inline-block;width:7px;height:1em;background:#7DD3FC;
-  vertical-align:middle;margin-left:2px;animation:blink 1s step-end infinite}
-@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+/* GitHub-style PR comment */
+.pr{border:var(--b);border-radius:var(--r);background:var(--surface);box-shadow:var(--sh);overflow:hidden}
+.pr-head{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:2px solid var(--line);
+  background:color-mix(in srgb,var(--sky) 35%,var(--surface));font-size:.9rem}
+.pr-av{width:28px;height:28px;border:2px solid var(--line);border-radius:50%;background:var(--lime);display:grid;place-items:center}
+.pr-av svg{width:16px;height:16px}
+.pr-head b{font-family:var(--ff-title)}
+.pr-head .bot{font:600 .7rem/1 var(--ff-title);border:2px solid var(--line);border-radius:999px;padding:3px 7px;text-transform:uppercase}
+.pr-body{padding:18px 18px 20px;font-size:.92rem}
+.pr-body h4{font:700 1.08rem/1.25 var(--ff-title);margin-bottom:10px}
+.pr-body table{width:100%;border-collapse:collapse;margin:12px 0 14px;font-size:.86rem}
+.pr-body th,.pr-body td{border:1.5px solid color-mix(in srgb,var(--ink) 30%,transparent);padding:7px 9px;text-align:left}
+.pr-body th{background:color-mix(in srgb,var(--ink) 6%,transparent);font-family:var(--ff-title)}
+.pr-body code{font-size:.84em;background:color-mix(in srgb,var(--ink) 8%,transparent);padding:1px 5px;border-radius:4px}
+.pr-body .bad{color:#b91c1c;font-weight:600}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .pr-body .bad{color:#fca5a5}}
+:root[data-theme="dark"] .pr-body .bad{color:#fca5a5}
+.pr-body .finding{border-left:4px solid var(--pink);padding:8px 0 8px 12px;margin-top:8px;background:color-mix(in srgb,var(--pink) 14%,transparent);border-radius:0 8px 8px 0}
+.pr-body .hint{margin-top:12px;color:var(--muted)}
+.pr-scroll{overflow-x:auto}
 
-/* ══════════ COMMANDS (P4) ══════════ */
-.cw{z-index:10;width:100%;max-width:min(800px,96vw)}
-.cg{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px}
-.cp{border:var(--b);border-radius:9px;padding:12px 14px;box-shadow:var(--sh-sm);
-  transition:transform .12s,box-shadow .12s;cursor:default}
-.cp:hover{transform:translate(-2px,-2px);box-shadow:5px 5px 0 var(--black)}
-.cpn{font-family:var(--ff-title);font-weight:700;font-size:13px;margin-bottom:3px}
-.cpd{font-size:10px;color:#444;line-height:1.45}
+/* ── features ───────────────────────────────────────────────────────── */
+.features{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+.feat{border:var(--b);border-radius:var(--r);background:var(--surface);box-shadow:var(--sh-sm);padding:24px;
+  transition:transform .15s ease,box-shadow .15s ease}
+.feat:hover{transform:translate(-3px,-3px);box-shadow:var(--sh)}
+.feat .ic{width:46px;height:46px;border:var(--b);border-radius:12px;display:grid;place-items:center;margin-bottom:16px;color:#1a1a1a}
+.feat .ic svg{width:22px;height:22px}
+.feat h3{margin-bottom:8px}
+.feat p{color:var(--muted);font-size:.95rem}
+.feat code{font-size:.84em;background:color-mix(in srgb,var(--ink) 8%,transparent);padding:1px 5px;border-radius:4px}
+@media (max-width:960px){.features{grid-template-columns:repeat(2,1fr)}}
+@media (max-width:600px){.features{grid-template-columns:1fr}}
 
-/* ══════════ CTA (P5) ══════════ */
-.cta{text-align:center;z-index:10;max-width:min(620px,96vw)}
-.cta h2{font-family:var(--ff-title);font-size:clamp(32px,7vw,74px);font-weight:700;
-  letter-spacing:-.04em;margin-bottom:10px}
-.cta p{font-size:13px;color:#555;margin-bottom:26px}
-.btns{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-bottom:32px}
-.btn{display:inline-flex;align-items:center;gap:7px;font-family:var(--ff-title);
-  font-weight:700;font-size:13px;padding:12px 22px;border:var(--b);border-radius:9px;
-  text-decoration:none;box-shadow:var(--sh);transition:transform .1s,box-shadow .1s}
-.btn:hover{transform:translate(-2px,-2px);box-shadow:7px 7px 0 var(--black)}
-.btn:active{transform:translate(2px,2px);box-shadow:2px 2px 0 var(--black)}
-.stats{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
-.sc{border:var(--b);border-radius:var(--r);box-shadow:var(--sh);
-  padding:16px 20px;text-align:center;transition:transform .12s}
-.sc:hover{transform:translate(-2px,-2px)}
-.sn{font-family:var(--ff-title);font-size:clamp(26px,4vw,34px);font-weight:700;line-height:1}
-.sl{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.12em;color:#444;margin-top:3px}
+/* ── commands ───────────────────────────────────────────────────────── */
+.cmds{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+.cmd{display:grid;grid-template-columns:minmax(150px,auto) 1fr;gap:16px;align-items:center;border:var(--b);border-radius:var(--r-sm);
+  background:var(--surface);padding:14px 16px;box-shadow:var(--sh-sm)}
+.cmd > code{font:600 .9rem/1.2 var(--ff-mono);background:var(--yel);color:#1a1a1a;border:2px solid var(--line);border-radius:7px;padding:7px 9px;white-space:nowrap;justify-self:start}
+.cmd:nth-child(4n+2) > code{background:var(--sky)}.cmd:nth-child(4n+3) > code{background:var(--mint)}.cmd:nth-child(4n+4) > code{background:var(--lav)}
+.cmd span code{white-space:nowrap;font-size:.86em;background:color-mix(in srgb,var(--ink) 8%,transparent);padding:1px 5px;border-radius:4px}
+.cmd span{color:var(--muted);font-size:.93rem}
+@media (max-width:760px){.cmds{grid-template-columns:1fr}.cmd{grid-template-columns:1fr;gap:8px}}
 
-/* ── mobile ── */
-@media(max-width:520px){
-  .pi{padding:16px;align-items:flex-start;padding-top:20px;overflow-y:auto}
-  /* hide decorative cartoons and stickers on small screens */
-  .c,.stk{display:none}
-  .fg{grid-template-columns:1fr 1fr}
-  .cg{grid-template-columns:1fr 1fr}
-  .btns{flex-direction:column;align-items:stretch}
-  .btn{justify-content:center}
-  .stats{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-  .hero-banner{max-width:100%}
-  .ibox{font-size:13px;padding:11px 16px}
-  .tbody{min-height:160px;font-size:11px;padding:12px 14px 18px}
-}
-@media(prefers-reduced-motion:reduce){
-  .bob,.wig,.spn,.pls{animation:none}
-  .tc{animation:none}
+/* ── CI ─────────────────────────────────────────────────────────────── */
+.code-card{border:var(--b);border-radius:var(--r);background:var(--term-bg);color:var(--term-ink);box-shadow:var(--sh);overflow:hidden}
+.code-card .bar{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:2px solid #2a2c30;background:#191a1d;
+  font:500 .8rem/1 var(--ff-mono);color:var(--term-dim)}
+.code-card .bar button{border:2px solid #3a3d42;background:#24262a;color:#e7e5e4;border-radius:7px;font:600 .78rem/1 var(--ff-title);padding:7px 10px;cursor:pointer}
+.code-card .bar button:hover{border-color:var(--t-green);color:var(--t-green)}
+.code-card pre{padding:18px;font-size:clamp(.74rem,1.2vw,.86rem);line-height:1.7;overflow-x:auto}
+.y-k{color:var(--t-blue)}.y-s{color:#a5d6ff}.y-c{color:var(--term-dim)}
+
+/* ── FAQ ────────────────────────────────────────────────────────────── */
+.faq{display:grid;gap:14px;max-width:860px}
+.faq details{border:var(--b);border-radius:var(--r-sm);background:var(--surface);box-shadow:var(--sh-sm)}
+.faq summary{cursor:pointer;list-style:none;padding:18px 54px 18px 20px;font:600 1.06rem/1.35 var(--ff-title);position:relative}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary::after{content:"+";position:absolute;right:18px;top:50%;transform:translateY(-50%);width:28px;height:28px;display:grid;place-items:center;
+  border:2px solid var(--line);border-radius:8px;font:700 1.1rem/1 var(--ff-title);background:var(--yel);color:#1a1a1a}
+.faq details[open] summary::after{content:"\2212";background:var(--lime)}
+.faq details p{padding:0 20px 20px;color:var(--muted)}
+.faq code{font-size:.86em;background:color-mix(in srgb,var(--ink) 8%,transparent);padding:1px 5px;border-radius:4px}
+
+/* ── final CTA + footer ─────────────────────────────────────────────── */
+.final{padding:40px 0 96px}
+.final-card{border:var(--b);border-radius:22px;background:var(--lime);color:#1a1a1a;box-shadow:10px 10px 0 var(--line);
+  padding:clamp(28px,5vw,56px);display:grid;grid-template-columns:1.3fr 1fr;gap:32px;align-items:center;position:relative;overflow:hidden}
+.final-card h2{color:#1a1a1a}
+.final-card p{color:#3f3f3a;margin-top:12px;max-width:46ch}
+.final-card .install{margin:0;max-width:none;background:#fff;box-shadow:6px 6px 0 #1a1a1a;border-color:#1a1a1a}
+.final-card .install code{color:#1a1a1a}
+.final-card .install code::before{color:#57534e}
+.final-card .copy{border-left-color:#1a1a1a}
+.final-card .cta-row{margin-top:16px}
+.final-card .btn{border-color:#1a1a1a;box-shadow:3px 3px 0 #1a1a1a;background:#fff;color:#1a1a1a}
+.final-card .btn.primary{background:#1a1a1a;color:#FFF8F0}
+@media (max-width:860px){.final-card{grid-template-columns:1fr}}
+footer{border-top:var(--b);padding:28px 0 40px;font-size:.9rem;color:var(--muted)}
+footer .wrap{display:flex;flex-wrap:wrap;gap:16px 28px;justify-content:space-between;align-items:center}
+footer nav{display:flex;flex-wrap:wrap;gap:18px}
+footer a{text-decoration:none}
+footer a:hover{text-decoration:underline}
+
+/* ── motion ─────────────────────────────────────────────────────────── */
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s ease,transform .6s ease}
+.reveal.in{opacity:1;transform:none}
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  .reveal{opacity:1;transform:none;transition:none}
+  .mascot,.caret{animation:none}
+  .btn,.feat{transition:none}
 }
 </style>
 </head>
 <body>
+<a class="sr" href="#main">Skip to content</a>
 
-<div id="stage">
-
-<!-- ── nav dots ── -->
-<div id="nav">
-  <div class="dot on" data-i="0"></div>
-  <div class="dot" data-i="1"></div>
-  <div class="dot" data-i="2"></div>
-  <div class="dot" data-i="3"></div>
-  <div class="dot" data-i="4"></div>
-</div>
-<div id="hint">swipe &rarr;</div>
-
-<!-- ═══ P1: HERO ═══ -->
-<div class="panel" id="p1">
-<div class="pi">
-  <!-- snake -->
-  <svg class="c bob" style="top:8%;left:4%;width:80px" viewBox="0 0 80 80">
-    <ellipse cx="40" cy="52" rx="24" ry="18" fill="var(--mint)" stroke="var(--black)" stroke-width="3"/>
-    <circle cx="40" cy="28" r="16" fill="var(--mint)" stroke="var(--black)" stroke-width="3"/>
-    <circle cx="34" cy="24" r="4.5" fill="var(--black)"/><circle cx="46" cy="24" r="4.5" fill="var(--black)"/>
-    <circle cx="35.5" cy="22.5" r="1.8" fill="white"/><circle cx="47.5" cy="22.5" r="1.8" fill="white"/>
-    <path d="M35 34 Q40 39 45 34" fill="none" stroke="var(--black)" stroke-width="2.5" stroke-linecap="round"/>
-    <path d="M38 46 L40 53 L42 46" fill="var(--pink)" stroke="var(--black)" stroke-width="1.5" stroke-linejoin="round"/>
-  </svg>
-  <!-- box -->
-  <svg class="c bob" style="top:10%;right:5%;width:68px;animation-delay:.5s" viewBox="0 0 68 68">
-    <rect x="8" y="20" width="52" height="40" rx="5" fill="var(--peach)" stroke="var(--black)" stroke-width="3"/>
-    <rect x="8" y="20" width="52" height="14" rx="5" fill="var(--yel)" stroke="var(--black)" stroke-width="3"/>
-    <line x1="34" y1="20" x2="34" y2="60" stroke="var(--black)" stroke-width="2"/>
-    <circle cx="26" cy="44" r="3.5" fill="var(--black)"/><circle cx="42" cy="44" r="3.5" fill="var(--black)"/>
-    <circle cx="27" cy="43" r="1.4" fill="white"/><circle cx="43" cy="43" r="1.4" fill="white"/>
-    <path d="M28 51 Q34 55 40 51" fill="none" stroke="var(--black)" stroke-width="2" stroke-linecap="round"/>
-  </svg>
-  <!-- bug -->
-  <svg class="c wig" style="bottom:10%;left:6%;width:56px" viewBox="0 0 56 60">
-    <ellipse cx="28" cy="40" rx="14" ry="12" fill="var(--pink)" stroke="var(--black)" stroke-width="3"/>
-    <circle cx="28" cy="24" r="11" fill="var(--pink)" stroke="var(--black)" stroke-width="3"/>
-    <circle cx="23" cy="21" r="3" fill="var(--black)"/><circle cx="33" cy="21" r="3" fill="var(--black)"/>
-    <circle cx="24" cy="20" r="1.2" fill="white"/><circle cx="34" cy="20" r="1.2" fill="white"/>
-    <path d="M24 28 Q28 32 32 28" fill="none" stroke="var(--black)" stroke-width="2" stroke-linecap="round"/>
-    <line x1="20" y1="15" x2="14" y2="7" stroke="var(--black)" stroke-width="2.5" stroke-linecap="round"/>
-    <line x1="36" y1="15" x2="42" y2="7" stroke="var(--black)" stroke-width="2.5" stroke-linecap="round"/>
-    <circle cx="14" cy="7" r="2.5" fill="var(--lav)" stroke="var(--black)" stroke-width="2"/>
-    <circle cx="42" cy="7" r="2.5" fill="var(--lav)" stroke="var(--black)" stroke-width="2"/>
-    <line x1="14" y1="34" x2="6" y2="30" stroke="var(--black)" stroke-width="2" stroke-linecap="round"/>
-    <line x1="14" y1="42" x2="6" y2="46" stroke="var(--black)" stroke-width="2" stroke-linecap="round"/>
-    <line x1="42" y1="34" x2="50" y2="30" stroke="var(--black)" stroke-width="2" stroke-linecap="round"/>
-    <line x1="42" y1="42" x2="50" y2="46" stroke="var(--black)" stroke-width="2" stroke-linecap="round"/>
-  </svg>
-  <!-- check buddy -->
-  <svg class="c bob" style="bottom:8%;right:7%;width:64px;animation-delay:1s" viewBox="0 0 64 64">
-    <circle cx="32" cy="32" r="26" fill="var(--mint)" stroke="var(--black)" stroke-width="3"/>
-    <path d="M19 33 L29 43 L47 22" fill="none" stroke="var(--black)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
-    <circle cx="22" cy="24" r="3.5" fill="var(--black)"/><circle cx="43" cy="24" r="3.5" fill="var(--black)"/>
-    <circle cx="23.5" cy="22.5" r="1.4" fill="white"/><circle cx="44.5" cy="22.5" r="1.4" fill="white"/>
-  </svg>
-  <!-- cloud -->
-  <svg class="c bob" style="top:46%;left:2%;width:50px;animation-delay:.8s" viewBox="0 0 52 36">
-    <ellipse cx="26" cy="26" rx="20" ry="12" fill="white" stroke="var(--black)" stroke-width="2.5"/>
-    <circle cx="16" cy="22" r="9" fill="white" stroke="var(--black)" stroke-width="2.5"/>
-    <circle cx="30" cy="18" r="12" fill="white" stroke="var(--black)" stroke-width="2.5"/>
-    <circle cx="18" cy="20" r="2.5" fill="var(--black)"/><circle cx="28" cy="18" r="2.5" fill="var(--black)"/>
-    <circle cx="19" cy="19" r="1" fill="white"/><circle cx="29" cy="17" r="1" fill="white"/>
-  </svg>
-  <!-- sparkles -->
-  <svg class="c pls" style="top:20%;left:20%;width:20px;opacity:.5" viewBox="0 0 24 24"><polygon points="12,1 13.8,8.5 21,9 14.8,14 17,22 12,17 7,22 9.2,14 3,9 10.2,8.5" fill="var(--pink)" stroke="var(--black)" stroke-width="1.5"/></svg>
-  <svg class="c" style="bottom:28%;right:20%;width:16px;opacity:.4" viewBox="0 0 24 24"><polygon points="12,1 13.8,8.5 21,9 14.8,14 17,22 12,17 7,22 9.2,14 3,9 10.2,8.5" fill="var(--lav)" stroke="var(--black)" stroke-width="1.5"/></svg>
-  <!-- stickers -->
-  <div class="stk" style="top:22%;left:15%;background:var(--yel);transform:rotate(-7deg);animation-delay:.2s">112 tests</div>
-  <div class="stk" style="top:30%;right:13%;background:var(--mint);transform:rotate(5deg);animation-delay:.9s">MIT licensed</div>
-  <div class="stk" style="bottom:18%;left:18%;background:var(--lav);transform:rotate(-3deg);animation-delay:1.4s">zero keys</div>
-
-  <div class="hero">
-    <img src="banner.png" alt="pyupcheck" class="hero-banner">
-    <h1>Know before<br>you <span class="acc">upgrade.</span></h1>
-    <p class="hero-sub">Scans your code, reads changelogs, tells you exactly what will break before you run pip install.</p>
-    <div class="ibox"><span class="dol">$</span>pip install pyupcheck</div><br>
-    <span class="sub-note">Python 3.9+ &middot; any OS</span>
+<!-- ═══ nav ═══ -->
+<header class="nav" id="nav">
+  <div class="wrap">
+    <a class="logo" href="#top" aria-label="pyupcheck home">
+      <svg viewBox="0 0 64 64" aria-hidden="true"><path d="M32 4 56 14 52 40Q46 56 32 60 18 56 12 40L8 14Z" fill="var(--lime)" stroke="var(--line)" stroke-width="5" stroke-linejoin="round"/><path d="M21 33 29 41 44 24" fill="none" stroke="#1a1a1a" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      pyupcheck
+    </a>
+    <nav class="nav-links" aria-label="Main">
+      <a class="hide-sm" href="#how">How it works</a>
+      <a class="hide-sm" href="#features">Features</a>
+      <a class="hide-sm" href="#ci">CI</a>
+      <a class="hide-sm" href="#faq">FAQ</a>
+      <button class="btn theme-btn" id="theme" type="button" aria-label="Switch between light and dark">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8"/></svg>
+      </button>
+      <a class="btn gh-btn" href="https://github.com/Astronomox/pyupcheck-Astronomox" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.53-1.33-1.29-1.69-1.29-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.71 1.26 3.37.96.1-.75.4-1.26.73-1.55-2.56-.29-5.25-1.28-5.25-5.69 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.42-2.7 5.39-5.27 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z"/></svg>
+        <span>GitHub</span>
+      </a>
+    </nav>
   </div>
-</div>
-</div>
+</header>
 
-<!-- ═══ P2: FEATURES ═══ -->
-<div class="panel" id="p2">
-<div class="pi">
-  <svg class="c wig" style="top:6%;left:4%;width:56px" viewBox="0 0 56 56">
-    <polygon points="28,5 53,50 3,50" fill="var(--yel)" stroke="var(--black)" stroke-width="3" stroke-linejoin="round"/>
-    <circle cx="22" cy="36" r="3" fill="var(--black)"/><circle cx="34" cy="36" r="3" fill="var(--black)"/>
-    <circle cx="23" cy="35" r="1.2" fill="white"/><circle cx="35" cy="35" r="1.2" fill="white"/>
-    <path d="M24 43 Q28 47 32 43" fill="none" stroke="var(--black)" stroke-width="2" stroke-linecap="round"/>
-    <rect x="26" y="22" width="4" height="9" rx="2" fill="var(--black)"/>
-  </svg>
-  <svg class="c bob" style="top:8%;right:5%;width:44px;animation-delay:.6s" viewBox="0 0 44 44">
-    <polygon points="22,3 38,22 22,41 6,22" fill="var(--lav)" stroke="var(--black)" stroke-width="3"/>
-    <circle cx="18" cy="20" r="2.5" fill="var(--black)"/><circle cx="26" cy="20" r="2.5" fill="var(--black)"/>
-    <circle cx="19" cy="19" r="1" fill="white"/><circle cx="27" cy="19" r="1" fill="white"/>
-    <path d="M18 26 Q22 29 26 26" fill="none" stroke="var(--black)" stroke-width="1.8" stroke-linecap="round"/>
-  </svg>
-  <svg class="c spn" style="bottom:8%;right:6%;width:44px" viewBox="0 0 44 44">
-    <circle cx="22" cy="22" r="8" fill="var(--sky)" stroke="var(--black)" stroke-width="3"/>
-    <rect x="19" y="1" width="6" height="9" rx="2" fill="var(--sky)" stroke="var(--black)" stroke-width="2"/>
-    <rect x="19" y="34" width="6" height="9" rx="2" fill="var(--sky)" stroke="var(--black)" stroke-width="2"/>
-    <rect x="1" y="19" width="9" height="6" rx="2" fill="var(--sky)" stroke="var(--black)" stroke-width="2"/>
-    <rect x="34" y="19" width="9" height="6" rx="2" fill="var(--sky)" stroke="var(--black)" stroke-width="2"/>
-    <circle cx="22" cy="22" r="3" fill="var(--black)"/>
-  </svg>
-  <svg class="c bob" style="bottom:6%;left:4%;width:48px;animation-delay:.4s" viewBox="0 0 48 56">
-    <rect x="7" y="14" width="34" height="28" rx="5" fill="var(--lav)" stroke="var(--black)" stroke-width="3"/>
-    <rect x="13" y="6" width="22" height="12" rx="4" fill="var(--lav)" stroke="var(--black)" stroke-width="3"/>
-    <line x1="24" y1="2" x2="24" y2="6" stroke="var(--black)" stroke-width="2.5" stroke-linecap="round"/>
-    <circle cx="24" cy="2" r="2.5" fill="var(--pink)" stroke="var(--black)" stroke-width="2"/>
-    <rect x="13" y="18" width="8" height="7" rx="2" fill="white" stroke="var(--black)" stroke-width="2"/>
-    <rect x="27" y="18" width="8" height="7" rx="2" fill="white" stroke="var(--black)" stroke-width="2"/>
-    <circle cx="17" cy="21" r="2" fill="var(--sky)"/><circle cx="31" cy="21" r="2" fill="var(--sky)"/>
-    <rect x="14" y="29" width="20" height="5" rx="2" fill="var(--black)"/>
-    <rect x="3" y="20" width="6" height="10" rx="2" fill="var(--lav)" stroke="var(--black)" stroke-width="2"/>
-    <rect x="39" y="20" width="6" height="10" rx="2" fill="var(--lav)" stroke="var(--black)" stroke-width="2"/>
-    <rect x="11" y="42" width="10" height="11" rx="3" fill="var(--lav)" stroke="var(--black)" stroke-width="2.5"/>
-    <rect x="27" y="42" width="10" height="11" rx="3" fill="var(--lav)" stroke="var(--black)" stroke-width="2.5"/>
-  </svg>
+<main id="main">
+<!-- ═══ hero ═══ -->
+<section class="hero" id="top">
+  <div class="wrap">
+    <div>
+      <span class="kicker"><span class="dot"></span>Free &amp; open source<span class="ver">v<span id="ver">0.16</span></span></span>
+      <h1>Know what breaks <span class="mark">before</span> you upgrade.</h1>
+      <p class="lead">pyupcheck reads your code and the real API of both versions, then shows you the exact lines a dependency upgrade breaks, and rewrites the ones it safely can.</p>
+      <div class="install">
+        <code id="install-cmd">pip install pyupcheck</code>
+        <button class="copy" type="button" data-copy="pip install pyupcheck">Copy</button>
+      </div>
+      <div class="cta-row">
+        <a class="btn primary" href="#how">See how it works</a>
+        <a class="btn" href="https://github.com/Astronomox/pyupcheck-Astronomox#readme" target="_blank" rel="noopener">Read the docs</a>
+      </div>
+      <p class="works-with">Works with <b>pip</b>, <b>uv</b>, <b>Poetry</b>, <b>PDM</b>, <b>Pipenv</b>, <b>conda</b> and <b>pixi</b>, plus Jupyter notebooks. Python 3.10+.</p>
+    </div>
 
-  <div class="feat-wrap">
-    <div class="pt">What it does</div>
-    <div class="fg">
-      <div class="fc"><div class="fi" style="background:var(--mint)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--black)" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="16" y1="16" x2="21" y2="21"/></svg></div><h3>AST scanner</h3><p>Every .py .pyi .ipynb. Finds imports, calls, kwargs.</p></div>
-      <div class="fc"><div class="fi" style="background:var(--peach)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--black)" stroke-width="2.5" stroke-linecap="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div><h3>Changelog parser</h3><p>Pulls from GitHub and PyPI. Finds removals and deprecations.</p></div>
-      <div class="fc"><div class="fi" style="background:var(--lav)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--black)" stroke-width="2.5" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></div><h3>Deep mode</h3><p>Diffs real signatures. Catches removed params at kwarg level.</p></div>
-      <div class="fc"><div class="fi" style="background:var(--yel)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--black)" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg></div><h3>Auto-fix</h3><p>Rewrites requirements.txt to safe versions. Dry-run first.</p></div>
-      <div class="fc"><div class="fi" style="background:var(--pink)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--black)" stroke-width="2.5" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9l6 6M15 9l-6 6"/></svg></div><h3>CI-ready</h3><p>Exit code 1 on breaking changes. Generates Actions + pre-commit.</p></div>
-      <div class="fc"><div class="fi" style="background:var(--sky)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--black)" stroke-width="2.5" stroke-linecap="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg></div><h3>5 dep formats</h3><p>requirements.txt, pyproject.toml, setup.cfg, setup.py, env.yml</p></div>
+    <div class="hero-art">
+      <svg class="mascot m-shield" viewBox="0 0 46 56" aria-hidden="true"><path d="M23 4 L41 14 L38 36 Q34 50 23 54 Q12 50 8 36 L5 14Z" fill="#BEF264" stroke="#1a1a1a" stroke-width="3"/><path d="M16 28 L21 35 L32 20" fill="none" stroke="#1a1a1a" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="23" cy="13" r="3.5" fill="#fff" stroke="#1a1a1a" stroke-width="2"/><circle cx="21.6" cy="12.5" r="1.3" fill="#1a1a1a"/><circle cx="24.6" cy="12.5" r="1.3" fill="#1a1a1a"/></svg>
+      <svg class="mascot m-lens" viewBox="0 0 54 54" aria-hidden="true"><circle cx="22" cy="22" r="14" fill="#7DD3FC" stroke="#1a1a1a" stroke-width="3"/><line x1="33" y1="33" x2="47" y2="47" stroke="#1a1a1a" stroke-width="4.5" stroke-linecap="round"/><circle cx="18" cy="19" r="3" fill="#1a1a1a"/><circle cx="27" cy="19" r="3" fill="#1a1a1a"/><circle cx="19" cy="18" r="1.2" fill="#fff"/><circle cx="28" cy="18" r="1.2" fill="#fff"/><path d="M18 26 Q23 30 28 26" fill="none" stroke="#1a1a1a" stroke-width="2" stroke-linecap="round"/></svg>
+      <div class="term" role="img" aria-label="Terminal: pyupcheck check-all --deep finds 3 breaking usages across flask and numpy, and tells you which migrate commands fix them">
+        <div class="term-bar"><i></i><i></i><i></i><span>~/my-app · zsh</span></div>
+        <pre id="term" aria-hidden="true"></pre>
+      </div>
     </div>
   </div>
-</div>
-</div>
+</section>
 
-<!-- ═══ P3: TERMINAL ═══ -->
-<div class="panel" id="p3">
-<div class="pi">
-  <svg class="c bob" style="top:8%;right:7%;width:54px" viewBox="0 0 54 54">
-    <circle cx="22" cy="22" r="14" fill="var(--sky)" stroke="var(--black)" stroke-width="3"/>
-    <line x1="33" y1="33" x2="47" y2="47" stroke="var(--black)" stroke-width="4" stroke-linecap="round"/>
-    <circle cx="18" cy="19" r="3" fill="var(--black)"/><circle cx="27" cy="19" r="3" fill="var(--black)"/>
-    <circle cx="19" cy="18" r="1.2" fill="white"/><circle cx="28" cy="18" r="1.2" fill="white"/>
-    <path d="M18 26 Q23 30 28 26" fill="none" stroke="var(--black)" stroke-width="2" stroke-linecap="round"/>
-  </svg>
-  <svg class="c wig" style="bottom:9%;left:5%;width:48px" viewBox="0 0 46 56">
-    <path d="M23 4 L41 14 L38 36 Q34 50 23 54 Q12 50 8 36 L5 14Z" fill="var(--lime)" stroke="var(--black)" stroke-width="3"/>
-    <path d="M16 28 L21 35 L32 20" fill="none" stroke="var(--black)" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
-    <circle cx="23" cy="14" r="3.5" fill="white" stroke="var(--black)" stroke-width="2"/>
-    <circle cx="21" cy="13" r="1.4" fill="var(--black)"/><circle cx="25" cy="13" r="1.4" fill="var(--black)"/>
-  </svg>
-  <svg class="c bob" style="top:42%;right:4%;width:46px;animation-delay:1s" viewBox="0 0 46 56">
-    <path d="M9 52 L9 24 Q9 6 23 6 Q37 6 37 24 L37 52 L30 46 L23 52 L16 46Z" fill="white" stroke="var(--black)" stroke-width="3"/>
-    <circle cx="17" cy="26" r="4" fill="var(--black)"/><circle cx="29" cy="26" r="4" fill="var(--black)"/>
-    <circle cx="18.5" cy="24.5" r="1.5" fill="white"/><circle cx="30.5" cy="24.5" r="1.5" fill="white"/>
-    <path d="M17 33 Q23 37 29 33" fill="none" stroke="var(--black)" stroke-width="2" stroke-linecap="round"/>
-  </svg>
-  <svg class="c pls" style="top:14%;left:6%;width:26px;opacity:.6" viewBox="0 0 24 24"><polygon points="12,1 13.8,8.5 21,9 14.8,14 17,22 12,17 7,22 9.2,14 3,9 10.2,8.5" fill="var(--yel)" stroke="var(--black)" stroke-width="1.5"/></svg>
-
-  <div class="tw">
-    <div class="pt" style="margin-bottom:14px">See it run</div>
-    <div class="twin">
-      <div class="tbar"><div class="td r"></div><div class="td y"></div><div class="td g"></div><div class="tbl">pyupcheck</div></div>
-      <div class="tbody" id="tb"></div>
-    </div>
-  </div>
-</div>
-</div>
-
-<!-- ═══ P4: COMMANDS ═══ -->
-<div class="panel" id="p4">
-<div class="pi">
-  <svg class="c bob" style="top:6%;right:5%;width:56px" viewBox="0 0 56 74">
-    <path d="M28 10 Q17 24 17 48 L28 58 L39 48 Q39 24 28 10Z" fill="var(--cream)" stroke="var(--black)" stroke-width="3"/>
-    <circle cx="28" cy="30" r="6" fill="var(--sky)" stroke="var(--black)" stroke-width="2.5"/>
-    <circle cx="26" cy="28" r="2" fill="white"/>
-    <path d="M17 43 Q8 46 10 53 L17 48Z" fill="var(--pink)" stroke="var(--black)" stroke-width="2"/>
-    <path d="M39 43 Q48 46 46 53 L39 48Z" fill="var(--pink)" stroke="var(--black)" stroke-width="2"/>
-    <path d="M22 58 Q25 70 28 65 Q31 70 34 58" fill="var(--peach)" stroke="var(--black)" stroke-width="2"/>
-  </svg>
-  <svg class="c pls" style="top:8%;left:5%;width:42px" viewBox="0 0 44 44">
-    <path d="M22 40 Q4 26 8 14 Q12 5 22 13 Q32 5 36 14 Q40 26 22 40Z" fill="var(--pink)" stroke="var(--black)" stroke-width="3"/>
-    <circle cx="16" cy="20" r="3" fill="var(--black)"/><circle cx="28" cy="20" r="3" fill="var(--black)"/>
-    <circle cx="17" cy="19" r="1.2" fill="white"/><circle cx="29" cy="19" r="1.2" fill="white"/>
-  </svg>
-  <svg class="c bob" style="bottom:5%;left:45%;width:48px;animation-delay:.4s" viewBox="0 0 48 56">
-    <circle cx="24" cy="24" r="18" fill="var(--yel)" stroke="var(--black)" stroke-width="3"/>
-    <circle cx="24" cy="24" r="7" fill="var(--cream)" stroke="var(--black)" stroke-width="2.5"/>
-    <circle cx="16" cy="15" r="2.5" fill="var(--pink)" stroke="var(--black)" stroke-width="1.5"/>
-    <circle cx="30" cy="13" r="2" fill="var(--lav)" stroke="var(--black)" stroke-width="1.5"/>
-    <circle cx="36" cy="22" r="2" fill="var(--mint)" stroke="var(--black)" stroke-width="1.5"/>
-    <circle cx="17" cy="33" r="2" fill="var(--sky)" stroke="var(--black)" stroke-width="1.5"/>
-    <circle cx="31" cy="35" r="2" fill="var(--lime)" stroke="var(--black)" stroke-width="1.5"/>
-  </svg>
-  <svg class="c bob" style="top:7%;left:42%;width:50px;animation-delay:.7s" viewBox="0 0 50 58">
-    <ellipse cx="25" cy="42" rx="16" ry="11" fill="var(--yel)" stroke="var(--black)" stroke-width="3"/>
-    <circle cx="25" cy="24" r="14" fill="var(--yel)" stroke="var(--black)" stroke-width="3"/>
-    <polygon points="13,15 8,2 17,11" fill="var(--yel)" stroke="var(--black)" stroke-width="2.5" stroke-linejoin="round"/>
-    <polygon points="37,15 42,2 33,11" fill="var(--yel)" stroke="var(--black)" stroke-width="2.5" stroke-linejoin="round"/>
-    <circle cx="20" cy="22" r="3.5" fill="var(--black)"/><circle cx="30" cy="22" r="3.5" fill="var(--black)"/>
-    <circle cx="21.5" cy="20.5" r="1.5" fill="white"/><circle cx="31.5" cy="20.5" r="1.5" fill="white"/>
-    <ellipse cx="25" cy="27" rx="2.5" ry="1.8" fill="var(--pink)" stroke="var(--black)" stroke-width="1.5"/>
-    <path d="M20 31 Q25 35 30 31" fill="none" stroke="var(--black)" stroke-width="2" stroke-linecap="round"/>
-    <line x1="14" y1="26" x2="4" y2="24" stroke="var(--black)" stroke-width="1.5" stroke-linecap="round"/>
-    <line x1="14" y1="28" x2="4" y2="30" stroke="var(--black)" stroke-width="1.5" stroke-linecap="round"/>
-    <line x1="36" y1="26" x2="46" y2="24" stroke="var(--black)" stroke-width="1.5" stroke-linecap="round"/>
-    <line x1="36" y1="28" x2="46" y2="30" stroke="var(--black)" stroke-width="1.5" stroke-linecap="round"/>
-  </svg>
-
-  <div class="cw">
-    <div class="pt">11 commands</div>
-    <div class="cg">
-      <div class="cp" style="background:var(--mint)"><div class="cpn">check</div><div class="cpd">One package, one target version</div></div>
-      <div class="cp" style="background:var(--sky)"><div class="cpn">check-all</div><div class="cpd">Batch check every dependency</div></div>
-      <div class="cp" style="background:var(--yel)"><div class="cpn">fix</div><div class="cpd">Rewrite to safe versions</div></div>
-      <div class="cp" style="background:var(--pink)"><div class="cpn">outdated</div><div class="cpd">List deps with newer versions</div></div>
-      <div class="cp" style="background:var(--lav)"><div class="cpn">diff</div><div class="cpd">Changelog diff between versions</div></div>
-      <div class="cp" style="background:var(--lime)"><div class="cpn">scan</div><div class="cpd">List all usages of a package</div></div>
-      <div class="cp" style="background:var(--peach)"><div class="cpn">ci-setup</div><div class="cpd">Generate GitHub Actions config</div></div>
-      <div class="cp" style="background:var(--mint)"><div class="cpn">versions</div><div class="cpd">List available PyPI versions</div></div>
-      <div class="cp" style="background:var(--sky)"><div class="cpn">banner</div><div class="cpd">Live version info from PyPI</div></div>
-      <div class="cp" style="background:var(--yel)"><div class="cpn">cache-clear</div><div class="cpd">Wipe local response cache</div></div>
-      <div class="cp" style="background:var(--pink)"><div class="cpn">install-completion</div><div class="cpd">Shell tab completion</div></div>
-    </div>
-  </div>
-</div>
-</div>
-
-<!-- ═══ P5: CTA ═══ -->
-<div class="panel" id="p5">
-<div class="pi">
-  <svg class="c bob" style="top:8%;left:6%;width:62px" viewBox="0 0 60 74">
-    <rect x="18" y="52" width="24" height="8" rx="3" fill="var(--yel)" stroke="var(--black)" stroke-width="3"/>
-    <rect x="23" y="42" width="14" height="14" rx="3" fill="var(--yel)" stroke="var(--black)" stroke-width="2.5"/>
-    <path d="M16 13 L16 34 Q16 47 30 47 Q44 47 44 34 L44 13Z" fill="var(--yel)" stroke="var(--black)" stroke-width="3"/>
-    <path d="M16 19 Q7 21 9 30 Q11 38 16 36" fill="none" stroke="var(--black)" stroke-width="2.5"/>
-    <path d="M44 19 Q53 21 51 30 Q49 38 44 36" fill="none" stroke="var(--black)" stroke-width="2.5"/>
-    <circle cx="25" cy="28" r="3" fill="var(--black)"/><circle cx="35" cy="28" r="3" fill="var(--black)"/>
-    <circle cx="26" cy="27" r="1.2" fill="white"/><circle cx="36" cy="27" r="1.2" fill="white"/>
-    <path d="M26 36 Q30 40 34 36" fill="none" stroke="var(--black)" stroke-width="2.5" stroke-linecap="round"/>
-  </svg>
-  <svg class="c wig" style="top:10%;right:7%;width:52px" viewBox="0 0 52 56">
-    <path d="M7 52 L20 17 L40 38Z" fill="var(--lav)" stroke="var(--black)" stroke-width="3" stroke-linejoin="round"/>
-    <circle cx="31" cy="9" r="4.5" fill="var(--pink)" stroke="var(--black)" stroke-width="2.5"/>
-    <circle cx="43" cy="18" r="3.5" fill="var(--mint)" stroke="var(--black)" stroke-width="2"/>
-    <circle cx="46" cy="32" r="3" fill="var(--yel)" stroke="var(--black)" stroke-width="2"/>
-    <polygon points="26,3 28,9 34,9 29,13 31,19 26,15 21,19 23,13 18,9 24,9" fill="var(--yel)" stroke="var(--black)" stroke-width="1.5"/>
-    <rect x="36" y="6" width="5" height="5" rx="1" fill="var(--sky)" stroke="var(--black)" stroke-width="1.5" transform="rotate(20 38 8)"/>
-  </svg>
-  <!-- mushroom -->
-  <svg class="c bob" style="bottom:6%;right:6%;width:50px;animation-delay:.9s" viewBox="0 0 50 60">
-    <ellipse cx="25" cy="34" rx="10" ry="22" fill="var(--cream)" stroke="var(--black)" stroke-width="3"/>
-    <ellipse cx="25" cy="22" rx="22" ry="14" fill="var(--pink)" stroke="var(--black)" stroke-width="3"/>
-    <circle cx="16" cy="16" r="4.5" fill="white" stroke="var(--black)" stroke-width="2"/>
-    <circle cx="31" cy="14" r="3.5" fill="white" stroke="var(--black)" stroke-width="2"/>
-    <circle cx="25" cy="24" r="3" fill="white" stroke="var(--black)" stroke-width="2"/>
-    <circle cx="20" cy="38" r="2.5" fill="var(--black)"/><circle cx="30" cy="38" r="2.5" fill="var(--black)"/>
-    <circle cx="21" cy="37" r="1" fill="white"/><circle cx="31" cy="37" r="1" fill="white"/>
-    <path d="M20 44 Q25 48 30 44" fill="none" stroke="var(--black)" stroke-width="2" stroke-linecap="round"/>
-  </svg>
-  <!-- wavy snake bottom-left -->
-  <svg class="c bob" style="bottom:5%;left:4%;width:80px;animation-delay:.5s" viewBox="0 0 82 32">
-    <path d="M4 16 Q12 4 20 16 Q28 28 36 16 Q44 4 52 16 Q60 28 68 16 Q76 4 80 16" fill="none" stroke="var(--lav)" stroke-width="7" stroke-linecap="round"/>
-    <path d="M4 16 Q12 4 20 16 Q28 28 36 16 Q44 4 52 16 Q60 28 68 16 Q76 4 80 16" fill="none" stroke="var(--black)" stroke-width="2" stroke-linecap="round"/>
-    <circle cx="78" cy="14" r="6" fill="var(--lav)" stroke="var(--black)" stroke-width="2.5"/>
-    <circle cx="75" cy="12" r="2" fill="var(--black)"/><circle cx="81" cy="12" r="2" fill="var(--black)"/>
-    <circle cx="75.8" cy="11.2" r=".8" fill="white"/><circle cx="81.8" cy="11.2" r=".8" fill="white"/>
-  </svg>
-  <svg class="c pls" style="bottom:24%;left:3%;width:18px;opacity:.5" viewBox="0 0 24 24"><polygon points="12,1 13.8,8.5 21,9 14.8,14 17,22 12,17 7,22 9.2,14 3,9 10.2,8.5" fill="var(--yel)" stroke="var(--black)" stroke-width="1.5"/></svg>
-  <svg class="c" style="top:36%;right:3%;width:16px;opacity:.4" viewBox="0 0 24 24"><polygon points="12,1 13.8,8.5 21,9 14.8,14 17,22 12,17 7,22 9.2,14 3,9 10.2,8.5" fill="var(--pink)" stroke="var(--black)" stroke-width="1.5"/></svg>
-
-  <div class="cta">
-    <h2>Ship safer.</h2>
-    <p>Open source. MIT licensed. Built by AgbaDev (Astronomox).</p>
-    <div class="btns">
-      <a class="btn" style="background:var(--black);color:var(--cream)" href="https://pypi.org/project/pyupcheck/" target="_blank">pip install pyupcheck</a>
-      <a class="btn" style="background:var(--lav)" href="https://github.com/Astronomox/pyupcheck-Astronomox" target="_blank">GitHub</a>
-      <a class="btn" style="background:var(--mint)" href="https://github.com/Astronomox/pyupcheck-Astronomox/blob/main/CONTRIBUTING.md" target="_blank">Contribute</a>
-    </div>
+<!-- ═══ proof ═══ -->
+<section class="proof" aria-labelledby="proof-h">
+  <h2 id="proof-h" class="sr">Measured accuracy</h2>
+  <div class="wrap">
     <div class="stats">
-      <div class="sc" style="background:var(--yel)"><div class="sn">11</div><div class="sl">commands</div></div>
-      <div class="sc" style="background:var(--lav)"><div class="sn">112</div><div class="sl">tests</div></div>
-      <div class="sc" style="background:var(--mint)"><div class="sn">5</div><div class="sl">formats</div></div>
-      <div class="sc" style="background:var(--pink)"><div class="sn">0</div><div class="sl">api keys</div></div>
-      <div class="sc" style="background:var(--sky)"><div class="sn">v0.4</div><div class="sl">latest</div></div>
+      <div class="stat reveal"><div class="num">100%</div><div class="lbl">of breaking lines caught across 52 real upgrades</div><span class="chip" style="background:var(--mint);color:#1a1a1a">deep mode</span></div>
+      <div class="stat reveal"><div class="num">0</div><div class="lbl">false alarms on those upgrades, including 8 that break nothing</div><span class="chip" style="background:var(--pink);color:#1a1a1a">precision</span></div>
+      <div class="stat reveal"><div class="num">96.7%</div><div class="lbl">of the 1,000 most-downloaded PyPI packages can be deep-checked</div><span class="chip" style="background:var(--sky);color:#1a1a1a">reach</span></div>
+      <div class="stat reveal"><div class="num">8/8</div><div class="lbl">automatic rewrites came out exactly as a person would write them</div><span class="chip" style="background:var(--yel);color:#1a1a1a">migrate</span></div>
+    </div>
+    <p class="proof-note">Upgrades include Django 4 and 5, Flask 3, NumPy 2, pandas 2, Pydantic 2, SQLAlchemy 2, SciPy 1.14 and Pillow 10. Both benchmarks are in the repository, and anyone can rerun them.</p>
+  </div>
+</section>
+
+<!-- ═══ how it works ═══ -->
+<section id="how" aria-labelledby="how-h">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="tag">How it works</span>
+      <h2 id="how-h">From “will this break?” to a fixed diff in one command.</h2>
+    </div>
+    <div class="steps">
+      <article class="step reveal">
+        <h3>Scan your code</h3>
+        <p>Every <code>.py</code>, <code>.pyi</code> and notebook is parsed, not grepped: imports, aliases, attribute chains, keyword arguments, objects passed between functions, even <code>getattr(np, "float_")</code>.</p>
+      </article>
+      <article class="step reveal">
+        <h3>Compare the versions</h3>
+        <p>It downloads both releases and diffs their real public API, then reads the release notes and migration guides for what code can’t show. Nothing is installed or run.</p>
+      </article>
+      <article class="step reveal">
+        <h3>Fix it</h3>
+        <p><code>migrate</code> rewrites what’s verified safe: moved names, renamed arguments, keyword-only calls. For the rest, <code>explain</code> asks Claude for a before/after of each change.</p>
+      </article>
     </div>
   </div>
-</div>
-</div>
+</section>
 
-</div><!-- /stage -->
+<!-- ═══ migrate showcase ═══ -->
+<section aria-labelledby="mig-h" style="padding-top:24px">
+  <div class="wrap show">
+    <div class="show-text reveal">
+      <span class="kicker" style="background:var(--yel);color:#1a1a1a">pyupcheck migrate</span>
+      <h2 id="mig-h">It doesn’t just warn you. It fixes your code.</h2>
+      <p class="lead">Every replacement is checked against the new version’s real API before a line is touched. Anything it can’t prove safe is left for you, with the reason.</p>
+      <ul>
+        <li><span class="tick"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></svg></span><span><b>Shows the diff first.</b> Nothing is written until you add <code>--write</code>.</span></li>
+        <li><span class="tick"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></svg></span><span><b>Keeps your style.</b> Edits come from exact source positions, so formatting and comments stay.</span></li>
+        <li><span class="tick"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></svg></span><span><b>Works in notebooks.</b> Each fix lands in the right cell, and outputs are untouched.</span></li>
+      </ul>
+    </div>
+    <div class="diff reveal" role="img" aria-label="A diff from pyupcheck migrate numpy 2.0.0: np.float_ becomes np.float64 and np.product becomes np.prod">
+      <div class="term-bar"><i></i><i></i><i></i><span>pyupcheck migrate numpy 2.0.0</span></div>
+<pre aria-hidden="true"><span class="ln fix">  fix app.py:8  use float64 instead of float_</span><span class="ln fix">  fix app.py:9  use prod instead of product</span><span class="ln"> </span><span class="ln t-dim">--- a/app.py</span><span class="ln t-dim">+++ b/app.py</span><span class="ln hunk">@@ -7,4 +7,4 @@</span><span class="ln"> safe = markupsafe.Markup("&lt;b&gt;hi&lt;/b&gt;")</span><span class="ln del">-weights = np.zeros(3, dtype=np.float_)</span><span class="ln del">-total = np.product([1, 2, 3])</span><span class="ln add">+weights = np.zeros(3, dtype=np.float64)</span><span class="ln add">+total = np.prod([1, 2, 3])</span><span class="ln"> r = requests.get("https://example.com", timeout=5)</span><span class="ln"> </span><span class="ln t-dim">Would rewrite 1 file(s). Run again with --write to apply.</span></pre>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ PR review showcase ═══ -->
+<section aria-labelledby="pr-h">
+  <div class="wrap show flip">
+    <div class="pr reveal" role="img" aria-label="A pull request comment from pyupcheck: flask 2.2.5 to 3.0.0 breaks 1 usage, which migrate can fix automatically">
+      <div class="pr-head">
+        <span class="pr-av"><svg viewBox="0 0 64 64"><path d="M21 33 29 41 44 24" fill="none" stroke="#1a1a1a" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <b>github-actions</b><span class="bot">bot</span><span style="color:var(--muted)">commented just now</span>
+      </div>
+      <div class="pr-body">
+        <h4>pyupcheck: dependency changes in this PR</h4>
+        <p><b class="bad">1 breaking</b> usage across 2 changed packages.</p>
+        <div class="pr-scroll">
+        <table>
+          <thead><tr><th>Package</th><th>Change</th><th>Breaking</th><th>Deprecated</th><th>Auto-fixable</th></tr></thead>
+          <tbody>
+            <tr><td><code>flask</code></td><td>2.2.5 → 3.0.0</td><td class="bad">1</td><td>0</td><td>1</td></tr>
+            <tr><td><code>requests</code></td><td>2.31.0 → 2.32.3</td><td>0</td><td>0</td><td></td></tr>
+          </tbody>
+        </table>
+        </div>
+        <div class="finding"><b>breaking</b> (verified) <code>app.py:7</code> <code>flask.Markup("&lt;b&gt;hi&lt;/b&gt;")</code>: Removed in 3.0.0. Import it from <code>markupsafe</code> instead.<br>use <code>markupsafe.Markup</code> instead</div>
+        <p class="hint"><code>pyupcheck migrate flask 3.0.0 --write</code> fixes 1 of these automatically.</p>
+      </div>
+    </div>
+    <div class="show-text reveal">
+      <span class="kicker" style="background:var(--sky);color:#1a1a1a">GitHub Action</span>
+      <h2 id="pr-h">Every Dependabot PR, checked against your code.</h2>
+      <p class="lead">Add one workflow, and each pull request that changes a version gets a comment listing what breaks, with annotations on the exact lines and a SARIF report for code scanning.</p>
+      <ul>
+        <li><span class="tick"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></svg></span><span><b>Lockfiles too.</b> A <code>uv.lock</code> bump with an unchanged range is still checked.</span></li>
+        <li><span class="tick"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></svg></span><span><b>One comment, kept up to date.</b> It’s edited in place as the PR changes, never spammed.</span></li>
+        <li><span class="tick"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></svg></span><span><b>Fail the check if you want.</b> <code>fail-on: breaking</code> blocks the merge.</span></li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ features ═══ -->
+<section id="features" aria-labelledby="feat-h">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="tag">Everything in the box</span>
+      <h2 id="feat-h">Built for the whole upgrade, not just the warning.</h2>
+    </div>
+    <div class="features">
+      <article class="feat reveal"><div class="ic" style="background:var(--lav)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg></div><h3>Deep mode</h3><p>Diffs the real signatures of both versions: removed functions, renamed and keyword-only arguments, new required parameters, changed return types.</p></article>
+      <article class="feat reveal"><div class="ic" style="background:var(--mint)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg></div><h3>Highest safe version</h3><p><code>outdated --safe</code> finds the newest release that breaks none of your code; <code>fix</code> moves each pin there.</p></article>
+      <article class="feat reveal"><div class="ic" style="background:var(--peach)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div><h3>Watch mode</h3><p><code>watch</code> re-checks the moment a lockfile changes, and warns you when a new PyPI release would break you.</p></article>
+      <article class="feat reveal"><div class="ic" style="background:var(--yel)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 13h3M8 16h6"/></svg></div><h3>Notebooks</h3><p>Cells are scanned as one program, the way they run, so <code>import numpy as np</code> in cell 1 is followed into cell 9.</p></article>
+      <article class="feat reveal"><div class="ic" style="background:var(--sky)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h10l6 6v10H4z"/><path d="M14 4v6h6"/></svg></div><h3>Every lockfile</h3><p><code>uv.lock</code>, <code>poetry.lock</code>, <code>pdm.lock</code>, <code>Pipfile.lock</code>, <code>pylock.toml</code>, <code>conda-lock.yml</code> and <code>pixi.lock</code>: it checks what you actually run.</p></article>
+      <article class="feat reveal"><div class="ic" style="background:var(--pink)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3 3 8l5 5M16 21l5-5-5-5M14 4l-4 16"/></svg></div><h3>VS Code</h3><p>Breaking lines show as errors in the editor, with a quick fix that runs <code>migrate</code>, and it re-checks when you save a lockfile.</p></article>
+      <article class="feat reveal"><div class="ic" style="background:var(--lime)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 1 6 6c0 3-2 4-2 6H8c0-2-2-3-2-6a6 6 0 0 1 6-6z"/><path d="M9 19h6M10 22h4"/></svg></div><h3>Explain with Claude</h3><p><code>explain</code> sends just the breaking lines and the release note to Claude for a before/after. <code>--dry-run</code> shows exactly what would be sent.</p></article>
+      <article class="feat reveal"><div class="ic" style="background:var(--lav)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h10M4 18h7"/><circle cx="18" cy="17" r="3"/></svg></div><h3>Reads any changelog</h3><p>GitHub releases, CHANGES files, Sphinx docs, migration guides, and the “deprecated in 1.0, removed in 1.2” notes that most tools miss.</p></article>
+      <article class="feat reveal"><div class="ic" style="background:var(--mint)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4 7v6c0 4 3.5 7 8 8 4.5-1 8-4 8-8V7z"/><path d="m9 12 2 2 4-4"/></svg></div><h3>Honest by default</h3><p>A package it couldn’t check is reported as unchecked, never as safe. Low-confidence hints are warnings, not errors.</p></article>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ commands ═══ -->
+<section aria-labelledby="cmd-h" style="padding-top:24px">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="tag">Commands</span>
+      <h2 id="cmd-h">One tool, every step of the upgrade.</h2>
+    </div>
+    <div class="cmds">
+      <div class="cmd reveal"><code>check-all</code><span>Check every dependency against its newest allowed version.</span></div>
+      <div class="cmd reveal"><code>check flask 3.0</code><span>Check one package against one version.</span></div>
+      <div class="cmd reveal"><code>migrate numpy</code><span>Rewrite your code for the upgrade (diff first, <code>--write</code> to apply).</span></div>
+      <div class="cmd reveal"><code>outdated --safe</code><span>Newest version per dependency, and the highest that's safe for you.</span></div>
+      <div class="cmd reveal"><code>fix</code><span>Move each pin to its highest safe version.</span></div>
+      <div class="cmd reveal"><code>review --base main</code><span>Check what a pull request's version changes break.</span></div>
+      <div class="cmd reveal"><code>watch</code><span>Re-check as lockfiles change, and when new releases land.</span></div>
+      <div class="cmd reveal"><code>explain pandas</code><span>Ask Claude how to fix what <code>migrate</code> can't.</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ CI ═══ -->
+<section id="ci" aria-labelledby="ci-h">
+  <div class="wrap show">
+    <div class="show-text reveal">
+      <span class="kicker" style="background:var(--lime);color:#1a1a1a">Set up in a minute</span>
+      <h2 id="ci-h">Drop it into GitHub Actions.</h2>
+      <p class="lead">This workflow comments on every pull request that changes a dependency. For other CI systems, <code>pyupcheck ci-setup</code> writes a config for you; output formats include JSON, Markdown, HTML, SARIF and GitHub annotations.</p>
+    </div>
+    <div class="code-card reveal">
+      <div class="bar"><span>.github/workflows/dependency-review.yml</span><button type="button" data-copy-from="ci-yaml">Copy</button></div>
+<pre id="ci-yaml"><span class="y-k">name:</span> <span class="y-s">Dependency review</span>
+<span class="y-k">on:</span>
+  <span class="y-k">pull_request:</span>
+    <span class="y-k">paths:</span> [<span class="y-s">"requirements*.txt"</span>, <span class="y-s">"pyproject.toml"</span>, <span class="y-s">"*.lock"</span>]
+<span class="y-k">permissions:</span>
+  <span class="y-k">contents:</span> <span class="y-s">read</span>
+  <span class="y-k">pull-requests:</span> <span class="y-s">write</span>
+<span class="y-k">jobs:</span>
+  <span class="y-k">review:</span>
+    <span class="y-k">runs-on:</span> <span class="y-s">ubuntu-latest</span>
+    <span class="y-k">steps:</span>
+      - <span class="y-k">uses:</span> <span class="y-s">actions/checkout@v7</span>
+        <span class="y-k">with:</span>
+          <span class="y-k">fetch-depth:</span> <span class="y-s">0</span>
+      - <span class="y-k">uses:</span> <span class="y-s">Astronomox/pyupcheck-Astronomox@v0.16.1</span>
+        <span class="y-k">with:</span>
+          <span class="y-k">fail-on:</span> <span class="y-s">breaking</span>  <span class="y-c"># or: never</span></pre>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ FAQ ═══ -->
+<section id="faq" aria-labelledby="faq-h">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="tag">FAQ</span>
+      <h2 id="faq-h">Questions people ask first.</h2>
+    </div>
+    <div class="faq">
+      <details class="reveal"><summary>Does it install or run the packages it checks?</summary><p>No. It downloads the published wheel or source of each version and reads it as text. Nothing is imported or executed, so checking a package can't run its code.</p></details>
+      <details class="reveal"><summary>How is this different from Dependabot or Renovate?</summary><p>They tell you a new version exists and open the PR. pyupcheck tells you what that PR breaks in <em>your</em> code, line by line, and can fix it. Use them together: the GitHub Action comments on their PRs.</p></details>
+      <details class="reveal"><summary>What does “deep mode” cost?</summary><p>Time: it downloads both versions of each package (a few seconds each, cached afterwards). It's what reaches 100% on the benchmark; changelog-only mode is faster and catches about 81%, with no false alarms.</p></details>
+      <details class="reveal"><summary>Does <code>explain</code> send my code anywhere?</summary><p>Only when you run it, and only the few lines around each breaking usage, plus the release note. It says how much it's about to send first, and <code>--dry-run</code> prints the exact request without sending it. Everything else runs locally.</p></details>
+      <details class="reveal"><summary>Which projects does it understand?</summary><p>requirements files, <code>pyproject.toml</code> (PEP 621, Poetry, PDM, uv, pixi), Pipfile, setup.cfg, setup.py, conda <code>environment.yml</code> and <code>pixi.toml</code>, plus all the major lockfiles. Type stubs and Jupyter notebooks are scanned too.</p></details>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ final CTA ═══ -->
+<section class="final" aria-labelledby="final-h">
+  <div class="wrap">
+    <div class="final-card reveal">
+      <div>
+        <h2 id="final-h">Upgrade without the guesswork.</h2>
+        <p>Run it on your project now. It takes a minute and needs no account and no config.</p>
+      </div>
+      <div>
+        <div class="install">
+          <code>pip install pyupcheck</code>
+          <button class="copy" type="button" data-copy="pip install pyupcheck">Copy</button>
+        </div>
+        <div class="cta-row">
+          <a class="btn primary" href="https://pypi.org/project/pyupcheck/" target="_blank" rel="noopener">View on PyPI</a>
+          <a class="btn" href="https://github.com/Astronomox/pyupcheck-Astronomox" target="_blank" rel="noopener">Star on GitHub</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>pyupcheck · MIT licensed · made for people who've been burned by <code>pip install -U</code></span>
+    <nav aria-label="Footer">
+      <a href="https://github.com/Astronomox/pyupcheck-Astronomox" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://pypi.org/project/pyupcheck/" target="_blank" rel="noopener">PyPI</a>
+      <a href="https://github.com/Astronomox/pyupcheck-Astronomox/blob/main/CHANGELOG.md" target="_blank" rel="noopener">Changelog</a>
+      <a href="https://github.com/Astronomox/pyupcheck-Astronomox/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">Contribute</a>
+    </nav>
+  </div>
+</footer>
 
 <script>
-// ═══ BULLETPROOF SCROLL ENGINE ═══
-// All positions computed in real px at transition time.
-// Panels are position:fixed, stacked by z-index.
-// Only 2 panels ever visible: current fades/slides out, next slides in.
+(() => {
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-const IDS = ['p1','p2','p3','p4','p5'];
-const panels = IDS.map(id => document.getElementById(id));
-const dots = document.querySelectorAll('.dot');
-const hint = document.getElementById('hint');
-
-// Direction for transition FROM panel i TO panel i+1
-// right = next comes from right, up = next comes from below, down = next comes from above
-const DIR = ['right','down','up','right'];
-const HINTS = ['swipe \u2192','swipe \u2192','swipe \u2192','swipe \u2192'];
-
-let cur = 0, moving = false;
-
-function W(){ return window.innerWidth; }
-function H(){ return window.innerHeight; }
-
-// get the translate3d offset for a panel that is "off screen"
-// relative to the current panel, given the direction of travel
-function getOffset(fromIdx, toIdx) {
-  const forward = toIdx > fromIdx;
-  const tidx = forward ? fromIdx : toIdx;
-  const d = DIR[Math.min(tidx, DIR.length - 1)];
-  if (forward) {
-    if (d === 'right') return { x: W(), y: 0 };
-    if (d === 'down')  return { x: 0, y: H() };
-    if (d === 'up')    return { x: 0, y: -H() };
-  } else {
-    if (d === 'right') return { x: -W(), y: 0 };
-    if (d === 'down')  return { x: 0, y: -H() };
-    if (d === 'up')    return { x: 0, y: H() };
-  }
-  return { x: W(), y: 0 };
-}
-
-// set a panel's transform instantly (no transition)
-function snap(panel, x, y) {
-  panel.style.transition = 'none';
-  panel.style.transform = `translate3d(${x}px,${y}px,0)`;
-  panel.style.zIndex = '0';
-  panel.offsetHeight; // flush
-}
-
-// animate a panel to a position
-function slide(panel, x, y, z, cb) {
-  panel.style.zIndex = String(z);
-  panel.style.transition = 'transform 0.82s cubic-bezier(0.76,0,0.24,1)';
-  panel.style.transform = `translate3d(${x}px,${y}px,0)`;
-  if (cb) panel.addEventListener('transitionend', cb, { once: true });
-}
-
-// init: put all panels in position
-function init() {
-  panels.forEach((p, i) => {
-    if (i === 0) {
-      p.style.transform = 'translate3d(0,0,0)';
-      p.style.zIndex = '1';
-      p.style.transition = 'none';
-    } else {
-      const off = getOffset(0, i);
-      snap(p, off.x, off.y);
-    }
+  /* theme toggle: follows the system until you pick one */
+  const root = document.documentElement, KEY = 'pyupcheck-theme';
+  try { const t = localStorage.getItem(KEY); if (t) root.dataset.theme = t; } catch (e) {}
+  document.getElementById('theme').addEventListener('click', () => {
+    const dark = root.dataset.theme ? root.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+    root.dataset.theme = dark ? 'light' : 'dark';
+    try { localStorage.setItem(KEY, root.dataset.theme); } catch (e) {}
   });
-  updateHint();
-  updateDots();
-}
 
-function updateDots() {
-  dots.forEach((d, i) => d.classList.toggle('on', i === cur));
-}
+  /* nav border once scrolled */
+  const nav = document.getElementById('nav');
+  const onScroll = () => nav.classList.toggle('scrolled', scrollY > 8);
+  addEventListener('scroll', onScroll, { passive: true }); onScroll();
 
-function updateHint() {
-  if (cur < HINTS.length) {
-    hint.textContent = HINTS[cur];
-    hint.style.opacity = '0.6';
-  } else {
-    hint.style.opacity = '0';
-  }
-}
-
-function goTo(n) {
-  if (n < 0 || n >= panels.length || n === cur || moving) return;
-  moving = true;
-
-  const prev = cur;
-  cur = n;
-  const forward = n > prev;
-
-  // incoming offset: where the new panel starts from
-  const inc = getOffset(prev, n);
-  // outgoing offset: where the old panel goes to
-  const out = { x: -inc.x, y: -inc.y };
-
-  // position incoming instantly off-screen
-  snap(panels[n], inc.x, inc.y);
-  panels[n].style.zIndex = '2';
-  panels[prev].style.zIndex = '1';
-
-  // kick off animations
-  requestAnimationFrame(() => {
-    slide(panels[n], 0, 0, 2);
-    slide(panels[prev], out.x, out.y, 1, () => {
-      moving = false;
-      updateHint();
-      if (cur === 2) startTerminal();
+  /* copy buttons */
+  document.querySelectorAll('[data-copy],[data-copy-from]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const text = btn.dataset.copy || document.getElementById(btn.dataset.copyFrom).innerText;
+      try { await navigator.clipboard.writeText(text); btn.textContent = 'Copied!'; }
+      catch (e) { btn.textContent = 'Press ⌘C'; }
+      setTimeout(() => { btn.textContent = 'Copy'; }, 1600);
     });
   });
 
-  updateDots();
-}
-
-// ── input ──
-let wheelAcc = 0, wheelTimer;
-window.addEventListener('wheel', e => {
-  e.preventDefault();
-  clearTimeout(wheelTimer);
-  wheelAcc += e.deltaY + e.deltaX;
-  wheelTimer = setTimeout(() => { wheelAcc = 0; }, 200);
-  if (Math.abs(wheelAcc) > 60) {
-    const dir = wheelAcc > 0 ? 1 : -1;
-    wheelAcc = 0;
-    goTo(cur + dir);
+  /* reveal on scroll */
+  const items = document.querySelectorAll('.reveal');
+  if (reduce || !('IntersectionObserver' in window)) items.forEach(el => el.classList.add('in'));
+  else {
+    const io = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } }), { threshold: .12 });
+    items.forEach(el => io.observe(el));
   }
-}, { passive: false });
 
-window.addEventListener('keydown', e => {
-  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') goTo(cur + 1);
-  if (e.key === 'ArrowLeft'  || e.key === 'ArrowUp')   goTo(cur - 1);
-});
+  /* latest version from PyPI (falls back to the one in the page) */
+  fetch('https://pypi.org/pypi/pyupcheck/json').then(r => r.ok ? r.json() : null)
+    .then(d => { if (d && d.info && d.info.version) document.getElementById('ver').textContent = d.info.version; })
+    .catch(() => {});
 
-let tx = 0, ty = 0, tStart = 0;
-window.addEventListener('touchstart', e => {
-  tx = e.touches[0].clientX;
-  ty = e.touches[0].clientY;
-  tStart = Date.now();
-}, { passive: true });
+  /* terminal: real output from pyupcheck check-all --deep, replayed */
+  const L = (html, wait = 70) => ({ html, wait });
+  const lines = [
+    { type: '<span class="t-green">❯</span> pyupcheck check-all --deep', wait: 500 },
+    L('<span class="t-dim">Checking</span> <span class="t-b">4</span> <span class="t-dim">dependencies in this project</span>', 700),
+    L(''),
+    L('<span class="t-b">flask</span> 2.2.5 <span class="t-dim">→</span> 3.1.3  <span class="t-badge">✗ 1 BREAKING</span>', 260),
+    L('  <span class="t-red">✗</span> <span class="t-b">app.py:7</span>  safe = flask.Markup("&lt;b&gt;hi&lt;/b&gt;")'),
+    L('    <span class="t-dim">Removed in 3.0.0. Import them directly from markupsafe instead.</span>'),
+    L('    <span class="t-green">→ use markupsafe.Markup</span>', 380),
+    L('<span class="t-b">numpy</span> 1.26.4 <span class="t-dim">→</span> 2.5.5  <span class="t-badge">✗ 2 BREAKING</span>', 260),
+    L('  <span class="t-red">✗</span> <span class="t-b">app.py:8</span>  weights = np.zeros(3, dtype=np.float_)'),
+    L('    <span class="t-dim">Alias `np.float_` has been removed.</span>'),
+    L('    <span class="t-green">→ use np.float64</span>'),
+    L('  <span class="t-red">✗</span> <span class="t-b">app.py:9</span>  total = np.product([1, 2, 3])'),
+    L('    <span class="t-dim">`product` replaced by `np.prod`</span>'),
+    L('    <span class="t-green">→ use np.prod</span>', 380),
+    L('<span class="t-b">requests</span> 2.31.0 <span class="t-dim">→</span> 2.34.2  <span class="t-badge ok">✓ OK</span> <span class="t-dim">2 usages safe</span>', 200),
+    L('<span class="t-b">click</span> 8.1.7 <span class="t-dim">→</span> 8.5.1  <span class="t-badge ok">✓ OK</span> <span class="t-dim">3 usages safe</span>', 520),
+    L('<span class="t-dim">──────────────────────────────────────────────</span>'),
+    L('<span class="t-red t-b">3 breaking</span> · <span class="t-dim">0 deprecated</span> · <span class="t-green">2 safe</span> <span class="t-dim">across 4 packages</span>', 260),
+    L(''),
+    L('<span class="t-dim">Fix what can be fixed automatically (shows the diff first):</span>'),
+    L('  <span class="t-cyan">pyupcheck migrate flask 3.1.3</span>'),
+    L('  <span class="t-cyan">pyupcheck migrate numpy 2.5.5</span>', 300),
+  ];
+  const term = document.getElementById('term');
+  const caret = '<span class="caret"></span>';
+  const render = n => lines.slice(0, n).map(l => l.html !== undefined ? l.html : l.type).join('\n');
 
-window.addEventListener('touchend', e => {
-  if (Date.now() - tStart > 500) return; // ignore slow drags
-  const dx = tx - e.changedTouches[0].clientX;
-  const dy = ty - e.changedTouches[0].clientY;
-  const THRESH = 44;
-  // always use horizontal swipe gesture regardless of panel transition direction
-  if (Math.abs(dx) > THRESH && Math.abs(dx) > Math.abs(dy)) {
-    goTo(cur + (dx > 0 ? 1 : -1));
-  }
-}, { passive: true });
+  if (reduce) { term.innerHTML = render(lines.length) + '\n' + caret; return; }
 
-dots.forEach(d => d.addEventListener('click', () => goTo(+d.dataset.i)));
-
-// reposition on resize (handles toolbar show/hide)
-let resizeTimer;
-window.addEventListener('resize', () => {
-  clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => {
-    if (moving) return;
-    panels.forEach((p, i) => {
-      if (i === cur) {
-        p.style.transition = 'none';
-        p.style.transform = 'translate3d(0,0,0)';
+  let started = false;
+  const run = async () => {
+    if (started) return; started = true;
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i];
+      if (l.type !== undefined) {
+        const prefix = render(i), text = l.type, head = '<span class="t-green">❯</span> ', cmd = text.replace(head, '');
+        for (let c = 0; c <= cmd.length; c++) {
+          term.innerHTML = (prefix ? prefix + '\n' : '') + head + cmd.slice(0, c) + caret;
+          await sleep(28 + Math.random() * 40);
+        }
+        await sleep(l.wait);
       } else {
-        const off = getOffset(cur, i);
-        snap(p, off.x, off.y);
+        term.innerHTML = render(i + 1) + '\n' + caret;
+        await sleep(l.wait);
       }
-    });
-  }, 100);
-});
-
-init();
-
-// ═══ TERMINAL ═══
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-async function typeIt(el, txt, spd = 28) {
-  for (const ch of txt) { el.textContent += ch; await sleep(spd + Math.random() * 12); }
-}
-async function addL(c, cls, txt, delay = 0, typed = false) {
-  if (delay) await sleep(delay);
-  const s = document.createElement('span');
-  s.className = 'tl ' + cls;
-  c.appendChild(s);
-  if (typed) await typeIt(s, txt);
-  else s.textContent = txt;
-  return s;
-}
-let termDone = false;
-async function startTerminal() {
-  if (termDone) return;
-  termDone = true;
-  const b = document.getElementById('tb');
-  await sleep(200);
-  await addL(b, 'tp', 'pyupcheck check requests 3.0.0', 0, true);
-  await sleep(160);
-  await addL(b, 'td2', '');
-  await addL(b, 'td2', 'Scanning ./src for usages of requests...', 45);
-  await addL(b, 'twh', 'Found 14 usages across 5 files.', 45);
-  await addL(b, 'td2', 'Fetching changelog 2.31.0 \u2192 3.0.0...', 45);
-  await sleep(280);
-  await addL(b, 'twh', 'Found 2 potentially breaking changes.');
-  await addL(b, 'twh', '');
-  await addL(b, 'te', 'BREAKING (1):');
-  await addL(b, 'twh', '');
-  await addL(b, 'tw2', '  \u2717  src/api.py:23  requests.get(url, verify=False)');
-  await addL(b, 'td2', '     Removed: verify param no longer accepted in 3.0.0');
-  await addL(b, 'twh', '');
-  await addL(b, 'tok', '  13 other usages are safe.');
-  await addL(b, 'twh', '');
-  const last = await addL(b, 'tp', '');
-  const c = document.createElement('span'); c.className = 'tc'; last.appendChild(c);
-}
+    }
+  };
+  if ('IntersectionObserver' in window) {
+    const io = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) { io.disconnect(); run(); } }, { threshold: .3 });
+    io.observe(term);
+  } else run();
+})();
 </script>
 </body>
 </html>
