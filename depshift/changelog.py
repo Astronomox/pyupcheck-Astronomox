@@ -369,11 +369,15 @@ def _items(text: str, default_section: Optional[str] = None) -> List[Tuple[Optio
     md_table_rows = 0                     # 0: none, -1: header seen, >=1: body
     md_header_kind: Optional[str] = None
 
+    # SQLAlchemy/Alembic/Mako ".. change::" blocks say what each entry is in a
+    # ":tags: usecase, sql" line
+    change_kind: List[Optional[str]] = [None]
+
     def section() -> Optional[str]:
         for _, kind in reversed(stack):
             if kind is not None:
                 return kind
-        return default_section
+        return change_kind[0] or default_section
 
     # statement-parents of the current nested item: (indent, text)
     parents: List[Tuple[int, str]] = []
@@ -449,6 +453,17 @@ def _items(text: str, default_section: Optional[str] = None) -> List[Tuple[Optio
                 out.append((kind, _table_row_item(cells[0], cells[1] if len(cells) > 1 else "")))
             continue
         md_table_rows = 0
+        if _CHANGE_DIRECTIVE.match(raw):
+            flush()
+            change_kind[0] = None
+            continue
+        tag_line = _CHANGE_TAGS.match(raw)
+        if tag_line:
+            flush()
+            change_kind[0] = _tags_kind({t.strip().lower() for t in tag_line.group(1).split(",")})
+            continue
+        if _CHANGE_FIELD.match(raw):
+            continue
         if not raw.strip():
             nxt = next((ln for ln in lines[i + 1:] if ln.strip()), "")
             nb = _BULLET.match(nxt)
@@ -491,6 +506,21 @@ def _items(text: str, default_section: Optional[str] = None) -> List[Tuple[Optio
     return out
 
 
+_CHANGE_DIRECTIVE = re.compile(r"^\s*\.\.\s+change::\s*$")
+_CHANGE_TAGS = re.compile(r"^\s*:tags:\s*(.+?)\s*$")
+_CHANGE_FIELD = re.compile(r"^\s*:(?:tickets|versions|title|changeset|pullreq|references):")
+
+
+def _tags_kind(names: set) -> Optional[str]:
+    if names & {"removed", "remove"}:
+        return "removed"
+    if any(n.startswith("deprecat") for n in names):
+        return "deprecated"
+    if names & _BENIGN_TAGS:
+        return "benign"
+    return None
+
+
 # separates an item from its parent's text (context for its kind only)
 _CTX = "\x1f"
 
@@ -523,17 +553,51 @@ def _kind_of(text: str):
     return None, "low"
 
 
+# words in code spans are names, not verbs: "column names such as ``add``,
+# ``remove``" removes nothing
+_CODE_SPAN = re.compile(r"(?::\w+:)?`{1,2}[^`]+`{1,2}")
+# SQLAlchemy/Mako-style category tags: "**[sql] [usecase]** ..."
+_TAGS = re.compile(r"^\W*?(?:\*\*)?((?:\[[\w ]+\]\s*)+)(?:\*\*)?\s*")
+_BENIGN_TAGS = {"feature", "usecase", "bug", "performance", "typing", "tests", "misc",
+                "documentation", "doc", "docs", "installation", "platform"}
+# "Remove deprecated ``a`` and ``b`` from ``FastAPI``": a and b belong to FastAPI
+_FROM_OWNERS = re.compile(
+    r"\bfrom\s+(?:the\s+)?((?:(?::\w+:)?`{1,2}~?\.?[A-Za-z_][\w.]*(?:\(\))?`{1,2}"
+    r"(?:\s*,\s*|\s*,?\s*(?:and|or)\s+)?)+)", re.IGNORECASE)
+
+
+def _prose(text: str) -> str:
+    return _CODE_SPAN.sub("NAME", text)
+
+
+def _looks_like_code(text: str) -> bool:
+    """A pasted example ("select( func.sum(table.c.value).over(...") or a bare
+    cross-reference, not a sentence about a change."""
+    if any(not span.startswith((":ref:", ":doc:")) for span in _CODE_SPAN.findall(text)):
+        return False  # "- ``pkg.a``" under a Removed heading names an API
+    words = re.findall(r"(?<![\w.(=])[A-Za-z]{2,}(?![\w(=.])", _CODE_SPAN.sub(" ", text))
+    return not words
+
+
 def _classify_item(line: str, section: Optional[str], version: str) -> List[ChangeEntry]:
     """Turn one release-note item into change entries (one per API it names)."""
     line, _, parent = line.partition(_CTX)
-    kind, conf = _kind_of(line)
+    tags = _TAGS.match(line)
+    if tags:
+        names = {t.strip().lower() for t in re.findall(r"\[([\w ]+)\]", tags.group(1))}
+        line = line[tags.end():]
+        if section is None:
+            section = _tags_kind(names)
+    if _looks_like_code(line):
+        return []
+    kind, conf = _kind_of(_prose(line))
     context = None
     parent_words = len(_TRAILING_REFS.sub("", parent).split())
     if parent and (parent_words <= 20 or _SWEEP.search(parent)):
         # only a short statement ("Remove previously deprecated code.", "The
         # old names are deprecated.") says what its list is; a paragraph that
         # mentions "removal of a deprecated keyword" in passing doesn't
-        p_kind, p_conf = _kind_of(parent)
+        p_kind, p_conf = _kind_of(_prose(parent))
         if kind is None or (p_kind == "removed" and kind in ("renamed", "deprecated")
                             and not _FUTURE_REMOVAL.search(line)):
             # "``pass_context`` replaces ``contextfunction``" under "The old
@@ -624,6 +688,18 @@ def _classify_item(line: str, section: Optional[str], version: str) -> List[Chan
         params = [a for a in targets if a != o and "." not in a]
         if params:
             targets = [f"{o}.{a}" for a in params]
+    from_owners = None if (param_of or kw_from or owner) else _FROM_OWNERS.search(line)
+    if from_owners and kind in ("removed", "deprecated") and not _IMPORT_FROM.search(line) \
+            and not _IMPORTING_FROM.search(line):
+        # "Remove deprecated ``openapi_prefix`` from ``FastAPI``": FastAPI.openapi_prefix,
+        # not FastAPI itself. "``**extra`` removed from ``Path``, ``Query``": only
+        # catch-all arguments named, which release notes can't pin to a call
+        owners_ = _extract_apis(from_owners.group(1))
+        members = [a for a in _extract_apis(line[:from_owners.start()]) if a not in owners_]
+        if members:
+            targets = [m if "." in m else f"{o}.{m}" for o in owners_ for m in members]
+        elif re.search(r"`\*{1,2}\w+`", line[:from_owners.start()]):
+            return []
     dotted = [a for a in targets if "." in a]
     if dotted:
         if _LISTED_AFTER_FIRST.search(line) and "." in targets[0]:

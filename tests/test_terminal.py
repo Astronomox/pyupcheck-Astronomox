@@ -56,3 +56,40 @@ def test_plain_symbols_where_unicode_cant_print(monkeypatch):
     out = capture(monkeypatch, cli._print_terminal_result, result("flask", breaking=1, risks=[RISK]), False,
                   encoding="cp1252")
     assert "x 1 BREAKING" in out and "flask 1.0 -> 2.0" in out and "?" not in out.split("BREAKING")[0]
+
+
+# ── the check-all table and tidy notes ───────────────────────────────────────
+
+def test_tidy_note():
+    raw = ("* 🔥 Remove deprecated `openapi_prefix` from `FastAPI`. PR "
+           "[#16518](https://github.com/fastapi/fastapi/pull/16518) by [@tiangolo](https://github.com/tiangolo).")
+    assert cli.tidy_note(raw) == "Remove deprecated `openapi_prefix` from `FastAPI`."
+    assert cli.tidy_note("**[sql] [usecase]** The ``x`` thing.") == "The `x` thing."
+    long = "First sentence here. " + "word " * 80
+    assert cli.tidy_note(long, limit=40) == "First sentence here."
+    assert cli.tidy_note("word " * 80, limit=40).endswith("…")
+
+
+def test_table_orders_by_attention_and_folds_up_to_date(monkeypatch):
+    results = [result("aaa", safe=2), result("zzz", breaking=1, risks=[RISK]),
+               dict(result("mid"), unchecked=True), dict(result("cur"), up_to_date=True),
+               dict(result("unused"), no_usages=True)]
+    out = capture(monkeypatch, cli._print_table, results)
+    lines = [ln for ln in out.splitlines() if ln.strip()]
+    order = [n for ln in lines for n in ("zzz", "mid", "aaa", "unused") if ln.startswith(n)]
+    assert order == ["zzz", "mid", "aaa", "unused"]
+    assert "1 breaking" in out and "not checked" in out and "not imported" in out
+    assert "Already up to date (1): cur" in out and not any(ln.startswith("cur") for ln in lines)
+
+
+def test_mentions_grouped_and_low_confidence_hidden(monkeypatch):
+    note = "The `x` parameter in `F()` is deprecated."
+    mention = lambda line, conf: {"file": "app.py", "line": line, "code": "F()", "severity": "warning",
+                                  "change_description": note, "confidence": conf, "replacement": None}
+    risks = [mention(1, "medium"), mention(2, "medium"), mention(2, "medium"), mention(9, "low")]
+    out = capture(monkeypatch, cli._print_findings, result("pkg", risks=risks))
+    assert out.count(note) == 1 and "app.py:1, app.py:2" in out and "app.py:9" not in out
+    assert "1 more line named in release notes" in out
+    monkeypatch.setattr(cli, "_VERBOSE", True)
+    out = capture(monkeypatch, cli._print_findings, result("pkg", risks=risks))
+    assert "app.py:9" in out and "more line" not in out

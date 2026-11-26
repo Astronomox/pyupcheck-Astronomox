@@ -38,6 +38,11 @@ from depshift.scanner import imported_top_modules
 console = Console(highlight=False)
 
 SEVERITY_RANK = {"breaking": 0, "deprecated": 1, "warning": 2}
+# -v: also list low-confidence mentions (release notes that name an API you
+# use without saying it changed)
+_VERBOSE = False
+# the project being checked: file paths are shown relative to it
+_ROOT: Optional[str] = None
 
 
 def get_installed_version(package: str) -> Optional[str]:
@@ -428,12 +433,35 @@ def _esc(text: str) -> str:
     return escape(text)
 
 
-def _clean_note(text: str) -> str:
-    """Release-note text for the terminal: no :pr:/:issue: references or
-    reST markup, and nothing rich would read as a style tag."""
-    from rich.markup import escape
+_MD_LINK = re.compile(r"\[([^\]]+)\]\((?:https?://|#)[^)]*\)")
+_PR_CREDIT = re.compile(r"\s*\(?\b(?:PR|Pull request)\s+#?\d+(?:\s+by\s+@?[\w-]+)?\)?\.?\s*$", re.IGNORECASE)
+_LEAD_TAGS = re.compile(r"^\W*?(?:\*\*)?(?:\[[\w ]+\]\s*)+(?:\*\*)?\s*")
+
+
+def tidy_note(text: str, limit: int = 240) -> str:
+    """Release-note text as plain prose: no Markdown links, emoji, category
+    tags, PR credits or reST roles, cut at a sentence (or word) boundary."""
+    import unicodedata
     from depshift.review import _clean
-    return escape(_clean(text).replace("\\|", "|"))
+    text = _MD_LINK.sub(r"\1", text)
+    text = _LEAD_TAGS.sub("", text)
+    text = "".join(ch for ch in text if unicodedata.category(ch) not in ("So", "Cn", "Co")
+                   and ch not in "\ufe0f\u200d")
+    text = text.replace("**", "")
+    text = _clean(text).replace("\\|", "|").strip(" -*")
+    text = _PR_CREDIT.sub("", text).strip()
+    if len(text) > limit:
+        cut = text[:limit]
+        end = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
+        text = cut[:end + 1] if end > limit // 3 else cut.rsplit(" ", 1)[0].rstrip(",;:") + "…"
+    return text
+
+
+def _clean_note(text: str) -> str:
+    """Release-note text for the terminal: tidy, and nothing rich would read
+    as a style tag."""
+    from rich.markup import escape
+    return escape(tidy_note(text))
 
 
 def _print_summary(results: List[dict]) -> None:
@@ -534,27 +562,164 @@ def _print_terminal_result(r: dict, quiet: bool, hide_source_notes: bool = False
         console.print(f"{header}  {_badge(_sym('✓', '') + ' OK', 'black on green')} "
                       f"[dim]{safe} usage{'s' if safe != 1 else ''} safe[/]")
 
-    for risk in r["risks"]:
-        color = {"breaking": "red", "deprecated": "yellow", "warning": "blue"}[risk["severity"]]
-        mark = {"breaking": _sym("✗", "x"), "deprecated": "!", "warning": "?"}[risk["severity"]]
-        try:
-            rel = os.path.relpath(risk["file"])
-        except ValueError:
-            rel = risk["file"]
+    _print_findings(r)
+    if not quiet:
+        for w in notes:
+            console.print(Padding(f"[magenta]note:[/] [dim]{_esc(w)}[/]", (0, 0, 0, 4)))
+
+
+def _rel(path: str) -> str:
+    """A path as the user knows it: relative to the project checked (or to
+    where pyupcheck runs, when that's shorter)."""
+    options = []
+    for base in (_ROOT, os.getcwd()):
+        if base:
+            try:
+                options.append(os.path.relpath(path, base))
+            except ValueError:
+                pass
+    return min(options, key=len) if options else path
+
+
+def _distinct(risks: List[dict]) -> List[dict]:
+    """One finding per line and note: a line that uses an API three ways
+    (``update(x).where(...)``) is one finding."""
+    seen, out = set(), []
+    for k in risks:
+        key = (k["file"], k["line"], k["severity"], tidy_note(k["change_description"]))
+        if key not in seen:
+            seen.add(key)
+            out.append(k)
+    return out
+
+
+def _print_findings(r: dict) -> None:
+    """Breaking and deprecated lines one by one; mentions ("worth a look")
+    grouped by the release note, with where your code uses it."""
+    from rich.padding import Padding
+
+    arrow = _sym("→", "->")
+    risks = _distinct(r["risks"])
+    for risk in (k for k in risks if k["severity"] != "warning"):
+        color = "red" if risk["severity"] == "breaking" else "yellow"
+        mark = _sym("✗", "x") if risk["severity"] == "breaking" else "!"
         if risk.get("precise"):
             tag = " [cyan]verified[/]"
         elif risk.get("confidence") == "low":
             tag = " [dim](low confidence)[/]"
         else:
             tag = ""
-        console.print(f"  [{color}]{mark}[/] [bold]{rel}:{risk['line']}[/]{tag}  {_esc(risk['code'])}")
-        # indented as a block, so a long note wraps under itself, not at column 0
+        console.print(f"  [{color}]{mark}[/] [bold]{_esc(_rel(risk['file']))}:{risk['line']}[/]{tag}  "
+                      f"{_esc(risk['code'].strip())}", overflow="ellipsis", no_wrap=True)
         console.print(Padding(f"[dim]{_clean_note(risk['change_description'])}[/]", (0, 0, 0, 4)))
         if risk.get("replacement"):
             console.print(Padding(f"[green]{arrow} use {_esc(risk['replacement'])}[/]", (0, 0, 0, 4)))
-    if not quiet:
-        for w in notes:
-            console.print(Padding(f"[magenta]note:[/] [dim]{_esc(w)}[/]", (0, 0, 0, 4)))
+
+    mentions = [k for k in risks if k["severity"] == "warning"]
+    shown = mentions if _VERBOSE else [k for k in mentions if k.get("confidence") != "low"]
+    groups: Dict[str, List[dict]] = {}
+    for k in shown:
+        groups.setdefault(tidy_note(k["change_description"]), []).append(k)
+    for note, ks in groups.items():
+        where = sorted({(_rel(k["file"]), k["line"]) for k in ks})
+        places = ", ".join(f"{f}:{n}" for f, n in where[:4])
+        more = f" +{len(where) - 4} more" if len(where) > 4 else ""
+        console.print(f"  [blue]?[/] [dim]worth a look,[/] {_esc(places)}[dim]{more}[/]")
+        console.print(Padding(f"[dim]{_esc(note)}[/]", (0, 0, 0, 4)))
+    hidden = len({(k["file"], k["line"]) for k in mentions}) - len({(k["file"], k["line"]) for k in shown})
+    if hidden > 0 and not _VERBOSE:
+        console.print(f"  [dim]{hidden} more line{'s' if hidden != 1 else ''} named in release notes "
+                      f"without a stated change (-v to list)[/]")
+
+
+def _row(r: dict):
+    """(order, status text, style) for the results table."""
+    if r.get("up_to_date"):
+        return 5, _sym("✓", "ok") + " up to date", "green"
+    if r.get("unchecked") and not r["risks"]:
+        return 2, "? not checked", "magenta"
+    if r["breaking_count"]:
+        return 0, f"{_sym('✗', 'x')} {r['breaking_count']} breaking", "bold red"
+    if r["deprecated_count"]:
+        return 1, f"! {r['deprecated_count']} deprecated", "yellow"
+    if r.get("no_usages"):
+        return 4, _sym("✓", "ok") + " safe", "green"
+    return 3, _sym("✓", "ok") + " safe", "green"
+
+
+def _is_major(cur: Optional[str], new: Optional[str]) -> bool:
+    try:
+        from packaging.version import Version
+        a, b = Version(cur), Version(new)
+    except Exception:
+        return False
+    return b.major > a.major
+
+
+def _print_table(results: List[dict]) -> None:
+    """Every package in one table, what needs attention first. Packages that
+    are already up to date are listed on one line after it."""
+    from rich import box
+    from rich.table import Table
+
+    width = console.width
+    rows = sorted((r for r in results if not r.get("up_to_date")),
+                  key=lambda r: (_row(r)[0], r["package"].lower()))
+    table = Table(box=box.SIMPLE_HEAD, show_edge=False, pad_edge=False, header_style="bold",
+                  expand=False, padding=(0, 1))
+    table.add_column("Package", no_wrap=True, overflow="ellipsis", max_width=28)
+    combined = width < 64
+    if combined:
+        table.add_column("Upgrade", no_wrap=True)
+    else:
+        table.add_column("Current", no_wrap=True, style="dim")
+        table.add_column("Latest", no_wrap=True)
+    table.add_column("Status", no_wrap=True)
+    if width >= 80:
+        table.add_column("Your code", overflow="fold")
+    arrow = _sym("→", "->")
+    for r in rows:
+        _, status, style = _row(r)
+        cur = r.get("current_version") or "?"
+        new = r.get("target_version") or "?"
+        major = _is_major(cur, new)
+        latest = f"[yellow]{_esc(new)}[/] [dim]major[/]" if major else _esc(new)
+        name = f"[bold]{_esc(r['package'])}[/]" + (" [magenta]*[/]" if r.get("undeclared") else "")
+        cells = [name]
+        cells += [f"{_esc(cur)} {arrow} {latest}"] if combined else [_esc(cur), latest]
+        cells.append(f"[{style}]{status}[/]")
+        if width >= 80:
+            if r.get("no_usages"):
+                code = "[dim]not imported[/]"
+            elif r.get("unchecked") and not r["risks"]:
+                code = "[dim]couldn't read its release notes[/]"
+            else:
+                lines = {(k["file"], k["line"]) for k in r["risks"]}
+                uses = r.get("safe_count", 0) + len(lines)
+                code = f"{uses} use{'s' if uses != 1 else ''}"
+                looks = {tidy_note(k["change_description"]) for k in r["risks"]
+                         if k["severity"] == "warning" and (_VERBOSE or k.get("confidence") != "low")}
+                if looks:
+                    code += f" [blue]· {len(looks)} to look at[/]"
+            cells.append(code)
+        table.add_row(*cells)
+    if rows:
+        console.print(table)
+    current = sorted(r["package"] for r in results if r.get("up_to_date"))
+    if current:
+        console.print(f"[green]{_sym('✓', 'ok')}[/] [dim]Already up to date ({len(current)}):[/] "
+                      f"[dim]{_esc(', '.join(current))}[/]")
+    if any(r.get("undeclared") for r in results):
+        console.print("[magenta]*[/] [dim]imported by your code but not declared as a dependency[/]")
+
+
+def _needs_details(r: dict) -> bool:
+    if r.get("up_to_date") or r.get("no_usages"):
+        return False
+    if r["breaking_count"] or r["deprecated_count"]:
+        return True
+    return any(k["severity"] == "warning" and (_VERBOSE or k.get("confidence") != "low")
+               for k in r["risks"])
 
 
 class _Ordered(click.Group):
@@ -608,9 +773,12 @@ def show_banner_cmd(static):
 @click.option("--quiet", "-q", is_flag=True)
 @click.option("--since", default=None, metavar="YYYY-MM-DD", help="Only show changes introduced since this date")
 @click.option("--deep", is_flag=True, help="Deep mode: diff real API surface between versions for fact-based, argument-level detection")
+@click.option("--verbose", "-v", is_flag=True, help="Also list lines that release notes only mention")
 def check(package, target_version, directory, github_token, fmt, output, fail_on,
-          min_severity, exclude, no_cache, quiet, since, deep):
+          min_severity, exclude, no_cache, quiet, since, deep, verbose):
     """Check if upgrading PACKAGE to TARGET_VERSION will break your code."""
+    global _VERBOSE, _ROOT
+    _VERBOSE, _ROOT = verbose, os.path.abspath(directory)
     directory = os.path.abspath(directory)
     cfg = load_config(directory)
     if fail_on:
@@ -649,9 +817,16 @@ def check(package, target_version, directory, github_token, fmt, output, fail_on
 @click.option("--deep", is_flag=True, help="Deep mode: diff real API surfaces for every dependency (slower)")
 @click.option("--jobs", "-j", type=click.IntRange(1, 64), default=8, show_default=True,
               help="Dependencies to check in parallel")
+@click.option("--verbose", "-v", is_flag=True, help="Also list lines that release notes only mention")
 def check_all(directory, github_token, fmt, output, fail_on, min_severity, exclude, no_cache, quiet, since, deep,
-              jobs):
-    """Check ALL dependencies found in requirements.txt / pyproject.toml / setup.cfg / setup.py / environment.yml."""
+              jobs, verbose):
+    """Check ALL dependencies found in requirements.txt / pyproject.toml / setup.cfg / setup.py / environment.yml.
+
+    Prints one table of every package (what needs attention first), then the
+    lines that break or are deprecated, and a summary with the fixes to run.
+    """
+    global _VERBOSE, _ROOT
+    _VERBOSE, _ROOT = verbose, os.path.abspath(directory)
     directory = os.path.abspath(directory)
     cfg = load_config(directory)
     if fail_on:
@@ -727,9 +902,15 @@ def check_all(directory, github_token, fmt, output, fail_on, min_severity, exclu
 
     # print results after progress bar closes cleanly
     if fmt == "terminal":
-        for r in results:
-            _print_terminal_result(r, quiet, hide_source_notes=True)
-        if not quiet:
+        if quiet:
+            for r in results:
+                _print_terminal_result(r, quiet, hide_source_notes=True)
+        else:
+            _print_table(results)
+            detailed = [r for r in sorted(results, key=lambda r: _row(r)[0]) if _needs_details(r)]
+            for r in detailed:
+                console.print()
+                _print_terminal_result(r, quiet, hide_source_notes=True)
             _print_summary(results)
         if output:
             _emit(results, "md", output, quiet)

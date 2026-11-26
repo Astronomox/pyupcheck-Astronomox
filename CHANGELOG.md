@@ -4,6 +4,24 @@ All notable changes to pyupcheck are documented here.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-11-26
+
+### Changed
+- `check-all` prints one table of every package (current, latest with major upgrades marked, status, uses in your code), with what needs attention first and up-to-date packages folded into one line. Details follow only for packages that break or deprecate something, plus notes worth a look. On narrow terminals the columns combine
+- Mentions are grouped: one release note, with the lines it concerns, instead of the same note under every line, and a line is listed once however many ways it uses the API. Low-confidence mentions are counted and listed with `-v` (`check` and `check-all`)
+- Release notes are shown as plain prose: no Markdown links, emoji, `**[sql] [usecase]**` tags or PR credits, and cut at a sentence instead of mid-word
+- File paths are relative to the project checked, not to where pyupcheck runs
+
+### Fixed
+- False alarms found on a FastAPI + SQLAlchemy project (69 dependencies, about 90 spurious notes, now none):
+  - a parameter change ("The `root_path` parameter in `FastAPI()` is deprecated") flagged every import, annotation and use of `FastAPI`; now only calls that pass `root_path=` are reported
+  - a removed member of a class ("Remove `openapi_prefix` from `FastAPI`") flagged every `app.include_router(...)`; "Remove `x` from `Y`" now reads as `Y.x`, and using a class no longer counts as using each of its members
+  - verbs inside code spans were read as the change ("column names such as ``add``, ``remove``, ``update``" removed `update`)
+  - SQLAlchemy-style category tags (`:tags: usecase, sql` and `**[sql] [usecase]**`) are read: new features and use cases aren't reported as changes
+  - pasted code examples and bare cross-references are no longer read as release-note items
+  - catch-all arguments ("`**extra` removed from `Query`") no longer flag every `Query(...)` call
+- Benchmark unchanged: deep 100% / 100%, changelog 80.6% recall with no false alarms, migrate 8/8
+
 ## [0.17.2] - 2026-11-26
 
 ### Changed
