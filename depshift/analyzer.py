@@ -1,5 +1,6 @@
 """Cross-reference code usages against changelog changes."""
 
+import re
 from dataclasses import dataclass
 from typing import Iterable, List, Optional, Union
 
@@ -73,6 +74,11 @@ def match_usage_to_change(usage: Usage, change: ChangeEntry,
             severity = "breaking" if change.kind in ("removed", "changed") else "deprecated"
             return Risk(usage=usage, change=change, severity=severity)
 
+    if _is_param_change(change):
+        # "The ``root_path`` parameter in ``FastAPI()`` is deprecated" concerns
+        # calls that pass root_path (handled above), not every use of FastAPI
+        return None
+
     excepted = getattr(change, "exceptions", None) or []
     if excepted:
         # a module deprecated/removed except for some members: the module
@@ -103,8 +109,11 @@ def match_usage_to_change(usage: Usage, change: ChangeEntry,
         # them all on the import line is noise
         return None
 
-    # change is a child of something the usage touches
-    if change_api.startswith(f"{usage_api}."):
+    # change is a child of something the usage touches. Not for a class:
+    # using ``FastAPI`` doesn't use ``FastAPI.openapi_prefix``; if your code
+    # used the member (or passed it), it is matched directly above
+    owner = change_api.rsplit(".", 1)[0]
+    if change_api.startswith(f"{usage_api}.") and not owner.rsplit(".", 1)[-1][:1].isupper():
         severity = "warning"
         return Risk(usage=usage, change=change, severity=severity)
 
@@ -116,6 +125,21 @@ def match_usage_to_change(usage: Usage, change: ChangeEntry,
         return Risk(usage=usage, change=change, severity=sev())
 
     return None
+
+
+_PARAM_WORDS = re.compile(r"\b(?:param(?:eter)?s?|arguments?|args?|kwargs?|keywords?|options?)\b", re.IGNORECASE)
+
+
+def _is_param_change(change: ChangeEntry) -> bool:
+    """Is this change about one parameter of a callable (``Owner.param``)?"""
+    parts = change.api.rstrip("()").split(".")
+    if len(parts) < 2:
+        return False
+    param = parts[-1]
+    if not param.isidentifier() or param[:1].isupper():
+        return False  # "Session.Request" is a member, not a parameter
+    desc = change.description
+    return bool(_PARAM_WORDS.search(desc)) and re.search(rf"`{{1,2}}{re.escape(param)}`{{1,2}}", desc) is not None
 
 
 _COMMON_NAMES = {

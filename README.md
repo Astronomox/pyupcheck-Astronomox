@@ -14,7 +14,7 @@
 - **Wide reach:** **96.7%** of the 1,000 most-downloaded PyPI packages can be deep-checked. It works with pip, uv, Poetry, PDM, Pipenv, conda and pixi, plus Jupyter notebooks.
 - **Fits your workflow:** a GitHub Action that comments on dependency PRs, `watch` mode, and a VS Code extension.
 
-Website: [pyupcheck.vercel.app](https://pyupcheck.vercel.app) · Changes: [CHANGELOG.md](CHANGELOG.md) · Latest: **0.17.2**
+Website: [pyupcheck.vercel.app](https://pyupcheck.vercel.app) · Changes: [CHANGELOG.md](CHANGELOG.md) · Latest: **0.18.0**
 
 ## Install
 
@@ -33,7 +33,18 @@ pyupcheck check-all   # check every dependency in this project
 
 ## What the output looks like
 
-Each package gets a status badge (`✗ 2 BREAKING`, `! 1 DEPRECATED`, `✓ OK`, `? NOT CHECKED`). Each breaking line is shown with its file and line number, marked `verified` when deep mode confirmed it against the real code. The release note behind it is indented underneath, followed by `→ use …` when there is a replacement. `check-all` ends with one summary:
+`check-all` opens with one table of every package: current and latest version (with major upgrades marked), a status (`✗ 2 breaking`, `! 1 deprecated`, `? not checked`, `✓ safe`) and how many places your code uses it. What needs attention comes first, and packages already up to date are listed on one line underneath:
+
+```
+Package    Current   Latest        Status         Your code
+flask      2.2.5     3.1.3 major   ✗ 1 breaking   4 uses
+numpy      1.26.4    2.5.5 major   ✗ 2 breaking   4 uses
+click      8.1.7     8.5.1         ✓ safe         2 uses
+requests   2.31.0    2.34.2        ✓ safe         3 uses
+✓ Already up to date (2): httpx, rich
+```
+
+Then each package that breaks or deprecates something gets its own section: every line with its file and line number (`verified` when deep mode confirmed it against the real code), the release note in plain text, and `→ use …` when there is a replacement. Lines that release notes only mention, without saying the API changed, are grouped by note under "worth a look"; low-confidence mentions are counted, and `-v` lists them. The run ends with one summary:
 
 ```
 3 breaking · 1 deprecated · 2 safe across 4 packages
@@ -203,7 +214,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: Astronomox/pyupcheck-Astronomox@v0.17.2
+      - uses: Astronomox/pyupcheck-Astronomox@v0.18.0
         # with:
         #   fail-on: breaking   # make the check fail on breaking usages
         #   deep: "false"       # changelog only (faster)
@@ -414,6 +425,7 @@ What has shipped, newest first (details in [CHANGELOG.md](CHANGELOG.md)):
 
 | Version | Date | Highlights |
 |---|---|---|
+| 0.18.0 | 2026-11-26 | `check-all` results as one table; release-note mentions grouped; false alarms on FastAPI and SQLAlchemy projects fixed |
 | 0.17.2 | 2026-11-26 | Full-screen animated `banner` that re-lays itself out on resize; readable over terminal background images |
 | 0.17.1 | 2026-11-25 | Banner fits any width (three logo sizes); short `--help`; `-h` |
 | 0.17.0 | 2026-11-25 | Redesigned terminal output (badges, one summary, next steps), website and README |
@@ -430,7 +442,7 @@ What has shipped, newest first (details in [CHANGELOG.md](CHANGELOG.md)):
 | 0.7.0 | 2026-11-20 | `migrate`: verified, mechanical rewrites |
 | 0.6.0 | 2026-11-20 | Accuracy overhaul, accuracy benchmark, lockfiles, object tracking, parallel `check-all`, Trusted Publishing |
 
-Where it stands now: deep mode catches 100% of breaking lines on 52 real upgrades with no false alarms; release notes alone catch 80.6%, also with no false alarms; `migrate` gets 8 of 8 rewrite cases exactly right; 96.7% of the top 1,000 PyPI packages can be deep-checked. There are 419 tests on Python 3.10 to 3.14.
+Where it stands now: deep mode catches 100% of breaking lines on 52 real upgrades with no false alarms; release notes alone catch 80.6%, also with no false alarms; `migrate` gets 8 of 8 rewrite cases exactly right; 96.7% of the top 1,000 PyPI packages can be deep-checked. There are 428 tests on Python 3.10 to 3.14.
 
 ## Roadmap
 
