@@ -4,6 +4,12 @@ All notable changes to pyupcheck are documented here.
 
 ## [Unreleased]
 
+## [0.17.2] - 2026-11-26
+
+### Changed
+- `pyupcheck banner` runs full screen in an interactive terminal and lays itself out again whenever the window is resized, by width and by height, so it never breaks into fragments. Before, shrinking the window after the banner printed made the terminal re-wrap it. The logo's colours flow and a highlight sweeps across it, tips type out at the bottom, and any key exits. A copy sized to the final window is left in the scrollback. `--static` prints once as before, and pipes, CI, `PYUPCHECK_NO_ANIMATION=1` and the old Windows console host always print once
+- Muted text in the banner is a solid grey instead of dimmed, so it stays readable over terminal background images
+
 ## [0.17.1] - 2026-11-25
 
 ### Changed
