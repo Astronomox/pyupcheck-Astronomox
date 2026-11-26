@@ -14,13 +14,36 @@
 - **Wide reach:** **96.7%** of the 1,000 most-downloaded PyPI packages can be deep-checked. It works with pip, uv, Poetry, PDM, Pipenv, conda and pixi, plus Jupyter notebooks.
 - **Fits your workflow:** a GitHub Action that comments on dependency PRs, `watch` mode, and a VS Code extension.
 
-Website: [pyupcheck.vercel.app](https://pyupcheck.vercel.app)
+Website: [pyupcheck.vercel.app](https://pyupcheck.vercel.app) · Changes: [CHANGELOG.md](CHANGELOG.md) · Latest: **0.17.2**
 
 ## Install
 
 ```bash
 pip install pyupcheck
 ```
+
+On Windows, `python -m pip install -U pyupcheck` upgrades it even when `pip.exe` can't replace itself. Then:
+
+```bash
+pyupcheck banner      # logo, your version, the latest release, where to start
+pyupcheck check-all   # check every dependency in this project
+```
+
+`pyupcheck banner` runs full screen in an interactive terminal. The logo's colours flow, and the whole layout is redrawn for the window's width and height whenever you resize it: one-row logo, PYUP over CHECK, or a one-line wordmark. Any key exits and leaves a copy sized to the window. `--static` prints once; so do pipes, CI and `PYUPCHECK_NO_ANIMATION=1`.
+
+## What the output looks like
+
+Each package gets a status badge (`✗ 2 BREAKING`, `! 1 DEPRECATED`, `✓ OK`, `? NOT CHECKED`). Each breaking line is shown with its file and line number, marked `verified` when deep mode confirmed it against the real code. The release note behind it is indented underneath, followed by `→ use …` when there is a replacement. `check-all` ends with one summary:
+
+```
+3 breaking · 1 deprecated · 2 safe across 4 packages
+
+Fix what can be fixed automatically (shows the diff first):
+  pyupcheck migrate flask 3.0.0
+  pyupcheck migrate numpy 2.0.0
+```
+
+A source that couldn't be read (say, GitHub rate-limiting you) is mentioned once in that summary, with a `GITHUB_TOKEN` hint, instead of under every package. Terminals that can't print Unicode get ASCII symbols, and `pyupcheck --help` (or `-h`) fits narrow windows.
 
 ## Commands
 
@@ -61,6 +84,23 @@ Applies only mechanical changes it can verify against the new version's real API
 - names moved to another package: `from flask import Markup` -> `from markupsafe import Markup`, and `flask.Markup(...)` -> `markupsafe.Markup(...)` with `import markupsafe` added (checked against that package's real API)
 
 Replacements come from the package's own deprecation notes (including ones published before your current version), are paired one-to-one ("`a`, `b` in favour of `x`, `y` respectively"), and are only applied if the replacement exists in the target version. Anything else that breaks (a new required argument, an API moved to another package) is listed for you to change by hand, and the command exits 1 while such items remain.
+
+### `fix` - move pins to the highest safe version
+
+```bash
+pyupcheck fix --dry-run   # show what would change
+pyupcheck fix             # rewrite the ==pins in your requirements files
+```
+
+Each `==x.y.z` pin moves to the newest release that breaks none of your code, checked in deep mode by default. If the latest release breaks you, the pin still moves as far as it safely can instead of staying put, and held-back packages are named. A version that couldn't be checked is never used.
+
+### `review` - check a pull request's dependency changes
+
+```bash
+pyupcheck review --base origin/main
+```
+
+Finds every dependency whose resolved version changed since `--base` (dependency files and lockfiles, uncommitted changes included). It checks each one from its old version to its new one and writes a Markdown report. The [GitHub Action](#review-dependency-pull-requests) posts that report as a PR comment.
 
 ### `outdated` - list stale dependencies
 
@@ -121,10 +161,11 @@ Only the few lines around each breaking usage are sent (`--max` caps how many us
 pyupcheck scan requests
 ```
 
-### `versions` and `cache-clear`
+### `versions`, `ci-setup` and `cache-clear`
 
 ```bash
 pyupcheck versions flask
+pyupcheck ci-setup --type github     # or pre-commit, or all
 pyupcheck cache-clear
 ```
 
@@ -162,7 +203,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: Astronomox/pyupcheck-Astronomox@v0.16.1
+      - uses: Astronomox/pyupcheck-Astronomox@v0.17.2
         # with:
         #   fail-on: breaking   # make the check fail on breaking usages
         #   deep: "false"       # changelog only (faster)
@@ -252,7 +293,9 @@ In deep mode, pyupcheck downloads both versions of the package, extracts their a
 
 Functions that moved but are still importable from the same place (re-exports, `__all__`, base classes) are not reported.
 
-These findings are marked `[FACT]` in the output because they come from the real code, not changelog prose. Deep mode is slower (it downloads and parses packages) but far more accurate.
+These findings are marked `verified` in the output because they come from the real code, not changelog prose. Deep mode is slower (it downloads and parses packages) but far more accurate.
+
+It also works where there's no code to diff directly. Type stub packages (`types-requests`, `pandas-stubs`) are diffed as the module they type. Meta-packages that only pin another package (for example `typer-slim`) use that package's API. Bundled test suites are skipped, so they don't count as API.
 
 ## Features
 
@@ -264,8 +307,9 @@ These findings are marked `[FACT]` in the output because they come from the real
 - Jupyter notebooks (`.ipynb`): code cells are scanned as one module, the way they run, so `import numpy as np` in the first cell is followed into every later one. `%magics`, `!shell` lines and `%%bash`-style cells are skipped. Findings point at the notebook file's line and name the cell, and `migrate --write` rewrites cells in place, leaving outputs and metadata untouched
 - Type stub (`.pyi`) scanning
 - conda and pixi projects: `environment.yml`, `conda-lock.yml`, `pixi.toml` (and `[tool.pixi]` in `pyproject.toml`) and `pixi.lock`. Only conda packages that are Python packages are checked (not `openssl` or `rust`), under their PyPI names (`pytorch` is `torch`, and pixi's lock says exactly which name each package has on PyPI). Manifests using TOML 1.1 syntax that Python's `tomllib` can't read are still read
-- Dynamic import detection (`importlib.import_module`, `__import__`)
-- Changelog sources: GitHub releases, raw changelog files, PyPI descriptions
+- Dynamic import detection (`importlib.import_module`, `__import__`) and written-out `getattr(np, "float_")`, which `migrate` rewrites too
+- Changelog sources: GitHub releases (and their Atom feed when the API is rate limited), changelog files in any common name and folder, the changelog link on the PyPI page, per-version release notes in project docs, migration guides, and PyPI descriptions. It understands Keep a Changelog, towncrier, reST and Markdown tables, nested lists, and removals scheduled for a later version ("will be removed in 2.0")
+- Polite with the network: at most 8 requests to a host at a time, a single retry after HTTP 429, and one listing call per repository when a GitHub token is set
 - Works for any PyPI package: resolves import names (`pyyaml` -> `yaml`), namespace packages, C extensions, `src/` layouts
 - Parses requirements*.txt, pyproject.toml, Pipfile, setup.cfg, setup.py, environment.yml
 - 24h response cache (`--no-cache` to bypass, `cache-clear` to wipe)
@@ -284,7 +328,9 @@ Changelogs are read from GitHub releases, root CHANGES files, per-version releas
 
 - Changelog parsing relies on maintainers writing structured changelogs
 - Dynamic attribute access is detected when the name is written out (`getattr(np, "float_")`), not when it's computed at run time (`getattr(np, name)`); `getattr` with a default is a compatibility shim and isn't reported
-- GitHub API is rate limited to 60 req/hr unauthenticated; pass `--github-token` or set `GITHUB_TOKEN` for higher limits
+- GitHub's API allows 60 requests an hour without a token. pyupcheck falls back to the releases feed and raw files, but set `GITHUB_TOKEN` (or pass `--github-token`) for the most complete release notes
+- Packages that ship only compiled code (CUDA libraries, for example) have no Python API for deep mode to compare; they're checked from their release notes
+- `explain` hasn't been tried against the live Claude API yet
 
 ## Contributing
 
@@ -298,7 +344,9 @@ pip install -e "."
 
 **Releasing (for maintainers)**
 
-Releases are published by GitHub Actions when a version tag is pushed, using PyPI Trusted Publishing (no tokens). See [RELEASING.md](RELEASING.md).
+Run the tests with `python -m pytest` (no network needed; they never touch the real cache) and the accuracy benchmark with `make bench`.
+
+Releases are published by GitHub Actions with PyPI Trusted Publishing (no tokens): bump the version with `python bump.py X.Y.Z`, merge to `main`, then run the *Release* workflow (or push a `vX.Y.Z` tag). See [RELEASING.md](RELEASING.md).
 
 **Things that would genuinely improve the tool:**
 
@@ -321,9 +369,9 @@ Without `--deep`, accuracy depends on how well maintainers document breaking cha
 
 With `--deep`, accuracy is much higher because it diffs the actual source code. It will catch any removed public function or deleted parameter regardless of whether the changelog mentioned it.
 
-**Q: Why do I see "[FACT]" next to some findings?**
+**Q: Why do I see "verified" next to some findings?**
 
-`[FACT]` means the finding came from a real API surface diff (via `--deep`), not changelog parsing. These are confirmed removals, not guesses.
+`verified` means the finding came from a real API surface diff (via `--deep`), not changelog parsing. These are confirmed removals, not guesses.
 
 **Q: How does pyupcheck handle packages that ship C extensions?**
 
@@ -331,7 +379,7 @@ The `--deep` mode downloads and parses Python source files. If a package ships o
 
 **Q: Will pyupcheck send my code anywhere?**
 
-No. Your code is never sent anywhere. pyupcheck only reads local files and makes outbound requests to PyPI and GitHub to fetch package metadata and changelogs.
+No. pyupcheck reads your files locally and only asks PyPI, GitHub and project docs sites for package metadata and release notes. The one exception is `pyupcheck explain`, which you run on purpose: it sends the few lines around each breaking usage to Claude, and `--dry-run` shows exactly what would be sent.
 
 **Q: How do I use it in CI without hitting GitHub rate limits?**
 
@@ -348,7 +396,7 @@ ignore = ["my-internal-package", "legacy-lib"]
 
 **Q: The version I want to check is not on PyPI yet. Can I still use pyupcheck?**
 
-No. pyupcheck needs to download the package from PyPI. Pre-release or private packages are not supported.
+No. pyupcheck needs to download the package from PyPI, so packages that are only on a private index aren't supported.
 
 ## Comparison
 
@@ -360,8 +408,35 @@ No. pyupcheck needs to download the package from PyPI. Pre-release or private pa
 | `pipdeptree` | Shows dependency tree | pyupcheck shows upgrade risk |
 | Reading changelogs manually | Slow, easy to miss things | pyupcheck automates this |
 
+## Progress
+
+What has shipped, newest first (details in [CHANGELOG.md](CHANGELOG.md)):
+
+| Version | Date | Highlights |
+|---|---|---|
+| 0.17.2 | 2026-11-26 | Full-screen animated `banner` that re-lays itself out on resize; readable over terminal background images |
+| 0.17.1 | 2026-11-25 | Banner fits any width (three logo sizes); short `--help`; `-h` |
+| 0.17.0 | 2026-11-25 | Redesigned terminal output (badges, one summary, next steps), website and README |
+| 0.16.1 | 2026-11-25 | No more GitHub rate limiting: per-host limit, 429 retry, one listing call per repo |
+| 0.16.0 | 2026-11-23 | Deep mode for stub and meta-packages; pointer changelogs; more docs layouts |
+| 0.15.0 | 2026-11-23 | Release notes for far more of PyPI; coverage benchmark; 2x to 60x faster cold runs |
+| 0.14.0 | 2026-11-23 | Changelog recall 71% → 81%; `getattr` detection; VS Code extension; `explain` |
+| 0.13.0 | 2026-11-23 | conda-lock, `pixi.lock` and `pixi.toml` |
+| 0.12.0 | 2026-11-23 | `watch`: re-check when dependencies or PyPI releases change |
+| 0.11.0 | 2026-11-21 | Jupyter notebooks scanned as one module and rewritten by `migrate` |
+| 0.10.0 | 2026-11-21 | Highest safe version: `outdated --safe` and `fix` |
+| 0.9.0 | 2026-11-21 | SARIF and GitHub annotations; the Action annotates PR lines |
+| 0.8.x | 2026-11-20/21 | `review` and the GitHub Action; `migrate` moves names across packages; benchmark grown to 51 cases |
+| 0.7.0 | 2026-11-20 | `migrate`: verified, mechanical rewrites |
+| 0.6.0 | 2026-11-20 | Accuracy overhaul, accuracy benchmark, lockfiles, object tracking, parallel `check-all`, Trusted Publishing |
+
+Where it stands now: deep mode catches 100% of breaking lines on 52 real upgrades with no false alarms; release notes alone catch 80.6%, also with no false alarms; `migrate` gets 8 of 8 rewrite cases exactly right; 96.7% of the top 1,000 PyPI packages can be deep-checked. There are 419 tests on Python 3.10 to 3.14.
+
 ## Roadmap
 
-Items being actively considered for future versions:
+Items being considered for future versions:
 
+- `explain` tested against the live Claude API
+- The VS Code extension on the Marketplace
+- `check-all` as a live table that fills in while packages are checked, and a full-screen `pyupcheck ui` for browsing findings and applying fixes
 - Support for TypeScript / Node.js packages (npm ecosystem)
