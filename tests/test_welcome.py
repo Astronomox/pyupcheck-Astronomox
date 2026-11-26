@@ -54,3 +54,32 @@ def test_up_to_date_and_pypi_down(monkeypatch):
 def test_ascii_terminal(monkeypatch):
     out = render(monkeypatch, 100, encoding="cp437")
     assert "pyupcheck" in out and "?" not in out.split("Know")[0]
+
+
+@pytest.mark.parametrize("size", [(160, 50), (110, 40), (110, 16), (80, 24), (60, 40), (46, 30), (34, 20), (30, 12)])
+@pytest.mark.parametrize("data", [DATA, None])
+def test_live_frame_fits_the_window(size, data):
+    width, height = size
+    con = Console(file=io.StringIO(), width=width, height=height, color_system="truecolor", force_terminal=True,
+                  record=True)
+    for t in (0.0, 1.3, 4.9):
+        con.print(w.live_frame(con, data, t))
+        lines = con.export_text().splitlines()
+        assert len(lines) <= height and max(map(len, lines)) <= width
+
+
+def test_live_frame_drops_sections_when_short():
+    tall = Console(file=io.StringIO(), width=110, height=45, record=True)
+    tall.print(w.live_frame(tall, DATA, 1.0))
+    short = Console(file=io.StringIO(), width=110, height=16, record=True)
+    short.print(w.live_frame(short, DATA, 1.0))
+    big = tall.export_text()
+    assert "Recent releases" in big and "██████╗" in big
+    text = short.export_text()
+    assert "Recent releases" not in text and "Installed" in text and "▌ pyupcheck" in text
+
+
+def test_not_live_without_a_terminal(monkeypatch):
+    monkeypatch.setattr(w, "run_live", lambda c: pytest.fail("went full screen in a pipe"))
+    monkeypatch.setattr(w, "_fetch_pypi_data", lambda: DATA)
+    w.show_banner(Console(file=io.StringIO(), width=80), live=True)

@@ -580,10 +580,16 @@ def main(ctx):
 
 
 @main.command("banner", short_help="Show the logo and version info")
-def show_banner_cmd():
-    """Show the pyupcheck banner with live version info."""
+@click.option("--static", is_flag=True, help="Print once instead of the full-screen animation.")
+def show_banner_cmd(static):
+    """Show the pyupcheck banner with live version info.
+
+    In an interactive terminal it runs full screen: animated, and laid out
+    again whenever the window is resized. Press any key to exit; a copy sized
+    to the window is left behind. Elsewhere (pipes, CI) it prints once.
+    """
     from depshift.welcome import show_banner
-    show_banner(console)
+    show_banner(console, live=not static)
 
 
 # ── check ─────────────────────────────────────────────────────────────────────
