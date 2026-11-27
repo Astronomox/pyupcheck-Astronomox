@@ -10,10 +10,9 @@ names, so this resolves them from, in order:
 """
 
 import re
-from typing import Dict, List, Optional
 
 # well-known distribution -> import name mismatches (keys are normalized)
-KNOWN_IMPORT_NAMES: Dict[str, List[str]] = {
+KNOWN_IMPORT_NAMES: dict[str, list[str]] = {
     "pyyaml": ["yaml"],
     "beautifulsoup4": ["bs4"],
     "pillow": ["PIL"],
@@ -108,7 +107,7 @@ def normalize_dist_name(name: str) -> str:
 KNOWN_IMPORT_NAMES = {normalize_dist_name(k): v for k, v in KNOWN_IMPORT_NAMES.items()}
 
 
-def _namespace_expand(top: str, files: List[str]) -> List[str]:
+def _namespace_expand(top: str, files: list[str]) -> list[str]:
     """Expand a namespace package root into the packages it actually ships.
 
     ``google`` (no ``google/__init__.py``) with files under
@@ -118,7 +117,7 @@ def _namespace_expand(top: str, files: List[str]) -> List[str]:
     prefix = top.replace(".", "/") + "/"
     if f"{prefix}__init__.py" in files or not any(f.startswith(prefix) for f in files):
         return [top]
-    children: List[str] = []
+    children: list[str] = []
     for f in files:
         if not f.startswith(prefix):
             continue
@@ -129,13 +128,13 @@ def _namespace_expand(top: str, files: List[str]) -> List[str]:
             child = child.split(".", 1)[0]
         if child.isidentifier() and child != "__pycache__" and f"{top}.{child}" not in children:
             children.append(f"{top}.{child}")
-    out: List[str] = []
+    out: list[str] = []
     for c in children:
         out.extend(_namespace_expand(c, files))
     return out or [top]
 
 
-def _from_installed_metadata(dist_name: str) -> List[str]:
+def _from_installed_metadata(dist_name: str) -> list[str]:
     """Import names shipped by an installed distribution (namespace-aware)."""
     try:
         from importlib import metadata
@@ -148,7 +147,7 @@ def _from_installed_metadata(dist_name: str) -> List[str]:
 
     files = [str(f).replace("\\", "/") for f in (dist.files or [])]
 
-    names: List[str] = []
+    names: list[str] = []
     try:
         top_level = dist.read_text("top_level.txt")
     except Exception:
@@ -175,7 +174,7 @@ def _from_installed_metadata(dist_name: str) -> List[str]:
             if mod.isidentifier() and mod not in names:
                 names.append(mod)
 
-    expanded: List[str] = []
+    expanded: list[str] = []
     for n in names:
         for e in _namespace_expand(n, files):
             if e not in expanded:
@@ -183,7 +182,7 @@ def _from_installed_metadata(dist_name: str) -> List[str]:
     return [n for n in expanded if n and not n.startswith("_")] or expanded
 
 
-def _drop_namespace_parents(names: List[str]) -> List[str]:
+def _drop_namespace_parents(names: list[str]) -> list[str]:
     """Remove a bare parent (``google``) when a child (``google.protobuf``) is known.
 
     Scanning the parent would attribute every ``google.*`` import to this one
@@ -192,12 +191,12 @@ def _drop_namespace_parents(names: List[str]) -> List[str]:
     return [n for n in names if not any(o.startswith(n + ".") for o in names)]
 
 
-def import_names_for(dist_name: str) -> List[str]:
+def import_names_for(dist_name: str) -> list[str]:
     """Return the import name(s) for a distribution, best guess first.
 
     Always returns at least one name.
     """
-    names: List[str] = []
+    names: list[str] = []
 
     for n in _from_installed_metadata(dist_name):
         if n not in names:
@@ -228,10 +227,10 @@ def import_names_for(dist_name: str) -> List[str]:
     return names
 
 
-def import_names_from_archive(paths: List[str]) -> List[str]:
+def import_names_from_archive(paths: list[str]) -> list[str]:
     """Guess top-level import names from archive paths (``yaml/loader.py``)
     or dotted module paths (``yaml.loader``)."""
-    out: List[str] = []
+    out: list[str] = []
     for p in paths:
         p = p.replace("\\", "/")
         if p.endswith((".py", ".pyi")):
@@ -242,6 +241,6 @@ def import_names_from_archive(paths: List[str]) -> List[str]:
     return out
 
 
-def primary_import_name(dist_name: str) -> Optional[str]:
+def primary_import_name(dist_name: str) -> str | None:
     names = import_names_for(dist_name)
     return names[0] if names else None

@@ -3,14 +3,12 @@
 import os
 import tempfile
 
-import pytest
-
 from depshift.deps import (
+    discover_dependencies,
+    parse_conda_env,
     parse_requirements_txt,
     parse_setup_cfg,
     parse_setup_py,
-    parse_conda_env,
-    discover_dependencies,
 )
 
 

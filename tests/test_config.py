@@ -3,9 +3,7 @@
 import os
 import tempfile
 
-import pytest
-
-from depshift.config import Config, load_config
+from depshift.config import load_config
 
 
 def write(path, content):

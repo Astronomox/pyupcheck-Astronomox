@@ -9,12 +9,14 @@ import pytest
 
 from depshift.apisurface import build_surface, diff_surfaces
 from depshift.changelog import (
-    ChangeReport, collect_changes, parse_changelog_text, parse_sectioned_changelog,
+    ChangeReport,
+    collect_changes,
+    parse_changelog_text,
+    parse_sectioned_changelog,
     version_from_tag,
 )
 from depshift.precise import match_precise
 from depshift.scanner import Usage, scan_file
-
 
 # ── changelog: false positives ────────────────────────────────────────────────
 

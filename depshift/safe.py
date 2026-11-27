@@ -23,7 +23,13 @@ _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u2
 
 # whole escape sequences (CSI "ESC [ ... m", OSC "ESC ] ... BEL/ST", and
 # two-byte ones), so no fragment like "]0;title" is left behind
-_ESCAPE_SEQ = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]?|\][^\x07\x1b]{0,4096}(?:\x07|\x1b\\)?|[ -/]*[0-~]?)|\x9b[0-?]*[ -/]*[@-~]?")
+_ESCAPE_SEQ = re.compile(
+    r"\x1b(?:"
+    r"\[[0-?]*[ -/]*[@-~]?"                    # CSI: colours, cursor moves, clearing
+    r"|\][^\x07\x1b]{0,4096}(?:\x07|\x1b\\)?"  # OSC: window title, hyperlinks
+    r"|[ -/]*[0-~]?)"                          # two-byte sequences
+    r"|\x9b[0-?]*[ -/]*[@-~]?"                 # 8-bit CSI
+)
 
 
 def plain(text: object, keep_newlines: bool = True) -> str:
@@ -49,8 +55,7 @@ def md_text(text: object) -> str:
     s = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     s = re.sub(r"@(?=[\w-])", "@\u2060", s)                 # word joiner: no mention, no ping
     s = re.sub(r"(?<![\w&])#(?=\d)", "#\u2060", s)          # no issue/PR cross-links
-    s = s.replace("|", "\\|")
-    return s
+    return s.replace("|", "\\|")
 
 
 def md_code(text: object, in_table: bool = False) -> str:

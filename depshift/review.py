@@ -8,11 +8,11 @@ report is Markdown meant for a pull-request comment.
 
 import os
 import re
+
 # git only: run without a shell, with validated arguments
 import subprocess  # nosec B404
 import tempfile
 from dataclasses import dataclass
-from typing import Dict, List, Optional
 
 from depshift.deps import discover_dependencies
 from depshift.lockfiles import locked_versions
@@ -63,7 +63,7 @@ def _git(repo: str, *args: str) -> str:
                           text=True).stdout
 
 
-def export_dependency_files(repo: str, ref: str, dest: str) -> List[str]:
+def export_dependency_files(repo: str, ref: str, dest: str) -> list[str]:
     """Write the dependency files as they are at ``ref`` into ``dest``."""
     if not valid_ref(ref):
         raise ValueError(f"not a git revision pyupcheck accepts: {ref!r}")
@@ -84,8 +84,8 @@ def export_dependency_files(repo: str, ref: str, dest: str) -> List[str]:
     return written
 
 
-def _lower_bound(raw: str) -> Optional[str]:
-    from packaging.requirements import Requirement, InvalidRequirement
+def _lower_bound(raw: str) -> str | None:
+    from packaging.requirements import InvalidRequirement, Requirement
     try:
         spec = Requirement(raw).specifier
     except InvalidRequirement:
@@ -96,11 +96,11 @@ def _lower_bound(raw: str) -> Optional[str]:
     return None
 
 
-def resolved_versions(directory: str) -> Dict[str, tuple]:
+def resolved_versions(directory: str) -> dict[str, tuple]:
     """{name: (version, requirement text)}: lockfile version, else exact pin,
     else the lowest version the constraint allows."""
     locks = locked_versions(directory)
-    out: Dict[str, tuple] = {}
+    out: dict[str, tuple] = {}
     for dep in discover_dependencies(directory):
         lock = locks.get(dep.name)
         version = lock.version if lock else (dep.pinned_version or _lower_bound(dep.raw))
@@ -111,7 +111,7 @@ def resolved_versions(directory: str) -> Dict[str, tuple]:
     return out
 
 
-def changed_dependencies(repo: str, base_ref: str) -> List[VersionChange]:
+def changed_dependencies(repo: str, base_ref: str) -> list[VersionChange]:
     """Packages whose resolved version differs between ``base_ref`` and the
     working tree, upgrades and downgrades alike. Added and removed packages
     have nothing to compare and are skipped."""
@@ -121,7 +121,7 @@ def changed_dependencies(repo: str, base_ref: str) -> List[VersionChange]:
     return version_changes(before, resolved_versions(repo))
 
 
-def version_changes(before: Dict[str, tuple], after: Dict[str, tuple]) -> List[VersionChange]:
+def version_changes(before: dict[str, tuple], after: dict[str, tuple]) -> list[VersionChange]:
     """Packages in both :func:`resolved_versions` results whose version differs."""
     changes = []
     for name in sorted(set(before) & set(after)):
@@ -157,10 +157,11 @@ def _note(text: str, limit: int = 160) -> str:
     return md_text(s)
 
 
-def render_review(results: List[dict], max_findings: int = 10, repo_root: str = ".") -> str:
+def render_review(results: list[dict], max_findings: int = 10, repo_root: str = ".") -> str:
     """Markdown for a pull-request comment. Each result is a check result
     dict with an optional ``fixable`` count from ``migrate``."""
     import html as _html
+
     from depshift.safe import md_code, md_text
     lines = [COMMENT_MARKER, "## pyupcheck: dependency changes in this PR", ""]
     if not results:
@@ -179,10 +180,7 @@ def render_review(results: List[dict], max_findings: int = 10, repo_root: str = 
     lines.append("| Package | Change | Breaking | Deprecated | Auto-fixable |")
     lines.append("|---|---|---|---|---|")
     for r in results:
-        if r.get("unchecked") and not r["risks"]:
-            status = "not checked"
-        else:
-            status = str(r["breaking_count"])
+        status = "not checked" if r.get("unchecked") and not r["risks"] else str(r["breaking_count"])
         fixable = r.get("fixable")
         lines.append(f"| {md_code(r['package'], in_table=True)} | {md_text(r.get('current_version') or '?')} → "
                      f"{md_text(r['target_version'])} | {status} | {int(r['deprecated_count'])} "

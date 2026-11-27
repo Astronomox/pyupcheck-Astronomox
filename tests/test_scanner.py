@@ -1,12 +1,11 @@
 """Tests for the AST-based code scanner."""
 
+import contextlib
 import os
 import tempfile
 import textwrap
 
-import pytest
-
-from depshift.scanner import scan_file, scan_directory
+from depshift.scanner import scan_directory, scan_file
 
 
 def write_temp(code: str, suffix=".py") -> str:
@@ -18,10 +17,8 @@ def write_temp(code: str, suffix=".py") -> str:
 
 def cleanup(*paths):
     for p in paths:
-        try:
+        with contextlib.suppress(Exception):
             os.unlink(p)
-        except Exception:
-            pass
 
 
 # ── basic imports ────────────────────────────────────────────────────────────

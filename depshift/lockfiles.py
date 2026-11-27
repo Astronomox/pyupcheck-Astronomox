@@ -10,7 +10,6 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from typing import Dict, List, Optional
 
 from ._toml import tomllib
 from .deps import normalize_name
@@ -29,7 +28,7 @@ LOCKFILES = ["uv.lock", "poetry.lock", "pdm.lock", "pylock.toml", "Pipfile.lock"
 _CONDA_LOCKS = {"conda-lock.yml", "conda-lock.yaml", "pixi.lock"}
 
 
-def _toml_packages(path: str, key: str = "package") -> List[dict]:
+def _toml_packages(path: str, key: str = "package") -> list[dict]:
     if tomllib is None:
         return []
     try:
@@ -47,7 +46,7 @@ def _is_project_itself(pkg: dict) -> bool:
     return isinstance(src, dict) and ("editable" in src or "virtual" in src)
 
 
-def parse_toml_lock(path: str) -> List[LockedPackage]:
+def parse_toml_lock(path: str) -> list[LockedPackage]:
     """poetry.lock, uv.lock, pdm.lock ([[package]]) and pylock.toml ([[packages]])."""
     key = "packages" if os.path.basename(path).startswith("pylock") else "package"
     out = []
@@ -59,7 +58,7 @@ def parse_toml_lock(path: str) -> List[LockedPackage]:
     return out
 
 
-def parse_pipfile_lock(path: str) -> List[LockedPackage]:
+def parse_pipfile_lock(path: str) -> list[LockedPackage]:
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
@@ -74,7 +73,7 @@ def parse_pipfile_lock(path: str) -> List[LockedPackage]:
     return out
 
 
-def find_lockfiles(directory: str) -> List[str]:
+def find_lockfiles(directory: str) -> list[str]:
     paths = [os.path.join(directory, n) for n in LOCKFILES]
     # PEP 751 also allows pylock.<name>.toml
     try:
@@ -92,9 +91,9 @@ _VALID_NAME = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,200}[a-z0-9])?$")
 _VALID_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.+!_-]{0,100}$")
 
 
-def locked_versions(directory: str) -> Dict[str, LockedPackage]:
+def locked_versions(directory: str) -> dict[str, LockedPackage]:
     """{normalized name: LockedPackage} from every lockfile in directory."""
-    out: Dict[str, LockedPackage] = {}
+    out: dict[str, LockedPackage] = {}
     for path in find_lockfiles(directory):
         for pkg in parse_lockfile(path):
             if _VALID_NAME.match(pkg.name or "") and _VALID_VERSION.match(str(pkg.version or "")):
@@ -102,7 +101,7 @@ def locked_versions(directory: str) -> Dict[str, LockedPackage]:
     return out
 
 
-def parse_lockfile(path: str) -> List[LockedPackage]:
+def parse_lockfile(path: str) -> list[LockedPackage]:
     name = os.path.basename(path)
     if name in _CONDA_LOCKS:
         from .conda import lockfile_versions
@@ -112,6 +111,6 @@ def parse_lockfile(path: str) -> List[LockedPackage]:
     return parse_toml_lock(path)
 
 
-def locked_version(directory: str, package: str) -> Optional[str]:
+def locked_version(directory: str, package: str) -> str | None:
     pkg = locked_versions(directory).get(normalize_name(package))
     return pkg.version if pkg else None

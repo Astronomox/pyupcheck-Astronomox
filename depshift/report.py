@@ -3,7 +3,6 @@
 import html
 import os
 from datetime import datetime
-from typing import List, Optional
 
 
 def _rel(path: str) -> str:
@@ -19,7 +18,7 @@ def _h(text) -> str:
     return html.escape(plain(text))
 
 
-def render_markdown(results: List[dict]) -> str:
+def render_markdown(results: list[dict]) -> str:
     """results: list of dicts with keys package, current, target, risks, safe_count.
 
     Release notes, versions and code are untrusted text: they're made inert
@@ -125,7 +124,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 """
 
 
-def render_html(results: List[dict]) -> str:
+def render_html(results: list[dict]) -> str:
     pkg_blocks = []
     for r in results:
         if r["breaking_count"]:
@@ -143,7 +142,7 @@ def render_html(results: List[dict]) -> str:
             code = _h(risk["code"][:70])
             desc = _h(risk["change_description"][:110])
             if risk.get("replacement"):
-                desc += f' &rarr; use <code>{_h(risk["replacement"])}</code>' 
+                desc += f' &rarr; use <code>{_h(risk["replacement"])}</code>'
             sev = risk["severity"]
             rows += (f'<tr><td class="sev-{sev}">{sev}</td>'
                      f'<td><code>{loc}</code></td>'
@@ -176,7 +175,7 @@ _SARIF_LEVEL = {"breaking": "error", "deprecated": "warning", "warning": "note"}
 _GH_LEVEL = {"breaking": "error", "deprecated": "warning", "warning": "notice"}
 
 
-def _repo_rel(path: str, root: Optional[str] = None) -> str:
+def _repo_rel(path: str, root: str | None = None) -> str:
     """Path relative to the repository root, with forward slashes.
     In GitHub Actions the root is GITHUB_WORKSPACE, so a project in a
     subdirectory still gets annotations on the right file."""
@@ -188,7 +187,7 @@ def _repo_rel(path: str, root: Optional[str] = None) -> str:
     return rel.replace(os.sep, "/")
 
 
-def _findings(results: List[dict]):
+def _findings(results: list[dict]):
     """Breaking and deprecated findings, once per (file, line, message).
     Weak "mentioned in the changes" hints are left to the full reports."""
     seen = set()
@@ -213,10 +212,11 @@ def _message(r: dict, risk: dict) -> str:
     return " ".join(msg.split())
 
 
-def render_sarif(results: List[dict], root: Optional[str] = None) -> str:
+def render_sarif(results: list[dict], root: str | None = None) -> str:
     """SARIF 2.1.0, for GitHub code scanning and other SARIF viewers."""
     import hashlib
     import json
+
     from depshift import __version__
 
     rules = [
@@ -272,7 +272,7 @@ def _gh_escape_prop(s: str) -> str:
     return _gh_escape_data(s).replace(":", "%3A").replace(",", "%2C")
 
 
-def render_github_annotations(results: List[dict], root: Optional[str] = None) -> str:
+def render_github_annotations(results: list[dict], root: str | None = None) -> str:
     """GitHub Actions workflow commands: one annotation per finding, shown on
     the line in the PR diff and in the run summary."""
     lines = []

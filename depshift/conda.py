@@ -21,7 +21,6 @@ import os
 import platform
 import re
 import sys
-from typing import Dict, List, Optional
 
 # conda package name -> PyPI project name, where they differ
 CONDA_TO_PYPI = {
@@ -72,19 +71,20 @@ def _unquote(v: str) -> str:
 _CHILD_NAME = re.compile(r"^['\"]?([A-Za-z0-9_][A-Za-z0-9._-]*)")
 
 
-def _names(entries: List[str]) -> List[str]:
+def _names(entries: list[str]) -> list[str]:
     """Package names at the start of each entry ("libblas >=3.9", "python: '>=3'")."""
     return [m.group(1) for m in map(_CHILD_NAME.match, entries) if m]
 
 
-def yaml_items(text: str, key: str) -> List[dict]:
+def yaml_items(text: str, key: str) -> list[dict]:
     """The mappings in the top-level list ``key``. Each has its scalar keys,
     and ``_children[k]``: the lines under a nested key (each list entry, or
     each ``key: value`` of a mapping), as text."""
-    items: List[dict] = []
+    items: list[dict] = []
     in_list = False
-    item: Optional[dict] = None
-    list_indent = key_indent = None
+    item: dict | None = None
+    list_indent: int | None = None
+    key_indent = 0
     nested = None
     for raw in text.splitlines():
         stripped = raw.strip()
@@ -130,7 +130,7 @@ def yaml_items(text: str, key: str) -> List[dict]:
     return items
 
 
-def _read(path: str) -> Optional[str]:
+def _read(path: str) -> str | None:
     try:
         with open(path, encoding="utf-8") as f:
             return f.read()
@@ -138,7 +138,7 @@ def _read(path: str) -> Optional[str]:
         return None
 
 
-def _is_python_package(name: str, deps: List[str]) -> bool:
+def _is_python_package(name: str, deps: list[str]) -> bool:
     deps = _names(deps)
     return name.lower() not in _NOT_PYTHON and (
         "python" in deps or "python_abi" in deps or name.lower() in CONDA_TO_PYPI)
@@ -147,7 +147,7 @@ def _is_python_package(name: str, deps: List[str]) -> bool:
 _PURL = re.compile(r"^pkg:pypi/([^@?#\s]+)")
 
 
-def _pypi_identity(item: dict, conda_name: str) -> Optional[str]:
+def _pypi_identity(item: dict, conda_name: str) -> str | None:
     """The PyPI name of a conda package: from its package URLs (``purls``,
     written by pixi) when present, since they are exact; else guessed from
     its dependencies. None for something that isn't a Python package."""
@@ -170,7 +170,7 @@ def _version_key(v: str):
         return (0, Version("0"))
 
 
-def _pick(found: Dict[str, List[tuple]]) -> Dict[str, str]:
+def _pick(found: dict[str, list[tuple]]) -> dict[str, str]:
     """One version per name: this machine's platform first, then noarch,
     then any. Several versions there (pixi locks several environments, and
     one may hold an old version for a tool) give the highest, which is the
@@ -178,18 +178,19 @@ def _pick(found: Dict[str, List[tuple]]) -> Dict[str, str]:
     here = current_platform()
     out = {}
     for name, entries in found.items():
-        rank = lambda e: (e[1] != here, e[1] != "noarch")  # noqa: E731
+        def rank(e, here=here):  # this platform first, then noarch
+            return (e[1] != here, e[1] != "noarch")
         best = min(rank(e) for e in entries)
         out[name] = max((e[0] for e in entries if rank(e) == best), key=_version_key)
     return out
 
 
-def parse_conda_lock(path: str) -> Dict[str, str]:
+def parse_conda_lock(path: str) -> dict[str, str]:
     """{PyPI name: version} from a conda-lock.yml."""
     text = _read(path)
     if text is None:
         return {}
-    found: Dict[str, List[tuple]] = {}
+    found: dict[str, list[tuple]] = {}
     for it in yaml_items(text, "package"):
         name, version = it.get("name"), it.get("version")
         if not name or not version:
@@ -237,25 +238,25 @@ def _pixi_entries(text: str):
         yield name, _pypi_identity(it, name), version, plat
 
 
-def parse_pixi_lock(path: str) -> Dict[str, str]:
+def parse_pixi_lock(path: str) -> dict[str, str]:
     """{PyPI name: version} from a pixi.lock (format versions 4 to 7)."""
     text = _read(path)
     if text is None:
         return {}
-    found: Dict[str, List[tuple]] = {}
+    found: dict[str, list[tuple]] = {}
     for _conda, pypi, version, plat in _pixi_entries(text):
         if pypi:
             found.setdefault(pypi, []).append((version, plat))
     return _pick(found)
 
 
-def pixi_lock_names(path: str) -> Dict[str, Optional[str]]:
+def pixi_lock_names(path: str) -> dict[str, str | None]:
     """{conda name: PyPI name, or None if it isn't a Python package}, as the
     pixi.lock next to a manifest records them."""
     text = _read(path)
     if text is None:
         return {}
-    out: Dict[str, Optional[str]] = {}
+    out: dict[str, str | None] = {}
     for conda, pypi, _v, _p in _pixi_entries(text):
         if conda:
             out[conda.lower()] = out.get(conda.lower()) or pypi
@@ -279,7 +280,7 @@ def _conda_spec_to_pep440(spec: str) -> str:
     return spec
 
 
-def pixi_requirements(data: dict, names: Optional[Dict[str, Optional[str]]] = None) -> List[str]:
+def pixi_requirements(data: dict, names: dict[str, str | None] | None = None) -> list[str]:
     """Requirement strings from a pixi manifest's tables (pixi.toml, or
     pyproject.toml's [tool.pixi]): conda and PyPI dependencies of the
     default environment and of every feature, environment and target.
@@ -333,11 +334,11 @@ _KEY_VALUE = re.compile(r"""^([A-Za-z0-9_][A-Za-z0-9._-]*)\s*=\s*(?:"([^"]*)"|'(
 _INLINE_VERSION = re.compile(r"""\bversion\s*=\s*["']([^"']*)["']""")
 
 
-def _lenient_pixi_requirements(text: str, names=None) -> List[str]:
+def _lenient_pixi_requirements(text: str, names=None) -> list[str]:
     """Dependencies read line by line, for a manifest tomllib can't parse
     (pixi accepts TOML 1.1, such as an inline table over several lines).
     Only the dependency tables are read; nothing else is needed."""
-    tables: Dict[str, dict] = {}
+    tables: dict[str, dict] = {}
     current = None
     for line in text.splitlines():
         stripped = line.strip()
@@ -366,7 +367,7 @@ def _lenient_pixi_requirements(text: str, names=None) -> List[str]:
     return out
 
 
-def read_pixi_toml(path: str) -> List[str]:
+def read_pixi_toml(path: str) -> list[str]:
     from ._toml import tomllib
     text = _read(path)
     if text is None:
@@ -381,7 +382,7 @@ def read_pixi_toml(path: str) -> List[str]:
     return list(dict.fromkeys(_lenient_pixi_requirements(text, names)))
 
 
-def lockfile_versions(path: str) -> Dict[str, str]:
+def lockfile_versions(path: str) -> dict[str, str]:
     name = os.path.basename(path)
     if name == "pixi.lock":
         return parse_pixi_lock(path)

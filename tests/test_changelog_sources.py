@@ -3,8 +3,7 @@
 import pytest
 
 from depshift import changelog as cl
-from depshift.changelog import (changelog_link_candidates, html_to_text, parse_releases_feed,
-                                parse_sectioned_changelog)
+from depshift.changelog import changelog_link_candidates, html_to_text, parse_releases_feed, parse_sectioned_changelog
 
 
 def versions(text, package="pkg"):

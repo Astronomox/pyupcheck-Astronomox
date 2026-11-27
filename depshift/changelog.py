@@ -2,10 +2,10 @@
 
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
 
 import httpx
 
+from depshift.cache import cache_get, cache_set
 from depshift.http import http_get
 
 
@@ -18,22 +18,27 @@ class ChangeEntry:
     version: str  # version where this change happened
     confidence: str = "medium"  # "high" (explicit section / strong phrase), "medium", "low"
     # "Deprecate the ``urls`` module, except for ``iri_to_uri``": members that stay
-    exceptions: List[str] = field(default_factory=list)
-    replacement: Optional[str] = None  # suggested replacement API, when the text names one
+    exceptions: list[str] = field(default_factory=list)
+    replacement: str | None = None  # suggested replacement API, when the text names one
     # a deprecation's announced removal ("will be removed in 1.2")
-    removed_in: Optional[str] = None
+    removed_in: str | None = None
     # the parent item a nested one was listed under, when that is what says
     # what happened ("The old names are deprecated.")
-    context: Optional[str] = None
+    context: str | None = None
+
+
+def clip(text: str, limit: int) -> str:
+    """``text`` cut to at most ``limit`` characters, at a word boundary, with
+    an ellipsis when anything was cut."""
+    if len(text) <= limit:
+        return text
+    return text[:limit].rsplit(" ", 1)[0].rstrip(",;:") + "…"
 
 
 PYPI_API = "https://pypi.org/pypi/{package}/json"
 PYPI_VERSION_API = "https://pypi.org/pypi/{package}/{version}/json"
 GITHUB_RELEASES_API = "https://api.github.com/repos/{owner}/{repo}/releases"
 GITHUB_TAGS_API = "https://api.github.com/repos/{owner}/{repo}/tags"
-
-
-from depshift.cache import cache_get, cache_set
 
 
 def get_pypi_info(package: str, fresh: bool = False) -> dict:
@@ -65,7 +70,7 @@ def get_pypi_version_info(package: str, version: str) -> dict:
     return data
 
 
-def get_available_versions(package: str) -> List[str]:
+def get_available_versions(package: str) -> list[str]:
     """Get all available versions for a package."""
     info = get_pypi_info(package)
     return list(info.get("releases", {}).keys())
@@ -94,7 +99,7 @@ def _safe_path(path: str) -> bool:
     return bool(_SAFE_PATH.match(path)) and ".." not in path.split("/") and not path.startswith("/")
 
 
-def extract_github_repo(pypi_info: dict) -> Optional[Tuple[str, str]]:
+def extract_github_repo(pypi_info: dict) -> tuple[str, str] | None:
     """Try to find the GitHub owner/repo from PyPI metadata."""
     info = pypi_info.get("info", {})
     urls = []
@@ -104,7 +109,7 @@ def extract_github_repo(pypi_info: dict) -> Optional[Tuple[str, str]]:
     preferred = ("source", "repository", "code", "github", "source code", "homepage", "home")
     ranked = sorted(project_urls.items(),
                     key=lambda kv: (0 if kv[0].strip().lower() in preferred else 1))
-    for key, val in ranked:
+    for _label, val in ranked:
         if val:
             urls.append(val)
 
@@ -124,7 +129,7 @@ def extract_github_repo(pypi_info: dict) -> Optional[Tuple[str, str]]:
     return None
 
 
-def fetch_github_releases(owner: str, repo: str, token: Optional[str] = None) -> List[dict]:
+def fetch_github_releases(owner: str, repo: str, token: str | None = None) -> list[dict]:
     """Fetch releases from GitHub (cached)."""
     if not valid_repo(owner, repo):
         return []
@@ -187,7 +192,7 @@ def html_to_text(html_text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
 
 
-def parse_releases_feed(xml_text: str) -> List[dict]:
+def parse_releases_feed(xml_text: str) -> list[dict]:
     """GitHub's releases Atom feed as release dicts (``tag_name``, ``name``,
     ``body``), like the API returns."""
     # a document with a DTD is refused below, before parsing: no entity expansion
@@ -212,7 +217,7 @@ def parse_releases_feed(xml_text: str) -> List[dict]:
     return out
 
 
-def fetch_releases_feed(owner: str, repo: str) -> List[dict]:
+def fetch_releases_feed(owner: str, repo: str) -> list[dict]:
     """The latest releases from the Atom feed (no API rate limit)."""
     try:
         resp = http_get(GITHUB_RELEASES_FEED.format(owner=owner, repo=repo), timeout=15, follow_redirects=True)
@@ -295,7 +300,7 @@ _FUTURE_REMOVAL = re.compile(
     r"\b(?:scheduled|slated|planned|marked)\s+(?:for|to\s+be)\s+(?:removal|removed)", re.IGNORECASE)
 
 
-def removed_in_version(line: str) -> Optional[str]:
+def removed_in_version(line: str) -> str | None:
     """The version a deprecation says its API will be removed in, if any."""
     m = _REMOVED_IN.search(line)
     return m.group(1).rstrip(".") if m else None
@@ -314,7 +319,7 @@ _PARAM_OWNER = re.compile(
     r"(?:option|param|parameter|argument|arg|kwarg|keyword argument|keyword)s?\b", re.IGNORECASE)
 
 
-def _heading_text(lines: List[str], i: int) -> Optional[str]:
+def _heading_text(lines: list[str], i: int) -> str | None:
     """If lines[i] is a heading, return its text."""
     line = lines[i]
     m = _MD_HEADING.match(line) or _BOLD_HEADING.match(line) or _COLON_HEADING.match(line)
@@ -326,7 +331,7 @@ def _heading_text(lines: List[str], i: int) -> Optional[str]:
     return None
 
 
-def _section_kind(heading: str) -> Optional[str]:
+def _section_kind(heading: str) -> str | None:
     if _BREAKING_HEADING.search(heading):
         return "removed"
     if _DEPRECATION_HEADING.search(heading):
@@ -345,7 +350,7 @@ _BARE_AFTER_VERB = re.compile(
 _SNAKE = re.compile(r"[a-z][a-z0-9]*_[a-z0-9_]+")
 
 
-def _extract_apis(line: str) -> List[str]:
+def _extract_apis(line: str) -> list[str]:
     apis = _extract_marked_apis(line)
     if apis:
         return apis
@@ -356,7 +361,7 @@ def _extract_apis(line: str) -> List[str]:
     return _SNAKE.findall(m.group(1)) if m else []
 
 
-def _extract_marked_apis(line: str) -> List[str]:
+def _extract_marked_apis(line: str) -> list[str]:
     # ``Retry(method_whitelist=...)`` names the parameter Retry.method_whitelist
     line = _API_CALL_KWARG.sub(lambda m: f"``{m.group(1)}.{m.group(2)}``", line)
     apis = [a.rstrip("()").strip(".") for a in _API_BACKTICK.findall(line)]
@@ -373,7 +378,7 @@ _BULLET = re.compile(r"^(\s*)(?:[-*\u2022+]|\d+[.)])\s+")
 _TABLE_BORDER = re.compile(r"^\s*=+(?:\s+=+)+\s*$")
 
 
-def _items(text: str, default_section: Optional[str] = None) -> List[Tuple[Optional[str], str]]:
+def _items(text: str, default_section: str | None = None) -> list[tuple[str | None, str]]:
     """Split release notes into (section kind, item text) pairs.
 
     A bullet plus its wrapped continuation lines is one item; so is a plain
@@ -383,29 +388,29 @@ def _items(text: str, default_section: Optional[str] = None) -> List[Tuple[Optio
     parent's section ("Backwards incompatible changes").
     """
     lines = text.splitlines()
-    out: List[Tuple[Optional[str], str]] = []
-    stack: List[Tuple[int, Optional[str]]] = []   # (level, section kind)
-    rst_levels: List[str] = []                    # underline chars in order seen
-    cur: List[str] = []
-    cur_section: Optional[str] = None
-    cur_indent: Optional[int] = None  # indent of the bullet that started the item
+    out: list[tuple[str | None, str]] = []
+    stack: list[tuple[int, str | None]] = []   # (level, section kind)
+    rst_levels: list[str] = []                    # underline chars in order seen
+    cur: list[str] = []
+    cur_section: str | None = None
+    cur_indent: int | None = None  # indent of the bullet that started the item
     table_borders = 0
-    table_kind: Optional[str] = None      # what a reST table's header row says
+    table_kind: str | None = None      # what a reST table's header row says
     md_table_rows = 0                     # 0: none, -1: header seen, >=1: body
-    md_header_kind: Optional[str] = None
+    md_header_kind: str | None = None
 
     # SQLAlchemy/Alembic/Mako ".. change::" blocks say what each entry is in a
     # ":tags: usecase, sql" line
-    change_kind: List[Optional[str]] = [None]
+    change_kind: list[str | None] = [None]
 
-    def section() -> Optional[str]:
+    def section() -> str | None:
         for _, kind in reversed(stack):
             if kind is not None:
                 return kind
         return change_kind[0] or default_section
 
     # statement-parents of the current nested item: (indent, text)
-    parents: List[Tuple[int, str]] = []
+    parents: list[tuple[int, str]] = []
 
     def flush():
         if cur:
@@ -515,7 +520,7 @@ def _items(text: str, default_section: Optional[str] = None) -> List[Tuple[Optio
             flush()
             while parents and parents[-1][0] >= ind:
                 parents.pop()
-            if nested:
+            if nested and cur_indent is not None and parent_text is not None:
                 parents.append((cur_indent, parent_text))
             cur_section = section()
             cur_indent = len(bullet.group(1))
@@ -536,7 +541,7 @@ _CHANGE_TAGS = re.compile(r"^\s*:tags:\s*(.+?)\s*$")
 _CHANGE_FIELD = re.compile(r"^\s*:(?:tickets|versions|title|changeset|pullreq|references):")
 
 
-def _tags_kind(names: set) -> Optional[str]:
+def _tags_kind(names: set) -> str | None:
     if names & {"removed", "remove"}:
         return "removed"
     if any(n.startswith("deprecat") for n in names):
@@ -557,7 +562,7 @@ def _CTX_SPLIT(text: str) -> str:
 _TRAILING_REFS = re.compile(r"(?:\s*:(?:pr|issue|ghissue|bpo|user|cve):`[^`]*`)+\s*$")
 
 
-def _introduces_list(parts: List[str]) -> bool:
+def _introduces_list(parts: list[str]) -> bool:
     """Does the item so far end by introducing a list ("...are:")?"""
     text = _TRAILING_REFS.sub("", " ".join(parts)).rstrip()
     return text.endswith(":")
@@ -604,7 +609,7 @@ def _looks_like_code(text: str) -> bool:
     return not words
 
 
-def _classify_item(line: str, section: Optional[str], version: str) -> List[ChangeEntry]:
+def _classify_item(line: str, section: str | None, version: str) -> list[ChangeEntry]:
     """Turn one release-note item into change entries (one per API it names)."""
     line, _, parent = line.partition(_CTX)
     tags = _TAGS.match(line)
@@ -623,14 +628,14 @@ def _classify_item(line: str, section: Optional[str], version: str) -> List[Chan
         # old names are deprecated.") says what its list is; a paragraph that
         # mentions "removal of a deprecated keyword" in passing doesn't
         p_kind, p_conf = _kind_of(_prose(parent))
-        if kind is None or (p_kind == "removed" and kind in ("renamed", "deprecated")
-                            and not _FUTURE_REMOVAL.search(line)):
-            # "``pass_context`` replaces ``contextfunction``" under "The old
-            # names are deprecated."; "``contextfunction`` is replaced by
-            # ``pass_context``" under "Remove previously deprecated code.":
-            # the parent says what happened to the names the child lists
-            if p_kind:
-                kind, conf, context = p_kind, p_conf, parent
+        # "``pass_context`` replaces ``contextfunction``" under "The old
+        # names are deprecated."; "``contextfunction`` is replaced by
+        # ``pass_context``" under "Remove previously deprecated code.":
+        # the parent says what happened to the names the child lists
+        parent_decides = kind is None or (p_kind == "removed" and kind in ("renamed", "deprecated")
+                                          and not _FUTURE_REMOVAL.search(line))
+        if p_kind and parent_decides:
+            kind, conf, context = p_kind, p_conf, parent
 
     apis = _extract_apis(line)
     # everything named after "in favor of" / "use" / "replaced by" is a
@@ -640,7 +645,7 @@ def _classify_item(line: str, section: Optional[str], version: str) -> List[Chan
             and repl_at.group(1).lower() in ("of", "in", "for", "with", "case", "cases", "by", "to"):
         # "Positional use of some arguments...": "use" as a noun, not "use X"
         repl_at = None
-    replacements: List[str] = []
+    replacements: list[str] = []
     if repl_at:
         replacements = _extract_apis(line[repl_at.start():])
         if repl_at.group(0).lower().startswith(("renam", "mov")):
@@ -652,14 +657,14 @@ def _classify_item(line: str, section: Optional[str], version: str) -> List[Chan
     # "a, b and c are deprecated in favour of x, y and z respectively": pair by
     # order, and only when the counts agree. One replacement for several old
     # names is ambiguous, so none of them gets one.
-    paired: Dict[str, str] = {}
+    paired: dict[str, str] = {}
     if replacements:
         own = _PARAM_OWNER.search(line)
         # "``Retry`` options ``a``, ``b`` in favour of ``x``, ``y``": the owner
         # isn't one of the things being replaced
         olds = [a for a in apis if not (own and a == own.group(1).rstrip("()"))]
-        if len(replacements) == len(olds) and not _qualified(line, repl_at):
-            paired = dict(zip(olds, replacements))
+        if repl_at and len(replacements) == len(olds) and not _qualified(line, repl_at):
+            paired = dict(zip(olds, replacements, strict=True))
 
     if section == "removed":
         # everything under a "Breaking changes" heading breaks, except explicit
@@ -755,8 +760,9 @@ def _classify_item(line: str, section: Optional[str], version: str) -> List[Chan
     # ":class:`A` gains a method. `plot_a` is deprecated ... removed in 1.2",
     # only plot_a goes away
     scheduled_apis = set()
-    if scheduled:
-        m = _REMOVED_IN.search(line)
+    removal = _REMOVED_IN.search(line) if scheduled else None
+    if removal:
+        m = removal
         sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z:`*(])", line)
         pos = 0
         for sent in sentences:
@@ -781,7 +787,7 @@ def _classify_item(line: str, section: Optional[str], version: str) -> List[Chan
             # change worth a warning, not proof the call breaks
             c = "low"
         entries.append(ChangeEntry(
-            kind=kind, api=api, description=line[:200], version=version,
+            kind=kind, api=api, description=clip(line, 300), version=version,
             confidence=c, exceptions=excepted, replacement=_pick_replacement(api, paired)
             or (f"{home}.{api.rsplit('.', 1)[-1]}" if home and api != "unknown" else None),
             removed_in=scheduled if c != "low" and api.rsplit(".", 1)[-1] in scheduled_apis else None,
@@ -802,7 +808,7 @@ _IMPORTING_FROM = re.compile(
     r"\bimporting\b.*?\bfrom\s+(?::\w+:)?`{0,2}~?([a-zA-Z_][\w.]*)`{0,2}", re.IGNORECASE)
 
 
-def _pick_replacement(api: str, paired: Dict[str, str]) -> Optional[str]:
+def _pick_replacement(api: str, paired: dict[str, str]) -> str | None:
     """The replacement paired with this API (or with its last segment, for
     ``Retry.method_whitelist`` built from ``method_whitelist``)."""
     repl = paired.get(api) or paired.get(api.rsplit(".", 1)[-1])
@@ -820,7 +826,7 @@ def _leads_with(line: str, api: str) -> bool:
     # ':' is out ("``read_csv``: ... now raises" describes a behaviour change),
     # and so is a bare name with nothing after it (it says nothing)
     m = re.match(r"\s*(?::\w+:)?`{0,2}~?\.?([a-zA-Z_][\w.]*)(?:\(\))?`{0,2}\s*[;,\u2014-]\s*\S", line)
-    return bool(m) and m.group(1) in (api, api.rsplit(".", 1)[-1])
+    return m is not None and m.group(1) in (api, api.rsplit(".", 1)[-1])
 
 
 def _is_subject(line: str, name: str) -> bool:
@@ -864,7 +870,7 @@ def _table_row_item(old: str, new: str) -> str:
 
 
 def parse_changelog_text(text: str, version: str,
-                         default_section: Optional[str] = None) -> List[ChangeEntry]:
+                         default_section: str | None = None) -> list[ChangeEntry]:
     """Parse a changelog/release notes body for breaking/deprecated changes.
 
     Understands section headings (Markdown, reST, bold, ``Heading:``): bullets
@@ -873,7 +879,7 @@ def parse_changelog_text(text: str, version: str,
     benign sections (bug fixes, features, docs) are discarded unless the
     wording is unambiguous.
     """
-    entries: List[ChangeEntry] = []
+    entries: list[ChangeEntry] = []
     if not text:
         return entries
     for section, item in _items(text, default_section):
@@ -902,7 +908,7 @@ def _parallel(fn, items: list) -> list:
         for it in items:
             try:
                 out.append(fn(it))
-            except Exception as e:  # noqa: BLE001 - the caller decides
+            except Exception as e:
                 out.append(e)
         return out
     from concurrent.futures import ThreadPoolExecutor
@@ -910,14 +916,14 @@ def _parallel(fn, items: list) -> list:
     def safe(it):
         try:
             return fn(it)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             return e
 
     with ThreadPoolExecutor(max_workers=min(PROBE_JOBS, len(items))) as pool:
         return list(pool.map(safe, items))
 
 
-def fetch_raw_changelog(owner: str, repo: str, token: Optional[str] = None) -> Optional[str]:
+def fetch_raw_changelog(owner: str, repo: str, token: str | None = None) -> str | None:
     """Try to fetch the raw changelog file from GitHub (cached)."""
     if not valid_repo(owner, repo):
         return None
@@ -928,7 +934,7 @@ def fetch_raw_changelog(owner: str, repo: str, token: Optional[str] = None) -> O
 
     # Public files need no token, and a bad token turns them into 404s, so go
     # anonymous first and only use the token as a fallback (private repos).
-    attempts = [{}]
+    attempts: list[dict[str, str]] = [{}]
     if token:
         attempts.append({"Authorization": f"Bearer {token}"})
 
@@ -940,7 +946,7 @@ def fetch_raw_changelog(owner: str, repo: str, token: Optional[str] = None) -> O
     urls = [f"https://raw.githubusercontent.com/{owner}/{repo}/{DEFAULT_BRANCH}/{fname}" for fname in names]
     for headers in attempts:
         # all at once; the first in preference order that exists wins
-        results = _parallel(lambda u: http_get(u, headers=headers, timeout=10, follow_redirects=True), urls)
+        results = _parallel(lambda u, h=headers: http_get(u, headers=h, timeout=10, follow_redirects=True), urls)
         for resp in results:
             if isinstance(resp, Exception):
                 errors += 1
@@ -1000,12 +1006,12 @@ _GITHUB_BLOB = re.compile(r"^https?://github\.com/([^/]+)/([^/]+)/blob/([^/]+)/(
 _RTD_PAGE = re.compile(r"^(https?://[^/]+/[a-z]{2}(?:[-_][a-zA-Z]+)?/[^/]+/)(.+?)(?:\.html)?/?$")
 
 
-def changelog_link_candidates(pypi_info: dict) -> List[str]:
+def changelog_link_candidates(pypi_info: dict) -> list[str]:
     """Raw-text URLs to try for the changelog a project links from PyPI:
     a GitHub file as its raw content; a Sphinx docs page as the source
     Sphinx publishes next to it (``_sources/<page>.rst.txt``)."""
     urls = (pypi_info.get("info") or {}).get("project_urls") or {}
-    out: List[str] = []
+    out: list[str] = []
     for label, url in urls.items():
         if not isinstance(url, str):
             continue
@@ -1047,7 +1053,7 @@ def changelog_link_candidates(pypi_info: dict) -> List[str]:
     return [u for u in dict.fromkeys(out) if u.startswith("https://")]
 
 
-def fetch_linked_changelog(package: str, pypi_info: dict) -> Optional[str]:
+def fetch_linked_changelog(package: str, pypi_info: dict) -> str | None:
     """The changelog the project links from PyPI, as text (cached)."""
     key = f"linked-changelog2:{package}"
     cached = cache_get(key)
@@ -1077,7 +1083,7 @@ DEFAULT_BRANCH = "HEAD"
 
 # set from collect_changes: lets a lookup list a repository's files once
 # instead of probing for each candidate path
-_github_token: Optional[str] = None
+_github_token: str | None = None
 _LISTED = re.compile(r"(?i)(change|histor|news|release|what'?s.?new|migrat|upgrad|api_changes)")
 
 
@@ -1085,7 +1091,7 @@ _POINTER_PATH = re.compile(r"(?:github\.com/[^/\s]+/[^/\s]+/blob/[^/\s]+/|(?<![\
                            r"((?:[\w.-]+/)*[\w.-]+\.(?:rst|md|txt))\b")
 
 
-def _follow_pointer(owner: str, repo: str, text: str) -> Optional[str]:
+def _follow_pointer(owner: str, repo: str, text: str) -> str | None:
     """A short changelog that only says where the real one is ("The
     changelog is in doc/en/changelog.rst"): that file, if it's in the repo."""
     if len(text) > 1000:
@@ -1102,7 +1108,7 @@ def _follow_pointer(owner: str, repo: str, text: str) -> Optional[str]:
     return None
 
 
-def repo_files(owner: str, repo: str) -> Optional[set]:
+def repo_files(owner: str, repo: str) -> set | None:
     """The repository's changelog-like files (paths that look like release
     notes), from one GitHub API call, when a token allows it (cached). None
     when unknown: callers then probe for each candidate."""
@@ -1130,7 +1136,7 @@ def repo_files(owner: str, repo: str) -> Optional[set]:
     return set(files)
 
 
-def _raw(owner: str, repo: str, path: str, branch: str = DEFAULT_BRANCH) -> Optional[str]:
+def _raw(owner: str, repo: str, path: str, branch: str = DEFAULT_BRANCH) -> str | None:
     """Fetch a public file from GitHub; None if it doesn't exist. Raises on
     network errors so callers can report them."""
     if not (valid_repo(owner, repo) and _GH_REF.match(branch) and _safe_path(path)):
@@ -1148,9 +1154,9 @@ def _raw(owner: str, repo: str, path: str, branch: str = DEFAULT_BRANCH) -> Opti
     return None
 
 
-def _versions_between(pypi_info: dict, current: str, target: str) -> List[str]:
+def _versions_between(pypi_info: dict, current: str, target: str) -> list[str]:
     """Final releases in (current, target], oldest first."""
-    from packaging.version import Version, InvalidVersion
+    from packaging.version import InvalidVersion, Version
     try:
         lo, hi = Version(current), Version(target)
     except InvalidVersion:
@@ -1166,7 +1172,7 @@ def _versions_between(pypi_info: dict, current: str, target: str) -> List[str]:
     return [str(v) for v in sorted(out)]
 
 
-def _docs_versions(pypi_info: dict, current: str, target: str, lookback) -> List[str]:
+def _docs_versions(pypi_info: dict, current: str, target: str, lookback) -> list[str]:
     """Versions whose per-version docs notes to read: the upgrade range, plus
     (with lookback) the x.y.0 releases of the current major series, where
     deprecations, their replacements and their removal dates are usually
@@ -1174,7 +1180,7 @@ def _docs_versions(pypi_info: dict, current: str, target: str, lookback) -> List
     versions = _versions_between(pypi_info, current, target)
     if not lookback:
         return versions
-    from packaging.version import Version, InvalidVersion
+    from packaging.version import InvalidVersion, Version
     try:
         cur = Version(current)
     except InvalidVersion:
@@ -1206,8 +1212,8 @@ def _short_version(v: str) -> str:
     return ".".join(parts[:2]) if len(parts) >= 3 and parts[2] == "0" else v
 
 
-def fetch_docs_release_notes(owner: str, repo: str, versions: List[str],
-                             max_files: int = 40, seen: Optional[set] = None) -> Optional[List[ChangeEntry]]:
+def fetch_docs_release_notes(owner: str, repo: str, versions: list[str],
+                             max_files: int = 40, seen: set | None = None) -> list[ChangeEntry] | None:
     """Release notes kept in the project's docs instead of a root CHANGES file.
 
     Returns None when the project has no recognised docs layout.
@@ -1228,7 +1234,7 @@ def fetch_docs_release_notes(owner: str, repo: str, versions: List[str],
         candidates += [("file", p, p) for p in DOCS_CHANGELOG_FILES]
         found = _parallel(lambda c: _raw(owner, repo, c[2]), candidates)
         errors = [r for r in found if isinstance(r, Exception)]
-        for (kind, pattern, _path), text in zip(candidates, found):
+        for (kind, pattern, _path), text in zip(candidates, found, strict=True):
             if text is not None and not isinstance(text, Exception):
                 layout = f"{kind}|{pattern}"
                 break
@@ -1239,7 +1245,7 @@ def fetch_docs_release_notes(owner: str, repo: str, versions: List[str],
         return None
 
     kind, pattern = layout.split("|", 1)
-    entries: List[ChangeEntry] = []
+    entries: list[ChangeEntry] = []
     if kind == "version":
         get = _prefetch(owner, repo, [pattern.format(v=form) for v in versions[-max_files:]
                                       for form in dict.fromkeys([_three_part(v), _short_version(v)])])
@@ -1281,15 +1287,15 @@ MIGRATION_MAJOR = ["docs/migration.md", "docs/migration.rst", "docs/migration_gu
 
 
 def fetch_migration_guides(owner: str, repo: str, current: str, target: str,
-                           versions: List[str]) -> List[ChangeEntry]:
+                           versions: list[str]) -> list[ChangeEntry]:
     """Changes described in migration guides rather than release notes.
     Each guide's entries are dated to the release it is about."""
-    from packaging.version import Version, InvalidVersion
+    from packaging.version import InvalidVersion, Version
     try:
         cur, tgt = Version(current), Version(target)
     except InvalidVersion:
         return []
-    entries: List[ChangeEntry] = []
+    entries: list[ChangeEntry] = []
     series = sorted({(Version(v).major, Version(v).minor) for v in versions})
     wanted = [p.format(major=ma, minor=mi) for ma, mi in series for p in MIGRATION_SERIES]
     wanted += [p.format(v=_three_part(v)) for v in versions[-20:] for p, _k in MIGRATION_PER_VERSION]
@@ -1317,14 +1323,14 @@ def fetch_migration_guides(owner: str, repo: str, current: str, target: str,
     return entries
 
 
-def _prefetch(owner: str, repo: str, paths: List[str]):
+def _prefetch(owner: str, repo: str, paths: list[str]):
     """Fetch these repository files concurrently; returns a lookup that
     gives each one's text (None if missing) and raises a fetch error only
     when that file is asked for, as a sequential fetch would have."""
     paths = list(dict.fromkeys(paths))
-    got = dict(zip(paths, _parallel(lambda path: _cached_raw(owner, repo, path), paths)))
+    got = dict(zip(paths, _parallel(lambda path: _cached_raw(owner, repo, path), paths), strict=True))
 
-    def get(path: str) -> Optional[str]:
+    def get(path: str) -> str | None:
         if path not in got:
             return _cached_raw(owner, repo, path)
         value = got[path]
@@ -1334,7 +1340,7 @@ def _prefetch(owner: str, repo: str, paths: List[str]):
     return get
 
 
-def _cached_raw(owner: str, repo: str, path: str) -> Optional[str]:
+def _cached_raw(owner: str, repo: str, path: str) -> str | None:
     key = f"gh-raw:{owner}/{repo}/{path}"
     cached = cache_get(key)
     if cached is not None:
@@ -1361,10 +1367,10 @@ class _Shift:
         return self._m.end()
 
 
-def parse_sectioned_changelog(text: str, package: str, seen: Optional[set] = None) -> List[ChangeEntry]:
+def parse_sectioned_changelog(text: str, package: str, seen: set | None = None) -> list[ChangeEntry]:
     """Parse a full changelog file that's divided by version headers.
     ``seen`` collects the version of every section found, changes or not."""
-    entries: List[ChangeEntry] = []
+    entries: list[ChangeEntry] = []
 
     # version headers: "Version 3.0.0", "## 3.0.0", "3.0.0 (2024-01-01)", and
     # Keep a Changelog "## [3.0.0] - 2024-01-01", linked "## [3.0.0](url)",
@@ -1385,7 +1391,7 @@ def parse_sectioned_changelog(text: str, package: str, seen: Optional[set] = Non
         r"^#{1,4}\s+((?:[A-Za-z][\w.+-]*\s+){1,3})v?" + ver + r"\b(?!\.\d)\s*(?:\(|-|\u2013|\u2014|$)",
         re.MULTILINE,
     )
-    found = {m.start(): m for m in version_header.finditer(text)}
+    found: dict[int, re.Match[str] | _Shift] = {m.start(): m for m in version_header.finditer(text)}
     for m in item_header.finditer(text):
         found.setdefault(m.start(), m)
     for m in named_header.finditer(text):
@@ -1396,11 +1402,11 @@ def parse_sectioned_changelog(text: str, package: str, seen: Optional[set] = Non
     if not splits:
         return entries
 
-    for i, m in enumerate(splits):
-        ver = m.group(1)
+    for i, heading in enumerate(splits):
+        ver = heading.group(1)
         if seen is not None:
             seen.add(ver)
-        start = m.end()
+        start = heading.end()
         end = splits[i + 1].start() if i + 1 < len(splits) else len(text)
         section = text[start:end]
         section_entries = parse_changelog_text(section, ver)
@@ -1413,13 +1419,13 @@ _TAG_VERSION = re.compile(r"(?<![\w.])v?(\d+(?:\.\d+)+(?:[._-]?(?:a|b|rc|alpha|b
                           re.IGNORECASE)
 
 
-def version_from_tag(tag: str, package: str = "") -> Optional[str]:
+def version_from_tag(tag: str, package: str = "") -> str | None:
     """Pull a PEP 440 version out of a release tag.
 
     Handles ``v2.0.1``, ``2.0``, ``flask-3.0.1``, ``release-2.0``,
     ``pkg==1.2`` and ``Version 4.0``. Returns None for tags with no version.
     """
-    from packaging.version import Version, InvalidVersion
+    from packaging.version import InvalidVersion, Version
     tag = (tag or "").strip()
     if not tag:
         return None
@@ -1434,17 +1440,17 @@ def version_from_tag(tag: str, package: str = "") -> Optional[str]:
 @dataclass
 class ChangeReport:
     """Changelog changes plus an honest account of where they came from."""
-    entries: List[ChangeEntry]
-    sources_ok: List[str]
-    sources_failed: List[str]
+    entries: list[ChangeEntry]
+    sources_ok: list[str]
+    sources_failed: list[str]
     skipped_unversioned: int = 0
     # every parsed entry up to the target, not just those in the upgrade
     # range: a deprecation announced before your version still names the
     # replacement for an API removed inside the range
-    history: List[ChangeEntry] = field(default_factory=list)
+    history: list[ChangeEntry] = field(default_factory=list)
     # versions in the upgrade range whose release notes were read (with or
     # without breaking changes): none means the range's notes weren't found
-    versions_read: List[str] = field(default_factory=list)
+    versions_read: list[str] = field(default_factory=list)
 
     @property
     def checked(self) -> bool:
@@ -1453,7 +1459,7 @@ class ChangeReport:
 
 
 def collect_changes(package: str, current_version: str, target_version: str,
-                    github_token: Optional[str] = None, lookback=3) -> ChangeReport:
+                    github_token: str | None = None, lookback=3) -> ChangeReport:
     """Get breaking/deprecated changes between two versions, reporting which
     sources worked and which failed instead of silently returning nothing.
 
@@ -1464,9 +1470,9 @@ def collect_changes(package: str, current_version: str, target_version: str,
     global _github_token
     if github_token:
         _github_token = github_token
-    ok: List[str] = []
-    failed: List[str] = []
-    all_entries: List[ChangeEntry] = []
+    ok: list[str] = []
+    failed: list[str] = []
+    all_entries: list[ChangeEntry] = []
     versions_seen: set = set()  # versions whose notes were read, changes or not
 
     try:
@@ -1556,7 +1562,7 @@ def collect_changes(package: str, current_version: str, target_version: str,
         except Exception as e:
             failed.append(f"PyPI description ({_short_err(e)})")
 
-    from packaging.version import Version, InvalidVersion
+    from packaging.version import InvalidVersion, Version
 
     try:
         v_current = Version(current_version)
@@ -1568,7 +1574,7 @@ def collect_changes(package: str, current_version: str, target_version: str,
     all_entries = _promote_swept_deprecations(all_entries, v_current, v_target)
     all_entries = _promote_scheduled_removals(all_entries, v_current, v_target)
 
-    filtered: List[ChangeEntry] = []
+    filtered: list[ChangeEntry] = []
     seen = set()
     skipped = 0
     for entry in all_entries:
@@ -1596,7 +1602,7 @@ def collect_changes(package: str, current_version: str, target_version: str,
 
 
 def _in_range(v: str, lo, hi) -> bool:
-    from packaging.version import Version, InvalidVersion
+    from packaging.version import InvalidVersion, Version
     try:
         return lo < Version(v) <= hi
     except InvalidVersion:
@@ -1604,7 +1610,7 @@ def _in_range(v: str, lo, hi) -> bool:
 
 
 def _seen_in_range(seen: set, current: str, target: str) -> bool:
-    from packaging.version import Version, InvalidVersion
+    from packaging.version import InvalidVersion, Version
     try:
         lo, hi = Version(current), Version(target)
     except InvalidVersion:
@@ -1612,8 +1618,8 @@ def _seen_in_range(seen: set, current: str, target: str) -> bool:
     return any(_in_range(v, lo, hi) for v in seen)
 
 
-def _has_in_range(entries: List[ChangeEntry], current: str, target: str) -> bool:
-    from packaging.version import Version, InvalidVersion
+def _has_in_range(entries: list[ChangeEntry], current: str, target: str) -> bool:
+    from packaging.version import InvalidVersion, Version
     try:
         lo, hi = Version(current), Version(target)
     except InvalidVersion:
@@ -1646,11 +1652,11 @@ def _deprecates(text: str, api: str) -> bool:
     return False
 
 
-def _promote_swept_deprecations(entries: List[ChangeEntry], v_current, v_target) -> List[ChangeEntry]:
+def _promote_swept_deprecations(entries: list[ChangeEntry], v_current, v_target) -> list[ChangeEntry]:
     """Many projects remove deprecated APIs with a single line ("Remove
     previously deprecated code.") instead of listing them. When such a sweep
     falls inside the upgrade range, every API deprecated before it is gone."""
-    from packaging.version import Version, InvalidVersion
+    from packaging.version import InvalidVersion, Version
 
     sweeps = []
     for e in entries:
@@ -1685,17 +1691,17 @@ def _promote_swept_deprecations(entries: List[ChangeEntry], v_current, v_target)
             out.append(ChangeEntry(
                 kind="removed", api=e.api, version=str(sweep_v),
                 confidence="low" if e.confidence == "low" else "medium",
-                description=f"Removed in {sweep_v} (deprecated in {e.version}: {e.description[:120]})",
+                description=f"Removed in {sweep_v} (deprecated in {e.version}: {clip(e.description, 200)})",
                 replacement=e.replacement, exceptions=list(e.exceptions),
             ))
     return out
 
 
-def _promote_scheduled_removals(entries: List[ChangeEntry], v_current, v_target) -> List[ChangeEntry]:
+def _promote_scheduled_removals(entries: list[ChangeEntry], v_current, v_target) -> list[ChangeEntry]:
     """A deprecation that names its removal ("deprecated in 1.0 and will be
     removed in 1.2") is a removal in that version, whether or not that
     release's notes mention it again; many projects don't."""
-    from packaging.version import Version, InvalidVersion
+    from packaging.version import InvalidVersion, Version
 
     out = list(entries)
     for e in entries:
@@ -1709,7 +1715,7 @@ def _promote_scheduled_removals(entries: List[ChangeEntry], v_current, v_target)
             out.append(ChangeEntry(
                 kind="removed", api=e.api, version=_three_part(e.removed_in),
                 confidence=e.confidence,
-                description=f"Removed in {e.removed_in} (deprecated in {e.version}: {e.description[:140]})",
+                description=f"Removed in {e.removed_in} (deprecated in {e.version}: {clip(e.description, 200)})",
                 replacement=e.replacement, exceptions=list(e.exceptions),
             ))
     return out
@@ -1726,6 +1732,6 @@ def _short_err(e: Exception) -> str:
 
 
 def get_changes_between(package: str, current_version: str, target_version: str,
-                        github_token: Optional[str] = None) -> List[ChangeEntry]:
+                        github_token: str | None = None) -> list[ChangeEntry]:
     """Get all breaking/deprecated changes between two versions."""
     return collect_changes(package, current_version, target_version, github_token).entries

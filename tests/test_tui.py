@@ -8,8 +8,8 @@ import pytest
 
 pytest.importorskip("textual")
 
-from depshift import tui  # noqa: E402
-from depshift.cli import FileChange, MigrationPlan  # noqa: E402
+from depshift import tui
+from depshift.cli import FileChange, MigrationPlan
 
 
 def result(pkg, cur="1.0", new="2.0", **kw):
@@ -59,6 +59,7 @@ async def settle(pilot, app):
 def text_of(app, selector):
     """The plain text a Static shows."""
     import io
+
     from rich.console import Console
     w = app.query_one(selector)
     content = getattr(w, "content", None)
@@ -134,7 +135,7 @@ def test_migrate_preview_and_apply(tmp_path):
 
 def test_no_dependencies(tmp_path):
     async def go():
-        app = tui.PyupcheckApp(str(tmp_path), lambda: [], lambda d, deep: None, lambda p: None)
+        app = tui.PyupcheckApp(str(tmp_path), list, lambda d, deep: None, lambda p: None)
         async with app.run_test(size=(100, 20)) as pilot:
             await pilot.pause(0.2)
             assert "No dependency files found" in text_of(app, "#detail")
@@ -143,7 +144,9 @@ def test_no_dependencies(tmp_path):
 
 def test_ui_command_without_textual(monkeypatch):
     import builtins
+
     from click.testing import CliRunner
+
     from depshift import cli
     real = builtins.__import__
 

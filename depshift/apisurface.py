@@ -8,47 +8,45 @@ what was removed, what changed signature, what parameters disappeared.
 
 import ast
 import io
-import warnings
-
 import tarfile
+import warnings
 import zipfile
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
-
-from depshift.http import http_get
+from typing import TypeGuard
 
 from depshift.cache import cache_get, cache_set
 from depshift.changelog import get_pypi_info, get_pypi_version_info
+from depshift.http import http_get
 
 
 @dataclass
 class FuncSig:
     """A function or method signature."""
     name: str  # dotted path within the package, e.g. "Session.get"
-    params: List[str]  # ordered parameter names
+    params: list[str]  # ordered parameter names
     has_varargs: bool = False
     has_kwargs: bool = False
     is_async: bool = False
-    required: List[str] = field(default_factory=list)  # params with no default (excl. self/cls)
-    kwonly: List[str] = field(default_factory=list)     # keyword-only params
-    posonly: List[str] = field(default_factory=list)    # positional-only params
-    returns: Optional[str] = None  # simple class name of the annotated return type
+    required: list[str] = field(default_factory=list)  # params with no default (excl. self/cls)
+    kwonly: list[str] = field(default_factory=list)     # keyword-only params
+    posonly: list[str] = field(default_factory=list)    # positional-only params
+    returns: str | None = None  # simple class name of the annotated return type
 
 
 @dataclass
 class APISurface:
     """The extracted public API of one version of a package."""
     version: str
-    modules: Set[str] = field(default_factory=set)       # importable module paths
-    classes: Set[str] = field(default_factory=set)       # dotted class names
-    functions: Dict[str, FuncSig] = field(default_factory=dict)  # dotted name -> sig
-    names: Set[str] = field(default_factory=set)          # all top-level public names
+    modules: set[str] = field(default_factory=set)       # importable module paths
+    classes: set[str] = field(default_factory=set)       # dotted class names
+    functions: dict[str, FuncSig] = field(default_factory=dict)  # dotted name -> sig
+    names: set[str] = field(default_factory=set)          # all top-level public names
     # module -> names it makes importable without defining them (from x import y, __all__)
-    exports: Dict[str, Set[str]] = field(default_factory=dict)
+    exports: dict[str, set[str]] = field(default_factory=dict)
     # dotted class -> base class simple names
-    bases: Dict[str, List[str]] = field(default_factory=dict)
+    bases: dict[str, list[str]] = field(default_factory=dict)
     # public module-level / class-level constants, dotted
-    attributes: Set[str] = field(default_factory=set)
+    attributes: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -58,11 +56,11 @@ class APIChange:
                # "removed_param", "signature_changed"
     api: str   # dotted path
     detail: str
-    param: Optional[str] = None
-    replacement: Optional[str] = None  # where a moved/renamed API now lives
-    position: Optional[int] = None     # for became_keyword_only: positional index lost
-    still_at: List[str] = field(default_factory=list)  # import paths that keep working
-    member_of: Optional[str] = None  # short class name when the API is a method/attribute
+    param: str | None = None
+    replacement: str | None = None  # where a moved/renamed API now lives
+    position: int | None = None     # for became_keyword_only: positional index lost
+    still_at: list[str] = field(default_factory=list)  # import paths that keep working
+    member_of: str | None = None  # short class name when the API is a method/attribute
 
 
 MAX_DOWNLOAD_BYTES = 300 * 1024 * 1024  # skip absurdly large distributions
@@ -94,7 +92,7 @@ def _wheel_score(filename: str) -> int:
     return 4
 
 
-def _find_sdist_or_wheel_url(package: str, version: str) -> Optional[Tuple[str, str]]:
+def _find_sdist_or_wheel_url(package: str, version: str) -> tuple[str, str] | None:
     """Return (url, kind) for a downloadable wheel or sdist for this version.
 
     Wheels are preferred because their layout maps directly onto import paths.
@@ -106,7 +104,7 @@ def _find_sdist_or_wheel_url(package: str, version: str) -> Optional[Tuple[str, 
     if cached is not None:
         return tuple(cached) if cached else None
 
-    files = []
+    files: list[dict] = []
     lookup_failed = False
     try:
         files = get_pypi_version_info(package, version).get("urls", []) or []
@@ -152,7 +150,7 @@ def _find_sdist_or_wheel_url(package: str, version: str) -> Optional[Tuple[str, 
     return result
 
 
-def _download(url: str) -> Optional[bytes]:
+def _download(url: str) -> bytes | None:
     try:
         resp = http_get(url, max_bytes=MAX_DOWNLOAD_BYTES, timeout=120, follow_redirects=True)
         resp.raise_for_status()
@@ -161,7 +159,7 @@ def _download(url: str) -> Optional[bytes]:
         return None
 
 
-def _wheel_rel_path(name: str) -> Optional[str]:
+def _wheel_rel_path(name: str) -> str | None:
     """Path of a wheel member relative to the install root, or None to skip."""
     parts = name.replace("\\", "/").split("/")
     if parts[0].endswith(".dist-info"):
@@ -174,7 +172,7 @@ def _wheel_rel_path(name: str) -> Optional[str]:
     return "/".join(parts)
 
 
-def _sdist_rel_path(name: str) -> Optional[str]:
+def _sdist_rel_path(name: str) -> str | None:
     """Path of an sdist member relative to its import root, or None to skip."""
     parts = [p for p in name.replace("\\", "/").split("/") if p not in ("", ".")]
     if len(parts) < 2:
@@ -190,7 +188,7 @@ def _sdist_rel_path(name: str) -> Optional[str]:
     return "/".join(parts)
 
 
-def _module_path(rel: str) -> Optional[str]:
+def _module_path(rel: str) -> str | None:
     """Convert 'pkg/sub/mod.py' (or .pyi/.so/.pyd) to 'pkg.sub.mod'."""
     parts = rel.split("/")
     last = parts[-1]
@@ -200,19 +198,19 @@ def _module_path(rel: str) -> Optional[str]:
         stem = last.split(".", 1)[0]  # foo.cpython-311-x86_64-linux-gnu.so -> foo
     else:
         return None
-    parts = parts[:-1] if stem == "__init__" else parts[:-1] + [stem]
+    parts = parts[:-1] if stem == "__init__" else [*parts[:-1], stem]
     if parts and parts[0].endswith("-stubs") and parts[0][:-len("-stubs")].isidentifier():
         # a stub-only package (PEP 561): requests-stubs/api.pyi is requests.api
-        parts = [parts[0][:-len("-stubs")]] + parts[1:]
+        parts = [parts[0][:-len("-stubs")], *parts[1:]]
     if not parts or not all(p.isidentifier() for p in parts):
         return None
     return ".".join(parts)
 
 
-def _collect(members: List[Tuple[str, bytes]]) -> Tuple[Dict[str, List[str]], Set[str]]:
+def _collect(members: list[tuple[str, bytes]]) -> tuple[dict[str, list[str]], set[str]]:
     """Return ({module_path: [sources]}, {compiled extension module paths})."""
-    sources: Dict[str, List[str]] = {}
-    extensions: Set[str] = set()
+    sources: dict[str, list[str]] = {}
+    extensions: set[str] = set()
     for rel, raw in members:
         mod = _module_path(rel)
         if not mod:
@@ -224,8 +222,8 @@ def _collect(members: List[Tuple[str, bytes]]) -> Tuple[Dict[str, List[str]], Se
     return sources, extensions
 
 
-def _wanted(rel: Optional[str]) -> bool:
-    return bool(rel) and rel.endswith(_SOURCE_SUFFIXES + _EXT_SUFFIXES)
+def _wanted(rel: str | None) -> TypeGuard[str]:
+    return rel is not None and rel.endswith(_SOURCE_SUFFIXES + _EXT_SUFFIXES)
 
 
 class _Budget:
@@ -242,7 +240,7 @@ class _Budget:
         return True
 
 
-def _zip_members(data: bytes, rel_path) -> List[Tuple[str, bytes]]:
+def _zip_members(data: bytes, rel_path) -> list[tuple[str, bytes]]:
     out = []
     budget = _Budget()
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
@@ -266,14 +264,14 @@ def _zip_members(data: bytes, rel_path) -> List[Tuple[str, bytes]]:
     return out
 
 
-def _read_wheel(data: bytes) -> List[Tuple[str, bytes]]:
+def _read_wheel(data: bytes) -> list[tuple[str, bytes]]:
     try:
         return _zip_members(data, _wheel_rel_path)
     except Exception:
         return []
 
 
-def _read_sdist(data: bytes) -> List[Tuple[str, bytes]]:
+def _read_sdist(data: bytes) -> list[tuple[str, bytes]]:
     out = []
     budget = _Budget()
     try:
@@ -315,18 +313,18 @@ class _SurfaceVisitor(ast.NodeVisitor):
 
     def __init__(self, module_path: str):
         self.module = module_path
-        self.classes: Set[str] = set()
-        self.functions: Dict[str, FuncSig] = {}
-        self.names: Set[str] = set()
-        self.exports: Set[str] = set()
-        self.bases: Dict[str, List[str]] = {}
-        self.attributes: Set[str] = set()
-        self._class_stack: List[str] = []
+        self.classes: set[str] = set()
+        self.functions: dict[str, FuncSig] = {}
+        self.names: set[str] = set()
+        self.exports: set[str] = set()
+        self.bases: dict[str, list[str]] = {}
+        self.attributes: set[str] = set()
+        self._class_stack: list[str] = []
         self._depth = 0  # >0 would mean inside a function body (never visited)
-        self._literals: Dict[str, Set[str]] = {}  # module-level NAME = [..]/{..} string literals
-        self._deferred: Set[str] = set()          # names __getattr__ checks `in` (resolved later)
-        self.star_imports: List[Tuple[int, str]] = []  # (relative level, module) of `from x import *`
-        self.all_names: Optional[Set[str]] = None      # __all__, when the module defines one
+        self._literals: dict[str, set[str]] = {}  # module-level NAME = [..]/{..} string literals
+        self._deferred: set[str] = set()          # names __getattr__ checks `in` (resolved later)
+        self.star_imports: list[tuple[int, str]] = []  # (relative level, module) of `from x import *`
+        self.all_names: set[str] | None = None      # __all__, when the module defines one
 
     def finalize(self):
         """Resolve names a module ``__getattr__`` serves from module-level literals."""
@@ -343,7 +341,7 @@ class _SurfaceVisitor(ast.NodeVisitor):
         if not node.args.args:
             return
         param = node.args.args[0].arg
-        local: Dict[str, Set[str]] = {}
+        local: dict[str, set[str]] = {}
         for sub in ast.walk(node):
             if isinstance(sub, ast.Assign) and len(sub.targets) == 1 \
                     and isinstance(sub.targets[0], ast.Name):
@@ -352,7 +350,7 @@ class _SurfaceVisitor(ast.NodeVisitor):
                     local[sub.targets[0].id] = lit
         # `if name == "load_boston": raise ImportError(...)` is a tombstone:
         # the name is gone and the module only explains where it went
-        tombstones = set()
+        tombstones: set[int] = set()
         for sub in ast.walk(node):
             if isinstance(sub, ast.If):
                 body = [n for stmt in sub.body for n in ast.walk(stmt)]
@@ -364,7 +362,7 @@ class _SurfaceVisitor(ast.NodeVisitor):
             if not isinstance(sub, ast.Compare) or not isinstance(sub.left, ast.Name) \
                     or sub.left.id != param or id(sub) in tombstones:
                 continue
-            for op, comp in zip(sub.ops, sub.comparators):
+            for op, comp in zip(sub.ops, sub.comparators, strict=True):
                 if isinstance(op, (ast.Eq, ast.In)):
                     lit = _string_literals(comp)
                     if lit:
@@ -381,10 +379,10 @@ class _SurfaceVisitor(ast.NodeVisitor):
     def visit_ClassDef(self, node: ast.ClassDef):
         if self._depth or not self._public(node.name):
             return
-        dotted = ".".join(self._class_stack + [node.name])
+        dotted = ".".join([*self._class_stack, node.name])
         self.classes.add(dotted)
         self.names.add(node.name)
-        self.bases[dotted] = [_base_name(b) for b in node.bases if _base_name(b)]
+        self.bases[dotted] = [name for name in map(_base_name, node.bases) if name]
         self._class_stack.append(node.name)
         for item in node.body:
             if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -450,7 +448,7 @@ class _SurfaceVisitor(ast.NodeVisitor):
                         self._literals[n.id] = lit
                 if n.id.startswith("_"):
                     continue
-                self.attributes.add(".".join(self._class_stack + [n.id]))
+                self.attributes.add(".".join([*self._class_stack, n.id]))
 
     def _add_func(self, node):
         if node.name == "__getattr__" and not self._class_stack:
@@ -458,13 +456,13 @@ class _SurfaceVisitor(ast.NodeVisitor):
             return
         if not self._public(node.name):
             return
-        dotted = ".".join(self._class_stack + [node.name])
+        dotted = ".".join([*self._class_stack, node.name])
         args = node.args
         positional = list(args.posonlyargs) + list(args.args)
         params = [a.arg for a in positional] + [a.arg for a in args.kwonlyargs]
         n_no_default = len(positional) - len(args.defaults)
         required = [a.arg for a in positional[:n_no_default]]
-        required += [a.arg for a, d in zip(args.kwonlyargs, args.kw_defaults) if d is None]
+        required += [a.arg for a, d in zip(args.kwonlyargs, args.kw_defaults, strict=True) if d is None]
         is_method = bool(self._class_stack) and not any(
             _base_name(d) == "staticmethod" for d in node.decorator_list)
         if is_method and positional and positional[0].arg in ("self", "cls", "mcs", "metacls"):
@@ -487,7 +485,7 @@ class _SurfaceVisitor(ast.NodeVisitor):
         # bodies are not visited: nested defs are implementation details
 
 
-def _return_name(ann) -> Optional[str]:
+def _return_name(ann) -> str | None:
     """Class name a return annotation names: ``-> Engine``, ``-> "Engine"``,
     ``-> Optional[Engine]``, ``-> Engine | None``. None for builtins/unknown."""
     if ann is None:
@@ -508,9 +506,9 @@ def _return_name(ann) -> Optional[str]:
     return None
 
 
-def _string_literals(node) -> Set[str]:
+def _string_literals(node) -> set[str]:
     """String elements of a list/tuple/set literal, or keys of a dict literal."""
-    out: Set[str] = set()
+    out: set[str] = set()
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         out.add(node.value)
     elif isinstance(node, (ast.List, ast.Tuple, ast.Set)):
@@ -522,7 +520,7 @@ def _string_literals(node) -> Set[str]:
     return {n for n in out if n.isidentifier()}
 
 
-def _base_name(node) -> Optional[str]:
+def _base_name(node) -> str | None:
     """Simple name of a base class / decorator expression."""
     if isinstance(node, ast.Name):
         return node.id
@@ -535,12 +533,12 @@ def _base_name(node) -> Optional[str]:
     return None
 
 
-def build_surface(version: str, sources: Dict[str, List[str]],
-                  extensions: Optional[Set[str]] = None) -> APISurface:
+def build_surface(version: str, sources: dict[str, list[str]],
+                  extensions: set[str] | None = None) -> APISurface:
     """Build an API surface from module sources ({dotted module: [source, ...]})."""
     extensions = extensions or set()
-    stars: Dict[str, List[Tuple[int, str]]] = {}
-    all_of: Dict[str, Set[str]] = {}
+    stars: dict[str, list[tuple[int, str]]] = {}
+    all_of: dict[str, set[str]] = {}
     surface = APISurface(version=version)
     surface.modules.update(extensions)
     for module_path, srcs in sources.items():
@@ -594,25 +592,25 @@ def build_surface(version: str, sources: Dict[str, List[str]],
     return surface
 
 
-def _resolve_star_imports(surface: APISurface, stars: Dict[str, List[Tuple[int, str]]],
-                          all_of: Dict[str, Set[str]]):
+def _resolve_star_imports(surface: APISurface, stars: dict[str, list[tuple[int, str]]],
+                          all_of: dict[str, set[str]]):
     """``from ._quadrature import *`` in scipy/integrate/__init__.py makes
     every public name of _quadrature importable from scipy.integrate."""
     if not stars:
         return
-    by_module: Dict[str, Set[str]] = {}
+    by_module: dict[str, set[str]] = {}
     for coll in (surface.functions, surface.classes, surface.attributes):
         for dotted in coll:
             mod, _, name = dotted.rpartition(".")
             by_module.setdefault(mod, set()).add(name)
 
-    def public_names(mod: str) -> Set[str]:
+    def public_names(mod: str) -> set[str]:
         if mod in all_of:
             return set(all_of[mod])
         names = by_module.get(mod, set()) | surface.exports.get(mod, set())
         return {n for n in names if not n.startswith("_")}
 
-    def resolve(mod: str, level: int, target: str) -> Optional[str]:
+    def resolve(mod: str, level: int, target: str) -> str | None:
         if level == 0:
             return target if target in surface.modules else None
         # a package's __init__ is stored under the package name, so try the
@@ -642,7 +640,7 @@ def _resolve_star_imports(surface: APISurface, stars: Dict[str, List[Tuple[int, 
             break
 
 
-def extract_surface(package: str, version: str, _follow: bool = True) -> Optional[APISurface]:
+def extract_surface(package: str, version: str, _follow: bool = True) -> APISurface | None:
     """Download a version and extract its public API surface (cached)."""
     key = f"surface8:{package}:{version}"
     cached = cache_get(key)
@@ -696,7 +694,7 @@ def extract_surface(package: str, version: str, _follow: bool = True) -> Optiona
     return surface
 
 
-def _pinned_deps(package: str, version: str) -> List[Tuple[str, str]]:
+def _pinned_deps(package: str, version: str) -> list[tuple[str, str]]:
     """(name, version) of each unconditional dependency pinned with ==."""
     from packaging.requirements import InvalidRequirement, Requirement
     try:
@@ -717,7 +715,7 @@ def _pinned_deps(package: str, version: str) -> List[Tuple[str, str]]:
     return out
 
 
-def _surface_of_pinned_deps(package: str, version: str) -> Optional[APISurface]:
+def _surface_of_pinned_deps(package: str, version: str) -> APISurface | None:
     """The merged surfaces of a code-less package's exactly-pinned
     dependencies (one level: those are where its code lives)."""
     merged = None
@@ -779,19 +777,19 @@ def _memo(surface: APISurface, name: str, build):
     return cached[1]
 
 
-def _classes_by_short(surface: APISurface) -> Dict[str, List[str]]:
+def _classes_by_short(surface: APISurface) -> dict[str, list[str]]:
     def build():
-        idx: Dict[str, List[str]] = {}
+        idx: dict[str, list[str]] = {}
         for c in surface.classes:
             idx.setdefault(c.rsplit(".", 1)[-1], []).append(c)
         return idx
     return _memo(surface, "_idx_classes", build)
 
 
-def _defs_by_short(surface: APISurface) -> Dict[str, List[str]]:
+def _defs_by_short(surface: APISurface) -> dict[str, list[str]]:
     """Every function, class and attribute by its last name segment."""
     def build():
-        idx: Dict[str, List[str]] = {}
+        idx: dict[str, list[str]] = {}
         for k in list(surface.functions) + list(surface.classes) + list(surface.attributes):
             idx.setdefault(k.rsplit(".", 1)[-1], []).append(k)
         return idx
@@ -799,7 +797,7 @@ def _defs_by_short(surface: APISurface) -> Dict[str, List[str]]:
 
 
 def _inherited(surface: APISurface, cls: str, member: str,
-               _seen: Optional[Set[str]] = None) -> Optional[str]:
+               _seen: set[str] | None = None) -> str | None:
     """Dotted path of ``member`` found on a base class of ``cls``, if any."""
     _seen = _seen if _seen is not None else set()
     if cls in _seen:
@@ -817,7 +815,7 @@ def _inherited(surface: APISurface, cls: str, member: str,
     return None
 
 
-def _positional_index(sig: FuncSig, param: str) -> Optional[int]:
+def _positional_index(sig: FuncSig, param: str) -> int | None:
     """Index of param among positional arguments a caller passes (self/cls
     excluded); None when it can only be passed by keyword."""
     positional = [p for p in sig.params if p not in sig.kwonly]
@@ -826,12 +824,12 @@ def _positional_index(sig: FuncSig, param: str) -> Optional[int]:
     return positional.index(param) if param in positional else None
 
 
-def _member_of(surface: APISurface, dotted: str) -> Optional[str]:
+def _member_of(surface: APISurface, dotted: str) -> str | None:
     parent = dotted.rsplit(".", 1)[0]
     return parent.rsplit(".", 1)[-1] if parent in surface.classes else None
 
 
-def _still_at(new: APISurface, short: str) -> List[str]:
+def _still_at(new: APISurface, short: str) -> list[str]:
     """Import paths through which ``short`` is still reachable in ``new``."""
     paths = [f"{m}.{short}" for m, names in new.exports.items() if short in names]
     paths += _defs_by_short(new).get(short, [])
@@ -846,7 +844,7 @@ def _package_of(dotted: str) -> str:
     return ".".join(seg.lstrip("_") for seg in parent.split("."))
 
 
-def _new_home(new: APISurface, old: str, kind: str) -> Optional[str]:
+def _new_home(new: APISurface, old: str, kind: str) -> str | None:
     """Where a name that vanished from ``old`` lives now: a unique definition
     of the same name in the same package (pkg.urls.f -> pkg.newurls.f). A
     same-named function elsewhere (numpy.ma.core.round_) is a different API."""
@@ -857,7 +855,7 @@ def _new_home(new: APISurface, old: str, kind: str) -> Optional[str]:
     return hits[0] if len(hits) == 1 else None
 
 
-def diff_surfaces(old: APISurface, new: APISurface) -> List[APIChange]:
+def diff_surfaces(old: APISurface, new: APISurface) -> list[APIChange]:
     """Compute precise API changes from old to new surface.
 
     Only public API is reported — private modules and underscore-prefixed
@@ -865,7 +863,7 @@ def diff_surfaces(old: APISurface, new: APISurface) -> List[APIChange]:
     inherited members count as still available, so a function moved between
     modules (but still importable from the same place) is not a removal.
     """
-    changes: List[APIChange] = []
+    changes: list[APIChange] = []
 
     # removed modules
     for mod in old.modules - new.modules:
@@ -1007,11 +1005,11 @@ def diff_surfaces(old: APISurface, new: APISurface) -> List[APIChange]:
     return changes
 
 
-def get_return_types(package: str, *versions: str) -> Dict[str, str]:
+def get_return_types(package: str, *versions: str) -> dict[str, str]:
     """{function short name: class short name it returns}, from annotations in
     any of the given versions. Lets ``e = create_engine(); e.execute()`` be
     matched against changes to ``Engine.execute``. Ambiguous names are dropped."""
-    seen: Dict[str, Set[str]] = {}
+    seen: dict[str, set[str]] = {}
     for v in versions:
         surf = extract_surface(package, v)
         if surf is None:
@@ -1022,7 +1020,7 @@ def get_return_types(package: str, *versions: str) -> Dict[str, str]:
     return {k: next(iter(v)) for k, v in seen.items() if len(v) == 1}
 
 
-def get_api_changes(package: str, from_version: str, to_version: str) -> Optional[List[APIChange]]:
+def get_api_changes(package: str, from_version: str, to_version: str) -> list[APIChange] | None:
     """Extract both surfaces and diff them. Returns None if extraction fails."""
     old = extract_surface(package, from_version)
     new = extract_surface(package, to_version)

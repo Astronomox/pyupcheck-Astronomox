@@ -5,7 +5,7 @@ help:
 	@echo ""
 	@echo "  make install     Install in editable mode with dev deps"
 	@echo "  make test        Run the test suite"
-	@echo "  make lint        Run pyflakes linter"
+	@echo "  make lint        Run ruff and mypy"
 	@echo "  make bench       Run the accuracy benchmark (needs network)"
 	@echo "  make build       Build distribution packages"
 	@echo "  make clean       Remove build artifacts"
@@ -22,7 +22,8 @@ bench:
 	python benchmarks/run.py
 
 lint:
-	python -m pyflakes depshift/
+	python -m ruff check depshift tests
+	python -m mypy
 
 build: clean
 	python -m build --no-isolation

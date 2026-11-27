@@ -10,11 +10,12 @@ logo is drawn, so the animation costs no extra time.
 from __future__ import annotations
 
 import os
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from rich.console import Console, Group
+from rich.console import Console, Group, RenderableType
 from rich.padding import Padding
 from rich.panel import Panel
 from rich.table import Table
@@ -58,13 +59,13 @@ def logo_rows(width: int, unicode_ok: bool = True) -> list[str]:
             return full
         top, bottom = word_rows("PYUP"), word_rows("CHECK")
         if max(map(len, top + bottom)) <= room:
-            return top + [""] + bottom
+            return [*top, "", *bottom]
         return ["▌ pyupcheck"]
     return ["pyupcheck"]
 
 
 def _mix(a, b, f):
-    return tuple(round(x + (y - x) * f) for x, y in zip(a, b))
+    return tuple(round(x + (y - x) * f) for x, y in zip(a, b, strict=True))
 
 
 def _blend(t: float, phase: float = 0.0, shine: float = 0.0) -> str:
@@ -72,7 +73,7 @@ def _blend(t: float, phase: float = 0.0, shine: float = 0.0) -> str:
     (cyan, blue, lavender, blue, cyan) so the moving gradient never jumps."""
     t = min(max(t, 0.0), 1.0)
     if phase:
-        loop = _GRADIENT + _GRADIENT[-2::-1]
+        loop: tuple[tuple[int, int, int], ...] = _GRADIENT + _GRADIENT[-2::-1]
         u = ((t * 0.5 + phase) % 1.0) * (len(loop) - 1)
         stops = loop
     else:
@@ -82,7 +83,7 @@ def _blend(t: float, phase: float = 0.0, shine: float = 0.0) -> str:
     rgb = _mix(stops[i], stops[i + 1], u - i)
     if shine:
         rgb = _mix(rgb, (0xFF, 0xFF, 0xFF), shine)
-    return "#%02x%02x%02x" % rgb
+    return "#{:02x}{:02x}{:02x}".format(*rgb)
 
 
 def gradient(line: str, span: int, phase: float = 0.0, shine_at: float | None = None) -> Text:
@@ -112,6 +113,7 @@ def _fetch_pypi_data() -> dict:
     """Latest version and the six newest releases with their dates."""
     try:
         from packaging.version import InvalidVersion, Version
+
         from depshift.http import http_get
 
         resp = http_get("https://pypi.org/pypi/pyupcheck/json", timeout=5)
@@ -155,7 +157,7 @@ def info_block(console: Console, data: dict, width: int | None = None,
     """Version, links and releases, laid out for the terminal's width."""
     width = width or console.width
     unicode_ok = _can_encode(console, "✓→●")
-    ok, arrow, dot = ("✓", "→", "●") if unicode_ok else ("ok", "->", "*")
+    ok, dot = ("✓", "●") if unicode_ok else ("ok", "*")
     installed, latest = __version__, data["latest"]
 
     narrow = width < 60  # short links and commands
@@ -187,7 +189,7 @@ def info_block(console: Console, data: dict, width: int | None = None,
         for label, value in rows:
             grid.add_row(label, value)
 
-    parts = []
+    parts: list[RenderableType] = []
     if width >= 64:
         parts.append(Panel(grid, title="[bold]pyupcheck[/]", title_align="left",
                            border_style="#5EEAD4", padding=(0, 2), expand=False))
@@ -205,7 +207,7 @@ def info_block(console: Console, data: dict, width: int | None = None,
         for r in releases:
             v = r["version"]
             tags = [t for t, on in (("latest", v == latest), ("installed", v == installed)) if on]
-            row = [Text(dot, style="#5EEAD4" if v == latest else MUTED), f"v{v}"]
+            row: list[RenderableType] = [Text(dot, style="#5EEAD4" if v == latest else MUTED), f"v{v}"]
             if width >= 40:
                 row.append(r["date"])
             row.append(Text(" · ".join(tags), style="#7EE787" if "latest" in tags else "#79C0FF"))
@@ -219,16 +221,19 @@ def info_block(console: Console, data: dict, width: int | None = None,
     start.add_column(style="bold #5EEAD4", overflow="fold")
     if width >= 64:
         start.add_column(style=MUTED, overflow="fold")
-    commands = []
+    suggestions: list[tuple[str, str]] = []
     if latest and _newer(latest, installed):
-        commands.append(("pip install -U pyupcheck" if tiny else "python -m pip install -U pyupcheck",
-                         "get the latest version"))
-    commands += [("pyupcheck check-all", "check every dependency"),
-                 ("pyupcheck check flask", "check one package"),
-                 ("pyupcheck migrate numpy 2", "rewrite code that would break"),
-                 ("pyupcheck --help", "all commands")]
-    for cmd, what in commands:
-        start.add_row(cmd, what) if width >= 64 else start.add_row(cmd)
+        suggestions.append(("pip install -U pyupcheck" if tiny else "python -m pip install -U pyupcheck",
+                            "get the latest version"))
+    suggestions += [("pyupcheck check-all", "check every dependency"),
+                    ("pyupcheck check flask", "check one package"),
+                    ("pyupcheck migrate numpy 2", "rewrite code that would break"),
+                    ("pyupcheck --help", "all commands")]
+    for cmd, what in suggestions:
+        if width >= 64:
+            start.add_row(cmd, what)
+        else:
+            start.add_row(cmd)
     parts += [Text(), Padding(Text("Get started", style="bold"), (0, 0, 0, INDENT), expand=False),
               Padding(start, (0, 0, 0, INDENT + 1), expand=False), Text()]
     return Group(*parts)
@@ -274,8 +279,7 @@ class _Keys:
 
     def __enter__(self):
         self._old = None
-        if os.name != "nt":
-            import sys
+        if sys.platform != "win32":
             import termios
             import tty
             self._fd = sys.stdin.fileno()
@@ -289,7 +293,7 @@ class _Keys:
             termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old)
 
     def pressed(self) -> bool:
-        if os.name == "nt":
+        if sys.platform == "win32":
             import msvcrt
             hit = False
             while msvcrt.kbhit():
@@ -297,14 +301,13 @@ class _Keys:
                 hit = True
             return hit
         import select
-        import sys
         ready, _, _ = select.select([sys.stdin], [], [], 0)
         if ready:
             os.read(sys.stdin.fileno(), 64)
         return bool(ready)
 
 
-def live_frame(console: Console, data: dict | None, t: float) -> Group:
+def live_frame(console: Console, data: dict | None, t: float) -> RenderableType:
     """One frame of the full-screen banner, laid out for the terminal's current
     width *and* height: sections are dropped, smallest first, until it fits."""
     from rich.align import Align
@@ -332,7 +335,7 @@ def live_frame(console: Console, data: dict | None, t: float) -> Group:
     if data is None:
         spinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[int(t * 12) % 10] if unicode_ok else "-\\|/"[int(t * 8) % 4]
         info = Text.assemble((spinner + " ", "#5EEAD4"), ("Checking PyPI…", MUTED))
-        body_options = [info]
+        body_options: list[RenderableType] = [info]
     else:
         body_options = [info_block(console, data, width, 6, True), info_block(console, data, width, 3, True),
                         info_block(console, data, width, 3, False), info_block(console, data, width, 0, False)]
@@ -345,14 +348,16 @@ def live_frame(console: Console, data: dict | None, t: float) -> Group:
     blank = Text(" ")  # an empty Text has no height once centred
     # most to least: everything; then fewer releases/commands; then no tip;
     # then no tagline; then logo and the essentials only
-    layouts = [([logo, blank, tagline, blank], body, [blank, tip_line, blank, footer]) for body in body_options]
+    Layout = tuple[list[RenderableType], RenderableType, list[RenderableType]]
+    layouts: list[Layout] = [([logo, blank, tagline, blank], body, [blank, tip_line, blank, footer])
+                             for body in body_options]
     layouts += [([logo, blank, tagline, blank], body_options[-1], [blank, footer]),
                 ([logo, blank], body_options[-1], [blank, footer]),
                 ([logo, blank], body_options[-1], [])]
     for head, body, tail in layouts:
-        if sum(measure(Align.center(r)) for r in head + [body] + tail) <= height:
+        if sum(measure(Align.center(r)) for r in [*head, body, *tail]) <= height:
             break
-    frame = Group(*(Align.center(r) for r in head + [body] + tail))
+    frame = Group(*(Align.center(r) for r in [*head, body, *tail]))
     return Align.center(frame, vertical="middle", height=height)
 
 

@@ -32,7 +32,7 @@ def migrate(tmp_path, code, old, new, changelog="", pkg="pkg"):
 
 def test_apply_edits_handles_utf8_columns_and_overlaps():
     src = "x = 'é'; f(a)\n"
-    col = len("x = 'é'; f(".encode("utf-8"))  # ast columns are UTF-8 byte offsets
+    col = len("x = 'é'; f(".encode())  # ast columns are UTF-8 byte offsets
     out = apply_edits(src, [Edit((1, col), (1, col), "b=")])
     assert out == "x = 'é'; f(b=a)\n"
     # two edits replacing the same character: the second is skipped, not merged
@@ -238,7 +238,7 @@ def test_import_appended_when_file_ends_with_imports(tmp_path):
     changes, new_surface = surfaces(FLASK_OLD, FLASK_NEW)
     # a usage on the import line itself doesn't need a new import; this checks the
     # end-of-file insertion path directly
-    from depshift.rewrite import Fix, _Index, _add_needed_imports, MigrationPlan
+    from depshift.rewrite import Fix, MigrationPlan, _add_needed_imports, _Index
     plan = MigrationPlan(fixes=[Fix(str(path), 1, "x", [], needs_import="markupsafe")])
     _add_needed_imports(plan, lambda f: _Index(path.read_text()))
     assert apply_edits("import flask", plan.fixes[0].edits) == "import flask\nimport markupsafe\n"

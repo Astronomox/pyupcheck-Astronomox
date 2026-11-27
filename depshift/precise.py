@@ -5,11 +5,11 @@ real API diff. It knows not just that you call a function, but which keyword
 arguments you pass, so it can flag a removed parameter you actually use.
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Union
 
-from depshift.scanner import Usage
 from depshift.apisurface import APIChange
+from depshift.scanner import Usage
 
 
 @dataclass
@@ -20,24 +20,22 @@ class PreciseRisk:
     reason: str
 
 
-def _short_name(api: str, package: str) -> str:
+def _short_name(api: str) -> str:
     """Strip the module prefix to get the callable/attribute name."""
-    # api is dotted module path + name; usage attr_chain is package-rooted
-    parts = api.split(".")
-    return parts[-1]
+    return api.split(".")[-1]
 
 
-def _usage_callable(usage: Usage, package: str) -> str:
+def _usage_callable(usage: Usage) -> str:
     """Last segment of the usage's attribute chain."""
     return usage.attr_chain.split(".")[-1]
 
 
-def _roots(package: Union[str, Iterable[str]]) -> List[str]:
+def _roots(package: str | Iterable[str]) -> list[str]:
     names = [package] if isinstance(package, str) else list(package)
     return sorted((n for n in names if n), key=len, reverse=True)
 
 
-def _root_of(dotted: str, roots: List[str]) -> Optional[str]:
+def _root_of(dotted: str, roots: list[str]) -> str | None:
     """The import root (longest match) a dotted path belongs to.
 
     Uses the real import names rather than the first segment, so for namespace
@@ -49,14 +47,14 @@ def _root_of(dotted: str, roots: List[str]) -> Optional[str]:
     return None
 
 
-def _prefixes(dotted: str) -> List[str]:
+def _prefixes(dotted: str) -> list[str]:
     parts = dotted.split(".")
     return [".".join(parts[:i]) for i in range(len(parts), 1, -1)]
 
 
-def match_precise(usages: List[Usage], changes: List[APIChange],
-                  package: Union[str, Iterable[str]],
-                  returns: Optional[Dict[str, str]] = None) -> List[PreciseRisk]:
+def match_precise(usages: list[Usage], changes: list[APIChange],
+                  package: str | Iterable[str],
+                  returns: dict[str, str] | None = None) -> list[PreciseRisk]:
     """Cross-reference real API changes against usages, including kwargs.
 
     A usage matches a change when the full dotted path agrees, or, because
@@ -64,7 +62,7 @@ def match_precise(usages: List[Usage], changes: List[APIChange],
     ``requests.api``), when the final name agrees within the same top-level
     package. Removed modules only match by path prefix.
     """
-    risks: List[PreciseRisk] = []
+    risks: list[PreciseRisk] = []
     roots = _roots(package)
 
     def same_package(usage: Usage, change: APIChange) -> bool:
@@ -72,21 +70,21 @@ def match_precise(usages: List[Usage], changes: List[APIChange],
         return root is not None and _root_of(change.api, [root]) is not None
 
     removed_modules = [ch for ch in changes if ch.kind == "removed_module"]
-    removed_callables = {}   # short_name -> [change]
-    removed_params = {}      # short_name -> [(param, change)]
-    required_params = {}     # short_name -> [change]
-    kwonly_params = {}       # short_name -> [change]
-    removed_attrs = {}       # short_name -> [change]
-    removed_exports = {}     # exact dotted path -> change (re-exports only break that path)
+    removed_callables: dict[str, list[APIChange]] = {}
+    removed_params: dict[str, list[tuple[str, APIChange]]] = {}
+    required_params: dict[str, list[APIChange]] = {}
+    kwonly_params: dict[str, list[APIChange]] = {}
+    removed_attrs: dict[str, list[APIChange]] = {}
+    removed_exports: dict[str, APIChange] = {}  # exact dotted path (re-exports only break that path)
 
     for ch in changes:
-        short = _short_name(ch.api, package)
+        short = _short_name(ch.api)
         if short == "__init__" and ch.api.count(".") >= 1:
             # constructor changes surface as calls to the class: pkg.Cls(...)
             short = ch.api.split(".")[-2]
         if ch.kind in ("removed_function", "removed_class"):
             removed_callables.setdefault(short, []).append(ch)
-        elif ch.kind == "removed_param":
+        elif ch.kind == "removed_param" and ch.param:
             removed_params.setdefault(short, []).append((ch.param, ch))
         elif ch.kind == "added_required_param":
             required_params.setdefault(short, []).append(ch)
@@ -165,7 +163,7 @@ def match_precise(usages: List[Usage], changes: List[APIChange],
 
     for usage in usages:
         chain = usage.attr_chain
-        callable_name = _usage_callable(usage, package)
+        callable_name = _usage_callable(usage)
 
         # removed module the user imports or reaches into
         mod = next((m for m in removed_modules
@@ -182,9 +180,9 @@ def match_precise(usages: List[Usage], changes: List[APIChange],
 
         # an import path that no longer works (dropped re-export); also covers
         # pkg.Name.attr reached through the dropped name
-        ch = next((removed_exports[p] for p in _prefixes(chain) if p in removed_exports), None)
-        if ch:
-            add(usage, ch, ch.detail)
+        dropped = next((removed_exports[p] for p in _prefixes(chain) if p in removed_exports), None)
+        if dropped:
+            add(usage, dropped, dropped.detail)
             continue
 
         # removed constant/attribute
