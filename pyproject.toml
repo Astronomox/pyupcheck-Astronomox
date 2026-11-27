@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyupcheck"
-version = "0.19.1"
+version = "0.20.0"
 description = "Check if upgrading a Python dependency will break your code"
 readme = "README.md"
 license = "MIT"
@@ -19,7 +19,9 @@ classifiers = [
     "Topic :: Software Development :: Quality Assurance",
 ]
 dependencies = [
-    "httpx>=0.24.0",
+    "httpx>=0.27.0",
+    # httpx's HTTP/1.1 parser: versions before 0.16.0 have a known vulnerability (PYSEC-2026-348)
+    "h11>=0.16.0",
     "rich>=13.0.0",
     "click>=8.0.0",
     "packaging>=21.0",

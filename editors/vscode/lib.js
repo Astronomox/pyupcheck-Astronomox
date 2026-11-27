@@ -30,6 +30,9 @@ function buildArgs({ root, deep, minSeverity }) {
 /** Clean release-note markup for a one-line message. */
 function cleanNote(text) {
   return String(text || "")
+    // release notes are untrusted: no control characters or bidirectional
+    // overrides that make a message read differently from what it is
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, "")
     .replace(/\s*:(?:pr|issue|ghissue|bpo|user|cve):(?:`[^`]*`?)?/g, "")
     .replace(/:[\w-]+:`~?\.?([^`]+)`/g, "`$1`")
     .replace(/``/g, "`")
@@ -89,10 +92,22 @@ function summary(findings) {
   return { text: "$(check) pyupcheck", level: "ok" };
 }
 
-/** The migrate command that fixes a finding's package. */
-function migrateCommand(executable, root, finding) {
-  const q = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, "'\\''")}'`);
-  return `${q(executable)} migrate ${q(finding.package)} ${q(finding.target)} --dir ${q(root)} --write`;
+// What a package name and a version may look like (PEP 503 / PEP 440
+// characters). Both come from the project's files and from pyupcheck's
+// output: anything else is refused, never passed on.
+const PACKAGE = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,200}[A-Za-z0-9])?$/;
+const VERSION = /^[A-Za-z0-9][A-Za-z0-9.+!_-]{0,100}$/;
+
+/**
+ * Arguments for `pyupcheck migrate` (run directly, never through a shell),
+ * or null when the package or version isn't a valid one.
+ */
+function migrateArgs(root, finding, write) {
+  if (!finding || !PACKAGE.test(String(finding.package)) || !VERSION.test(String(finding.target))) return null;
+  if (typeof root !== "string" || !path.isAbsolute(root)) return null;
+  const args = ["migrate", finding.package, finding.target, "--dir", root];
+  if (write) args.push("--write");
+  return args;
 }
 
-module.exports = { buildArgs, parseFindings, summary, migrateCommand, isDependencyFile, cleanNote, SEVERITY };
+module.exports = { buildArgs, parseFindings, summary, migrateArgs, isDependencyFile, cleanNote, SEVERITY };

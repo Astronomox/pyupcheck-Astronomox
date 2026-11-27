@@ -17,6 +17,8 @@ def _no_network(monkeypatch):
     import depshift.apisurface
     monkeypatch.setattr(depshift.changelog, "http_get", blocked)
     monkeypatch.setattr(depshift.apisurface, "http_get", blocked)
+    # the URL policy resolves host names: answer "public" without DNS
+    monkeypatch.setattr(depshift.http, "_resolves_internal", lambda host: False)
 
 
 @pytest.fixture(autouse=True)

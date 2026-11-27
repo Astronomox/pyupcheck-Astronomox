@@ -13,8 +13,18 @@ def _rel(path: str) -> str:
         return path
 
 
+def _h(text) -> str:
+    """Untrusted text for the HTML report: escaped, without control characters."""
+    from depshift.safe import plain
+    return html.escape(plain(text))
+
+
 def render_markdown(results: List[dict]) -> str:
-    """results: list of dicts with keys package, current, target, risks, safe_count."""
+    """results: list of dicts with keys package, current, target, risks, safe_count.
+
+    Release notes, versions and code are untrusted text: they're made inert
+    (no HTML, links, images or mentions, and code can't break out of its span)."""
+    from depshift.safe import md_code, md_text
     lines = [
         "# pyupcheck report",
         "",
@@ -30,10 +40,11 @@ def render_markdown(results: List[dict]) -> str:
     for r in results:
         status = "BREAKING" if r["breaking_count"] else ("DEPRECATED" if r["deprecated_count"] else
                                                        ("NOT CHECKED" if r.get("unchecked") else "OK"))
-        lines.append(f"## {r['package']} {r.get('current_version') or '?'} -> {r['target_version']} [{status}]")
+        lines.append(f"## {md_text(r['package'])} {md_text(r.get('current_version') or '?')} -> "
+                     f"{md_text(r['target_version'])} [{status}]")
         lines.append("")
         for w in r.get("warnings", []):
-            lines.append(f"> Note: {w}")
+            lines.append(f"> Note: {md_text(w)}")
             lines.append("")
         if r.get("unchecked") and not r["risks"]:
             continue
@@ -44,12 +55,13 @@ def render_markdown(results: List[dict]) -> str:
         lines.append("| Severity | Location | Code | Change |")
         lines.append("|---|---|---|---|")
         for risk in r["risks"]:
-            loc = f"{_rel(risk['file'])}:{risk['line']}"
-            code = risk["code"].replace("|", "\\|")[:60]
-            desc = risk["change_description"].replace("|", "\\|")[:80]
+            loc = md_code(f"{_rel(risk['file'])}:{int(risk['line'])}", in_table=True)
+            code = md_code(risk["code"][:60], in_table=True)
+            desc = md_text(risk["change_description"][:80])
             if risk.get("replacement"):
-                desc += f" (use `{risk['replacement']}`)"
-            lines.append(f"| {risk['severity']} | `{loc}` | `{code}` | {desc} |")
+                desc += f" (use {md_code(risk['replacement'][:120], in_table=True)})"
+            sev = risk["severity"] if risk["severity"] in ("breaking", "deprecated") else "warning"
+            lines.append(f"| {sev} | {loc} | {code} | {desc} |")
         lines.append("")
         lines.append(f"{r['safe_count']} other usages safe.")
         lines.append("")
@@ -127,11 +139,11 @@ def render_html(results: List[dict]) -> str:
 
         rows = ""
         for risk in r["risks"]:
-            loc = html.escape(f"{_rel(risk['file'])}:{risk['line']}")
-            code = html.escape(risk["code"][:70])
-            desc = html.escape(risk["change_description"][:110])
+            loc = _h(f"{_rel(risk['file'])}:{risk['line']}")
+            code = _h(risk["code"][:70])
+            desc = _h(risk["change_description"][:110])
             if risk.get("replacement"):
-                desc += f' &rarr; use <code>{html.escape(risk["replacement"])}</code>' 
+                desc += f' &rarr; use <code>{_h(risk["replacement"])}</code>' 
             sev = risk["severity"]
             rows += (f'<tr><td class="sev-{sev}">{sev}</td>'
                      f'<td><code>{loc}</code></td>'
@@ -142,10 +154,10 @@ def render_html(results: List[dict]) -> str:
                  f'{rows}</table>') if rows else ""
 
         pkg_blocks.append(
-            f'<div class="pkg"><h2>{html.escape(r["package"])} '
-            f'{html.escape(r.get("current_version") or "?")} &rarr; {html.escape(r["target_version"])}{badge}</h2>'
+            f'<div class="pkg"><h2>{_h(r["package"])} '
+            f'{_h(r.get("current_version") or "?")} &rarr; {_h(r["target_version"])}{badge}</h2>'
             f'{table}'
-            + "".join(f'<div class="note">Note: {html.escape(w)}</div>' for w in r.get("warnings", []))
+            + "".join(f'<div class="note">Note: {_h(w)}</div>' for w in r.get("warnings", []))
             + f'<div class="safe">{r["safe_count"]} usages safe</div></div>'
         )
 

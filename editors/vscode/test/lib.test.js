@@ -53,11 +53,17 @@ test("arguments", () => {
   assert.ok(!lib.buildArgs({ root: "/p", minSeverity: "warning" }).includes("--min-severity"));
 });
 
-test("migrate command is quoted for the shell", () => {
-  assert.strictEqual(lib.migrateCommand("pyupcheck", "/my project", { package: "numpy", target: "2.0.0" }),
-    "pyupcheck migrate numpy 2.0.0 --dir '/my project' --write");
-  assert.strictEqual(lib.migrateCommand("pyupcheck", "/p", { package: "x;rm -rf ~", target: "1" }),
-    "pyupcheck migrate 'x;rm -rf ~' 1 --dir /p --write");
+test("migrate arguments: no shell, and only real names and versions", () => {
+  assert.deepStrictEqual(lib.migrateArgs("/my project", { package: "numpy", target: "2.0.0" }, false),
+    ["migrate", "numpy", "2.0.0", "--dir", "/my project"]);
+  assert.deepStrictEqual(lib.migrateArgs("/p", { package: "Flask_SQLAlchemy", target: "3.1.0rc1" }, true),
+    ["migrate", "Flask_SQLAlchemy", "3.1.0rc1", "--dir", "/p", "--write"]);
+  for (const bad of [{ package: "x;rm -rf ~", target: "1" }, { package: "--help", target: "1" },
+    { package: "numpy", target: "$(id)" }, { package: "numpy", target: "1 --dir /etc" },
+    { package: "a`b`", target: "1" }, { package: "numpy\n", target: "1" }]) {
+    assert.strictEqual(lib.migrateArgs("/p", bad, false), null, JSON.stringify(bad));
+  }
+  assert.strictEqual(lib.migrateArgs("relative/dir", { package: "numpy", target: "2" }, false), null);
 });
 
 test("dependency files", () => {
@@ -66,4 +72,8 @@ test("dependency files", () => {
     assert.ok(lib.isDependencyFile(f), f);
   }
   for (const f of ["app.py", "README.md", "package.json", "lock.txt"]) assert.ok(!lib.isDependencyFile(f), f);
+});
+
+test("control and bidi characters are removed from messages", () => {
+  assert.strictEqual(lib.cleanNote("Removed \u001b[31mx\u202e evil\u0007"), "Removed [31mx evil");
 });

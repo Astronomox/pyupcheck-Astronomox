@@ -447,10 +447,16 @@ def scan_directory(directory: str, package_name: PackageNames, exclude_dirs: Opt
 
     usages: List[Usage] = []
     for fpath in _source_files(directory, exclude_dirs, include_notebooks):
-        if fpath.endswith(".ipynb"):
-            usages.extend(scan_notebook(fpath, package_name))
-        else:
-            usages.extend(scan_file(fpath, package_name))
+        try:
+            if fpath.endswith(".ipynb"):
+                usages.extend(scan_notebook(fpath, package_name))
+            else:
+                usages.extend(scan_file(fpath, package_name))
+        except (RecursionError, MemoryError, SyntaxError, ValueError, OSError):
+            # a pathological file (thousands of nested brackets) is skipped:
+            # one file must not stop the whole project from being checked.
+            # MemoryError here is the parser's own "too complex to parse".
+            continue
     return usages
 
 

@@ -8,6 +8,7 @@ Pipfile.lock, conda-lock.yml and pixi.lock.
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
@@ -85,12 +86,19 @@ def find_lockfiles(directory: str) -> List[str]:
     return [p for p in paths if os.path.isfile(p)]
 
 
+# lockfiles are free-form data (in a pull request, written by its author):
+# only names and versions that look like real ones are used
+_VALID_NAME = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,200}[a-z0-9])?$")
+_VALID_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.+!_-]{0,100}$")
+
+
 def locked_versions(directory: str) -> Dict[str, LockedPackage]:
     """{normalized name: LockedPackage} from every lockfile in directory."""
     out: Dict[str, LockedPackage] = {}
     for path in find_lockfiles(directory):
         for pkg in parse_lockfile(path):
-            out.setdefault(pkg.name, pkg)
+            if _VALID_NAME.match(pkg.name or "") and _VALID_VERSION.match(str(pkg.version or "")):
+                out.setdefault(pkg.name, pkg)
     return out
 
 

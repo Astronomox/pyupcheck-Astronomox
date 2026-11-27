@@ -160,7 +160,7 @@ def load(path: str) -> Optional[Notebook]:
         with open(path, encoding="utf-8") as f:
             text = f.read()
         data = json.loads(text)
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):  # deeply nested JSON: not a notebook we can read
         return None
     if not isinstance(data, dict) or not isinstance(data.get("cells"), list):
         return None

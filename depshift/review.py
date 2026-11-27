@@ -8,7 +8,8 @@ report is Markdown meant for a pull-request comment.
 
 import os
 import re
-import subprocess
+# git only: run without a shell, with validated arguments
+import subprocess  # nosec B404
 import tempfile
 from dataclasses import dataclass
 from typing import Dict, List, Optional
@@ -48,21 +49,34 @@ def is_dep_file(path: str) -> bool:
     return len(parts) == 2 and parts[0] in _SUBDIRS and name.endswith((".txt", ".in"))
 
 
+# a commit, branch, tag or expression like HEAD~1 / origin/main: never
+# something git would read as an option ("--output=...")
+_REF = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_./@{}^~:+-]{0,250}$")
+
+
+def valid_ref(ref: str) -> bool:
+    return bool(_REF.match(ref or "")) and ".." not in ref and not ref.endswith((".", "/", ".lock"))
+
+
 def _git(repo: str, *args: str) -> str:
-    return subprocess.run(["git", "-C", repo, *args], check=True, capture_output=True,
+    return subprocess.run(["git", "-C", repo, *args], check=True, capture_output=True,  # nosec B603 B607
                           text=True).stdout
 
 
 def export_dependency_files(repo: str, ref: str, dest: str) -> List[str]:
     """Write the dependency files as they are at ``ref`` into ``dest``."""
+    if not valid_ref(ref):
+        raise ValueError(f"not a git revision pyupcheck accepts: {ref!r}")
     listed = _git(repo, "ls-tree", "-r", "--name-only", ref).splitlines()
     written = []
     for path in listed:
         if not is_dep_file(path):
             continue
-        content = subprocess.run(["git", "-C", repo, "show", f"{ref}:{path}"], check=True,
+        content = subprocess.run(["git", "-C", repo, "show", f"{ref}:{path}"], check=True,  # nosec B603 B607
                                  capture_output=True).stdout
         target = os.path.join(dest, path)
+        if not os.path.realpath(target).startswith(os.path.realpath(dest) + os.sep):
+            continue  # is_dep_file only allows plain names, but never write outside dest
         os.makedirs(os.path.dirname(target), exist_ok=True)
         with open(target, "wb") as f:
             f.write(content)
@@ -133,9 +147,21 @@ def _clean(text: str) -> str:
     text = text.replace("``", "`").replace("|", "\\|").replace("\n", " ")
     return re.sub(r"\s+", " ", text).strip()
 
+def _note(text: str, limit: int = 160) -> str:
+    """A release note for the comment: cleaned, cut at a word, then made inert
+    (it comes from the internet: no mentions, HTML, images or links)."""
+    from depshift.safe import md_text, plain
+    s = _clean(plain(text, keep_newlines=False)[:2000]).replace("\\|", "|")
+    if len(s) > limit:
+        s = s[:limit].rsplit(" ", 1)[0] + "…"
+    return md_text(s)
+
+
 def render_review(results: List[dict], max_findings: int = 10, repo_root: str = ".") -> str:
     """Markdown for a pull-request comment. Each result is a check result
     dict with an optional ``fixable`` count from ``migrate``."""
+    import html as _html
+    from depshift.safe import md_code, md_text
     lines = [COMMENT_MARKER, "## pyupcheck: dependency changes in this PR", ""]
     if not results:
         lines += ["No dependency versions changed. Nothing to check.", ""]
@@ -158,8 +184,9 @@ def render_review(results: List[dict], max_findings: int = 10, repo_root: str = 
         else:
             status = str(r["breaking_count"])
         fixable = r.get("fixable")
-        lines.append(f"| `{r['package']}` | {r.get('current_version') or '?'} → {r['target_version']} "
-                     f"| {status} | {r['deprecated_count']} | {'' if fixable is None else fixable} |")
+        lines.append(f"| {md_code(r['package'], in_table=True)} | {md_text(r.get('current_version') or '?')} → "
+                     f"{md_text(r['target_version'])} | {status} | {int(r['deprecated_count'])} "
+                     f"| {'' if fixable is None else int(fixable)} |")
     lines.append("")
 
     for r in results:
@@ -167,8 +194,9 @@ def render_review(results: List[dict], max_findings: int = 10, repo_root: str = 
         notes = r.get("warnings", [])
         if not risks and not notes:
             continue
-        lines.append(f"<details><summary><b>{r['package']}</b> {r.get('current_version') or '?'} → "
-                     f"{r['target_version']}</summary>")
+        lines.append(f"<details><summary><b>{_html.escape(r['package'])}</b> "
+                     f"{_html.escape(r.get('current_version') or '?')} → "
+                     f"{_html.escape(r['target_version'])}</summary>")
         lines.append("")
         for x in risks[:max_findings]:
             try:
@@ -176,18 +204,20 @@ def render_review(results: List[dict], max_findings: int = 10, repo_root: str = 
             except ValueError:
                 rel = x["file"]
             tag = " (verified)" if x.get("precise") else ""
-            desc = _clean(x["change_description"])[:160]
-            lines.append(f"- **{x['severity']}**{tag} `{rel}:{x['line']}` `{x['code'][:80]}`: {desc}")
+            sev = x["severity"] if x["severity"] in ("breaking", "deprecated") else "warning"
+            where = md_code(f"{rel}:{int(x['line'])}")
+            code = md_code(x["code"][:80])
+            lines.append(f"- **{sev}**{tag} {where} {code}: {_note(x['change_description'])}")
             if x.get("replacement"):
-                lines.append(f"  use `{x['replacement']}` instead")
+                lines.append(f"  use {md_code(x['replacement'][:120])} instead")
         if len(risks) > max_findings:
             lines.append(f"- ...and {len(risks) - max_findings} more")
         for n in notes:
-            lines.append(f"- _note: {n}_")
+            lines.append(f"- _note: {_note(n, 300)}_")
         if r.get("fixable"):
             lines.append("")
-            lines.append(f"`pyupcheck migrate {r['package']} {r['target_version']} --write` "
-                         f"fixes {r['fixable']} of these automatically.")
+            command = md_code(f"pyupcheck migrate {r['package']} {r['target_version']} --write")
+            lines.append(f"{command} fixes {int(r['fixable'])} of these automatically.")
         lines.append("")
         lines.append("</details>")
         lines.append("")
