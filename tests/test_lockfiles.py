@@ -5,6 +5,7 @@ import textwrap
 
 import pytest
 
+from depshift import project
 from depshift.lockfiles import find_lockfiles, locked_version, locked_versions
 
 
@@ -87,14 +88,14 @@ def test_broken_lockfile_is_ignored(tmp_path):
 @pytest.fixture
 def cli(monkeypatch):
     import depshift.cli as cli
-    monkeypatch.setattr(cli, "get_installed_version", lambda p: "9.9.9")
-    monkeypatch.setattr(cli, "scan_directory", lambda *a, **k: [])  # stop after baseline
+    monkeypatch.setattr(project, "get_installed_version", lambda p: "9.9.9")
+    monkeypatch.setattr(project, "scan_directory", lambda *a, **k: [])  # stop after baseline
     return cli
 
 
 def run(cli, tmp_path, **kw):
     from depshift.config import load_config
-    return cli._run_single_check("pkg", "10.0", str(tmp_path), None,
+    return project.run_check("pkg", "10.0", str(tmp_path), None,
                                  load_config(str(tmp_path)), **kw)
 
 
@@ -116,7 +117,6 @@ def test_installed_used_when_it_fits_constraint(cli, tmp_path):
 # ── undeclared imports ────────────────────────────────────────────────────────
 
 def test_undeclared_import_found(tmp_path):
-    import depshift.cli as cli
     from depshift.deps import discover_dependencies
     (tmp_path / "requirements.txt").write_text("requests==2.31.0\n")
     write(tmp_path / "uv.lock", """\
@@ -134,15 +134,14 @@ def test_undeclared_import_found(tmp_path):
         """)
     (tmp_path / "app.py").write_text("import requests\nfrom urllib3.util.retry import Retry\n")
     deps = discover_dependencies(str(tmp_path))
-    extra = cli._undeclared_imports(str(tmp_path), deps, locked_versions(str(tmp_path)), set(), set())
+    extra = project.undeclared_imports(str(tmp_path), deps, locked_versions(str(tmp_path)), set(), set())
     assert [(d.name, d.pinned_version) for d in extra] == [("urllib3", "1.26.18")]
-    assert extra[0].source.endswith(cli.UNDECLARED)
+    assert extra[0].source.endswith(project.UNDECLARED)
 
 
 def test_no_lockfile_no_undeclared(tmp_path):
-    import depshift.cli as cli
     (tmp_path / "app.py").write_text("import urllib3\n")
-    assert cli._undeclared_imports(str(tmp_path), [], {}, set(), set()) == []
+    assert project.undeclared_imports(str(tmp_path), [], {}, set(), set()) == []
 
 
 def test_imported_top_modules(tmp_path):

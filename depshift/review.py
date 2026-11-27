@@ -157,6 +157,10 @@ def _note(text: str, limit: int = 160) -> str:
     return md_text(s)
 
 
+def _count(n: int, noun: str) -> str:
+    return f"{n} {noun}{'s' if n != 1 else ''}"
+
+
 def render_review(results: list[dict], max_findings: int = 10, repo_root: str = ".") -> str:
     """Markdown for a pull-request comment. Each result is a check result
     dict with an optional ``fixable`` count from ``migrate``."""
@@ -171,19 +175,21 @@ def render_review(results: list[dict], max_findings: int = 10, repo_root: str = 
     breaking = sum(r["breaking_count"] for r in results)
     unchecked = [r for r in results if r.get("unchecked")]
     if breaking:
-        lines.append(f"**{breaking} breaking** usage(s) across {len(results)} changed package(s).")
+        # the action reads the count from "**N breaking**" at the start of this line
+        lines.append(f"**{breaking} breaking** usage{'s' if breaking != 1 else ''} across "
+                     f"{_count(len(results), 'changed package')}.")
     elif unchecked:
-        lines.append(f"No breaking usages found, but {len(unchecked)} package(s) could not be checked.")
+        lines.append(f"No breaking usages found, but {_count(len(unchecked), 'package')} could not be checked.")
     else:
-        lines.append(f"No breaking usages found in {len(results)} changed package(s).")
+        lines.append(f"No breaking usages found in {_count(len(results), 'changed package')}.")
     lines.append("")
     lines.append("| Package | Change | Breaking | Deprecated | Auto-fixable |")
     lines.append("|---|---|---|---|---|")
     for r in results:
         status = "not checked" if r.get("unchecked") and not r["risks"] else str(r["breaking_count"])
         fixable = r.get("fixable")
-        lines.append(f"| {md_code(r['package'], in_table=True)} | {md_text(r.get('current_version') or '?')} → "
-                     f"{md_text(r['target_version'])} | {status} | {int(r['deprecated_count'])} "
+        lines.append(f"| {md_code(r['package'], in_table=True)} | {md_text(r.get('current_version') or '?', True)} → "
+                     f"{md_text(r['target_version'], True)} | {status} | {int(r['deprecated_count'])} "
                      f"| {'' if fixable is None else int(fixable)} |")
     lines.append("")
 

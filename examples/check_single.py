@@ -1,11 +1,11 @@
 """Example: check a single package upgrade programmatically."""
 
-from depshift.scanner import scan_directory
-from depshift.changelog import get_changes_between, get_current_version
 from depshift.analyzer import analyze
+from depshift.changelog import get_changes_between, get_current_version
+from depshift.scanner import scan_directory
 
 
-def check_package(package: str, directory: str = ".", target_version: str = None):
+def check_package(package: str, directory: str = ".", target_version: str | None = None):
     """Check if upgrading package will break code in directory."""
     if target_version is None:
         target_version = get_current_version(package)
@@ -19,7 +19,7 @@ def check_package(package: str, directory: str = ".", target_version: str = None
     print(f"Checking {package} {current} -> {target_version}")
 
     usages = scan_directory(directory, package)
-    print(f"Found {len(usages)} usages across {len(set(u.file for u in usages))} files")
+    print(f"Found {len(usages)} usages across {len({u.file for u in usages})} files")
 
     changes = get_changes_between(package, current, target_version)
     print(f"Found {len(changes)} changelog changes")

@@ -98,10 +98,10 @@ def test_manual_items_carry_the_cell(tmp_path):
 
 
 def test_terminal_output_keeps_cell_prefix_and_cleans_notes(capsys):
-    from depshift.cli import _print_terminal_result
+    from depshift.output import print_result
     risk = {"file": "a.ipynb", "line": 27, "code": "[cell 3] x = np.float_(3)", "severity": "breaking",
             "change_description": "Removed ``np.float_`` [bold]. :pr:`12`", "api": "numpy.float_"}
-    _print_terminal_result({"package": "numpy", "current_version": "1.26.4", "target_version": "2.0.0",
+    print_result({"package": "numpy", "current_version": "1.26.4", "target_version": "2.0.0",
                             "risks": [risk], "breaking_count": 1, "deprecated_count": 0, "safe_count": 0},
                            quiet=False)
     out = capsys.readouterr().out

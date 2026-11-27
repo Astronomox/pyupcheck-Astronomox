@@ -8,12 +8,12 @@ Usage:
 """
 
 import sys
+
+from depshift.analyzer import analyze
+from depshift.changelog import get_changes_between, get_current_version
+from depshift.config import load_config
 from depshift.deps import discover_dependencies
 from depshift.scanner import scan_directory
-from depshift.changelog import get_changes_between, get_current_version
-from depshift.analyzer import analyze
-from depshift.config import load_config
-
 
 SEVERITY_RANK = {"breaking": 0, "deprecated": 1, "any": 2}
 

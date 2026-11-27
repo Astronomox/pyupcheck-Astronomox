@@ -1,9 +1,10 @@
 """Example: use the API surface differ directly for fact-based detection."""
 
 import sys
-from depshift.apisurface import extract_surface, diff_surfaces
-from depshift.scanner import scan_directory
+
+from depshift.apisurface import diff_surfaces, extract_surface
 from depshift.precise import match_precise
+from depshift.scanner import scan_directory
 
 
 def deep_check(package: str, from_version: str, to_version: str, directory: str = "."):

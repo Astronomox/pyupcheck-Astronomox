@@ -6,6 +6,7 @@ import sys
 import pytest
 from click.testing import CliRunner
 
+from depshift import cli
 from depshift import explain as ex
 
 
@@ -41,7 +42,7 @@ def test_warnings_and_duplicates_are_not_sent(app, tmp_path):
 def test_prompt(app, tmp_path):
     findings = ex.findings_from(result_for(app, replacement="numpy.asarray"), str(tmp_path))
     prompt = ex.build_prompt("numpy", "1.26.4", "2.0.0", findings)
-    assert prompt.startswith("Upgrading `numpy` from 1.26.4 to 2.0.0. 1 place(s)")
+    assert prompt.startswith("Upgrading `numpy` from 1.26.4 to 2.0.0. 1 place in the code breaks")
     assert "Verified replacement in 2.0.0: `numpy.asarray`" in prompt
     assert "```python\n" in prompt and "y = np.asfarray(x)" in prompt
 
@@ -122,8 +123,7 @@ def test_missing_package_is_a_clear_error(monkeypatch):
 
 
 def run_cli(monkeypatch, app, tmp_path, args, client=None):
-    from depshift import cli
-    monkeypatch.setattr(cli, "_run_single_check", lambda *a, **k: result_for(app))
+    monkeypatch.setattr(cli, "run_check", lambda *a, **k: result_for(app))
     if client is not None:
         monkeypatch.setattr(ex, "make_client", lambda: client)
     return CliRunner().invoke(cli.main, ["explain", "numpy", "2.0.0", "-d", str(tmp_path), *args])
@@ -143,5 +143,5 @@ def test_cli_streams_and_reports_refusal(monkeypatch, app, tmp_path):
     res = run_cli(monkeypatch, app, tmp_path, ["--effort", "medium"],
                   client=FakeClient(FakeStream(["advice text"], stop="refusal")))
     assert res.exit_code == 0, res.output
-    assert "Sending 1 finding(s) and 4 lines of your code" in res.output
+    assert "Sending 1 finding and 4 lines of your code" in res.output
     assert "advice text" in res.output and "Claude declined" in res.output

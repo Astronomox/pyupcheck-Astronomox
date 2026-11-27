@@ -67,7 +67,7 @@ jobs:
         # pinned: a new release of either can't fail this job unannounced
         run: python -m pip install -e ".[ai,ui]" ruff==0.17.6 mypy==2.4.1
       - name: ruff
-        run: ruff check depshift tests
+        run: ruff check depshift tests examples
       - name: mypy
         run: mypy
 

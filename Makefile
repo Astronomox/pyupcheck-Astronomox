@@ -22,7 +22,7 @@ bench:
 	python benchmarks/run.py
 
 lint:
-	python -m ruff check depshift tests
+	python -m ruff check depshift tests examples
 	python -m mypy
 
 build: clean

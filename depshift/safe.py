@@ -44,18 +44,35 @@ def plain(text: object, keep_newlines: bool = True) -> str:
     return s
 
 
-_MD_LINK = re.compile(r"!?\[([^\[\]\n]{0,300})\]\([^()\s]{0,2000}\)")
+# a link or image with a real target ([text](https://...)), not code that
+# merely looks like one (``np.cast[dtype](arg)``)
+_MD_LINK = re.compile(r"!?\[([^\[\]\n]{0,300})\]\((?:https?://|mailto:|//|/|#|www\.)[^()\s]{0,2000}\)")
+# an inline code span: a run of backticks, then text, then the same run
+_CODE_SPAN = re.compile(r"(`+)(?:(?!\1).){1,2000}?\1")
 
 
-def md_text(text: object) -> str:
+def _inert(prose: str) -> str:
+    prose = _MD_LINK.sub(r"\1", prose)                       # [text](url) -> text; images too
+    prose = prose.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    prose = re.sub(r"@(?=[\w-])", "@\u2060", prose)          # word joiner: no mention, no ping
+    return re.sub(r"(?<![\w&])#(?=\d)", "#\u2060", prose)    # no issue/PR cross-links
+
+
+def md_text(text: object, in_table: bool = False) -> str:
     """Untrusted prose for a Markdown comment: no HTML, images, links,
-    @-mentions (which notify people) or #-references, no table breakage."""
+    @-mentions (which notify people) or #-references. Code spans are kept
+    exactly: GitHub shows their contents literally, so nothing in them is
+    live, and changing them would corrupt the code. In a table cell, ``|``
+    is escaped (it would end the cell)."""
     s = plain(text, keep_newlines=False)
-    s = _MD_LINK.sub(r"\1", s)                            # [text](url) -> text; images too
-    s = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    s = re.sub(r"@(?=[\w-])", "@\u2060", s)                 # word joiner: no mention, no ping
-    s = re.sub(r"(?<![\w&])#(?=\d)", "#\u2060", s)          # no issue/PR cross-links
-    return s.replace("|", "\\|")
+    parts, pos = [], 0
+    for span in _CODE_SPAN.finditer(s):
+        parts.append(_inert(s[pos:span.start()]))
+        parts.append(span.group(0))
+        pos = span.end()
+    parts.append(_inert(s[pos:]))
+    s = "".join(parts)
+    return s.replace("|", "\\|") if in_table else s
 
 
 def md_code(text: object, in_table: bool = False) -> str:

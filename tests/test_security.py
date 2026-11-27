@@ -15,7 +15,7 @@ import zipfile
 import httpx
 import pytest
 
-from depshift import apisurface, changelog, http
+from depshift import apisurface, changelog, http, output
 from depshift.safe import md_code, md_text, plain
 
 # ── URLs pyupcheck will fetch ─────────────────────────────────────────────────
@@ -169,12 +169,11 @@ def test_workflow_commands_neutralised_in_actions(monkeypatch):
 def test_terminal_output_has_no_injected_sequences(monkeypatch):
     from rich.console import Console
 
-    from depshift import cli
     buf = io.StringIO()
-    monkeypatch.setattr(cli, "console", Console(file=buf, force_terminal=True, width=120))
+    monkeypatch.setattr(output, "console", Console(file=buf, force_terminal=True, width=120))
     risk = {"file": "/p/app.py", "line": 3, "code": "x = 1 # \x1b]0;code\x07", "severity": "breaking",
             "change_description": EVIL, "replacement": "y\x1b[2J", "precise": True}
-    cli._print_terminal_result({"package": "pkg", "current_version": "1", "target_version": "2", "risks": [risk],
+    output.print_result({"package": "pkg", "current_version": "1", "target_version": "2", "risks": [risk],
                                 "breaking_count": 1, "deprecated_count": 0, "safe_count": 0,
                                 "warnings": ["could not read \x1b]0;w\x07"]}, False)
     out = buf.getvalue()
@@ -185,7 +184,8 @@ def test_markdown_is_inert():
     text = md_text("ping @octocat, see #12, <img src=x onerror=alert(1)> ![t](https://t.example/p.png) "
                    "[click](https://evil.example) a|b")
     assert "@octocat" not in text and "<img" not in text and "](" not in text and "#12" not in text
-    assert "a\\|b" in text and "click" in text
+    assert "a|b" in text and "click" in text  # a pipe only needs escaping in a table cell
+    assert md_text("a|b", in_table=True) == "a\\|b"
     code = md_code("x = `a` + ``b``")
     assert code.startswith("```") and code.endswith("```")
 
@@ -208,7 +208,7 @@ def test_review_comment_from_hostile_notes_and_code():
 
 
 def test_tidy_note_is_linear():
-    from depshift.cli import tidy_note
+    from depshift.output import tidy_note
     for ch in ("[", " ", "[a](", "PR 1 ", "("):
         start = time.perf_counter()
         tidy_note(ch * 500_000 + "x")
@@ -241,7 +241,7 @@ def test_review_accepts_real_refs():
 
 
 def _change(path, before, after):
-    from depshift.cli import FileChange
+    from depshift.project import FileChange
     return FileChange(str(path), path.name, before, after, [])
 
 
@@ -328,3 +328,12 @@ def test_website_csp_matches_its_script():
     csp = next(h["value"] for h in headers if h["key"] == "Content-Security-Policy")
     assert f"script-src '{digest}'" in csp and "frame-ancestors 'none'" in csp
     assert not re.search(r"\son[a-z]+=\"", page)  # inline handlers would be blocked
+
+
+def test_code_spans_survive_markdown_sanitising():
+    # found on a real numpy 2 review: [dtype](arg) inside code was taken for a link
+    note = "The literal replacement for `np.cast[dtype](arg)` is `np.asarray(arg, dtype=dtype)`."
+    assert md_text(note) == note
+    assert md_text("see [docs](https://evil.example) and `a|b`") == "see docs and `a|b`"
+    assert md_text("`a|b` x|y", in_table=True) == "`a\\|b` x\\|y"
+    assert md_text("``@octocat <b>`` @octocat") == "``@octocat <b>`` @⁠octocat"

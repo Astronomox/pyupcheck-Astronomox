@@ -1,49 +1,67 @@
 """CLI entry point for pyupcheck."""
 
-import json as _json
 import os
 import re
 import sys
 import time
-from datetime import datetime
+from contextlib import nullcontext
 
 import click
-from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 from rich.table import Table
+from rich.text import Text
 
 from depshift import __version__
 from depshift import cache as cache_mod
-from depshift.analyzer import analyze
-from depshift.apisurface import get_api_changes, get_return_types
 from depshift.changelog import (
-    collect_changes,
     get_available_versions,
     get_changes_between,
-    get_current_version,
     get_pypi_info,
 )
 from depshift.config import load_config
 from depshift.deps import discover_dependencies, normalize_name, requirement_files
-from depshift.lockfiles import locked_version, locked_versions
+from depshift.lockfiles import locked_versions
 from depshift.names import import_names_for
-from depshift.precise import match_precise
-from depshift.report import render_github_annotations, render_html, render_markdown, render_sarif
-from depshift.scanner import imported_top_modules, scan_directory
+from depshift.output import (
+    View,
+    console,
+    diff_text,
+    display_path,
+    emit,
+    err_console,
+    esc,
+    is_major,
+    plural,
+    print_changes,
+    print_report,
+    print_result,
+    print_stacked,
+    print_watch_event,
+    styled_table,
+    sym,
+)
+from depshift.project import (
+    check_change,
+    check_dependency,
+    filter_by_since,
+    highest_safe_version,
+    is_exact_pin,
+    latest_allowed_version,
+    not_newer,
+    outdated_status,
+    plan_project_migration,
+    project_dependencies,
+    project_version,
+    release_history,
+    replace_file,
+    run_check,
+    should_fail,
+    specifier_of,
+)
+from depshift.report import render_github_annotations, render_sarif
+from depshift.scanner import scan_directory
 
-# highlight=False: pyupcheck picks its colours; rich's automatic highlighting
-# split versions into coloured fragments (2.2 . 5) and recoloured code
-console = Console(highlight=False)
-# notes that must never mix into a report written to stdout (-f json)
-err_console = Console(stderr=True, highlight=False)
-
-SEVERITY_RANK = {"breaking": 0, "deprecated": 1, "warning": 2}
 FORMATS = click.Choice(["terminal", "json", "md", "html", "sarif", "github"])
-# -v: also list low-confidence mentions (release notes that name an API you
-# use without saying it changed)
-_VERBOSE = False
-# the project being checked: file paths are shown relative to it
-_ROOT: str | None = None
 
 
 _REPORTED_CONFIG: set[str] = set()
@@ -56,736 +74,8 @@ def _config(directory: str):
     if directory not in _REPORTED_CONFIG:
         _REPORTED_CONFIG.add(directory)
         for problem in cfg.problems:
-            err_console.print(f"[yellow]config:[/] {_esc(problem)}")
+            err_console.print(f"[yellow]config:[/] {esc(problem)}")
     return cfg
-
-
-def styled_table(*columns: str, **kwargs) -> Table:
-    """A table in pyupcheck's one style: a rule under bold headers, no box."""
-    from rich import box
-    t = Table(box=box.SIMPLE_HEAD, show_edge=False, pad_edge=False, header_style="bold", padding=(0, 1),
-              **kwargs)
-    for column in columns:
-        t.add_column(column)
-    return t
-
-
-def get_installed_version(package: str) -> str | None:
-    try:
-        from importlib.metadata import version
-        return version(package)
-    except Exception:
-        return None
-
-
-def _filter_by_since(changes, since_str: str, package: str):
-    """Filter changelog entries to only those introduced after since_str (YYYY-MM-DD)."""
-    try:
-        since_dt = datetime.strptime(since_str, "%Y-%m-%d")
-    except ValueError:
-        return changes  # bad date format, return unfiltered
-
-    try:
-        info = get_pypi_info(package)
-        releases = info.get("releases", {})
-    except Exception:
-        return changes  # can't fetch, return unfiltered
-
-    def version_date(ver: str) -> datetime | None:
-        for f in releases.get(ver, []):
-            upload = f.get("upload_time")
-            if upload:
-                try:
-                    return datetime.strptime(upload[:10], "%Y-%m-%d")
-                except Exception:
-                    pass
-        return None
-
-    filtered = []
-    for c in changes:
-        vd = version_date(c.version)
-        if vd is None:
-            continue  # unknown date — exclude when filtering by date
-        if vd >= since_dt:
-            filtered.append(c)
-    return filtered
-
-
-def latest_allowed_version(package: str, spec: str | None = None, fresh: bool = False) -> str | None:
-    """Newest non-yanked, non-prerelease version on PyPI that satisfies spec.
-
-    With no spec this is the latest release. A constraint like ``>=2,<3`` means
-    the project will never install 3.x, so checking against 3.x is noise.
-    """
-    from packaging.specifiers import InvalidSpecifier, SpecifierSet
-    from packaging.version import InvalidVersion, Version
-    info = get_pypi_info(package, fresh=True) if fresh else get_pypi_info(package)
-    try:
-        spec_set = SpecifierSet(spec or "")
-    except InvalidSpecifier:
-        spec_set = SpecifierSet("")
-    best = None
-    for ver, files in (info.get("releases") or {}).items():
-        try:
-            v = Version(ver)
-        except InvalidVersion:
-            continue
-        if v.is_prerelease or v.is_devrelease:
-            continue
-        if files and all(f.get("yanked") for f in files):
-            continue
-        if spec_set and v not in spec_set:
-            continue
-        if best is None or v > best:
-            best = v
-    return str(best) if best is not None else None
-
-
-def specifier_of(raw: str) -> str | None:
-    """The version specifier of a requirement string, e.g. '>=2,<3'."""
-    from packaging.requirements import InvalidRequirement, Requirement
-    try:
-        spec = str(Requirement(raw).specifier)
-    except InvalidRequirement:
-        return None
-    return spec or None
-
-
-def _satisfies(version: str, spec: str) -> bool:
-    from packaging.specifiers import InvalidSpecifier, SpecifierSet
-    from packaging.version import InvalidVersion, Version
-    try:
-        return Version(version) in SpecifierSet(spec)
-    except (InvalidSpecifier, InvalidVersion):
-        return True
-
-
-def _is_exact_pin(spec: str | None) -> bool:
-    if not spec:
-        return False
-    parts = [p.strip() for p in spec.split(",") if p.strip()]
-    return len(parts) == 1 and parts[0].startswith(("==", "===")) and "*" not in parts[0]
-
-
-def _not_newer(target: str, current: str) -> bool:
-    """True when target is the same as or older than current (nothing to upgrade)."""
-    from packaging.version import InvalidVersion, Version
-    try:
-        return Version(target) <= Version(current)
-    except InvalidVersion:
-        return target == current
-
-
-def _lower_bound(spec: str | None) -> str | None:
-    """The minimum version a spec allows (>=, ~=, ==), used as 'current'
-    when nothing is installed or pinned."""
-    from packaging.specifiers import InvalidSpecifier, SpecifierSet
-    if not spec:
-        return None
-    try:
-        specs = SpecifierSet(spec)
-    except InvalidSpecifier:
-        return None
-    for sp in specs:
-        if sp.operator in (">=", "~=", "==", "===") and "*" not in sp.version:
-            return sp.version
-    return None
-
-
-UNDECLARED = "(imported, not declared)"
-
-
-def _undeclared_imports(directory: str, deps, locks, ignored, exclude_dirs):
-    """Locked packages the code imports directly without declaring them.
-
-    They arrive transitively (``urllib3`` via ``requests``), so their version
-    can change without you choosing to upgrade them, and they break the same.
-    """
-    from depshift.deps import Dependency
-    if not locks:
-        return []
-    declared = {d.name for d in deps}
-    imported = imported_top_modules(directory, exclude_dirs)
-    out = []
-    for name, lock in sorted(locks.items()):
-        if name in declared or name in ignored:
-            continue
-        if any(n in imported for n in import_names_for(name)):
-            out.append(Dependency(name=name, pinned_version=lock.version, raw=name,
-                                  source=f"{lock.source} {UNDECLARED}"))
-    return out
-
-
-def _pinned_version(directory: str, package: str) -> str | None:
-    """The ==pinned version of package in the project's dependency files, if any."""
-    target = normalize_name(package)
-    for dep in discover_dependencies(directory):
-        if dep.name == target and dep.pinned_version:
-            return dep.pinned_version
-    return None
-
-
-def _baseline_version(package: str, directory: str, pinned: str | None = None,
-                      spec: str | None = None, locked: str | None = "auto"):
-    """(version, source) the project is on now, most trustworthy first: the
-    lockfile (what the project runs), an exact pin, what's installed here (if
-    it fits the project's constraint), then the lowest version the constraint
-    allows. (None, None) when there is no baseline."""
-    if locked == "auto":
-        locked = locked_version(directory, package)
-    if locked:
-        return locked, "lockfile"
-    pin = pinned or _pinned_version(directory, package)
-    if pin:
-        return pin, "pinned"
-    here = get_installed_version(package)
-    if here and not (spec and not _satisfies(here, spec)):
-        return here, "installed"
-    if spec:
-        # unpinned range: the oldest version it allows is the riskiest baseline
-        low = _lower_bound(spec)
-        if low:
-            return low, "constraint lower bound"
-    return None, None
-
-
-def _cell_fields(usage) -> dict:
-    """A notebook finding's cell and line within it (its "line" is the
-    .ipynb file's); nothing for a .py file."""
-    if getattr(usage, "cell", None) is None:
-        return {}
-    return {"cell": usage.cell, "cell_line": usage.cell_line}
-
-
-def project_dependencies(directory: str, cfg):
-    """Declared dependencies (minus ignored ones) plus packages the code
-    imports that are only present through the lockfile; and the locks."""
-    deps = discover_dependencies(directory)
-    ignored = {normalize_name(p) for p in cfg.ignore_packages}
-    deps = [d for d in deps if d.name not in ignored]
-    locks = locked_versions(directory)
-    deps += _undeclared_imports(directory, deps, locks, ignored, cfg.exclude_dirs)
-    return deps, locks
-
-
-def check_dependency(dep, locks, directory: str, cfg, github_token: str | None = None,
-                     deep: bool = False, since: str | None = None) -> dict | None:
-    """One dependency of a project, checked against its latest allowed version."""
-    lock = locks.get(dep.name)
-    r = _run_single_check(dep.name, None, directory, github_token, cfg,
-                          suppress_errors=True, since=since, pinned=dep.pinned_version,
-                          deep=deep, spec=specifier_of(dep.raw),
-                          locked=lock.version if lock else None)
-    if r and dep.source.endswith(UNDECLARED):
-        r["undeclared"] = True
-        r.setdefault("warnings", []).append(
-            f"imported by your code but not declared as a dependency "
-            f"(only present via {lock.source if lock else 'another package'})")
-    return r
-
-
-def _run_single_check(package: str, target_version: str | None, directory: str,
-                      github_token: str | None, cfg, suppress_errors: bool = False,
-                      since: str | None = None, deep: bool = False,
-                      pinned: str | None = None, spec: str | None = None,
-                      locked: str | None = "auto") -> dict | None:
-    installed, current_source = _baseline_version(package, directory, pinned, spec, locked)
-
-    if not target_version:
-        try:
-            # an exact pin says where you are, not where you may go
-            range_spec = None if _is_exact_pin(spec) else spec
-            target_version = latest_allowed_version(package, range_spec) or get_current_version(package)
-        except Exception as e:
-            if not suppress_errors:
-                console.print(f"[red]{package}:[/] not found on PyPI ({e})")
-            return None
-
-    if installed and _not_newer(target_version, installed):
-        return {
-            "package": package, "current_version": installed,
-            "target_version": target_version, "risks": [],
-            "safe_count": 0, "breaking_count": 0, "deprecated_count": 0,
-            "up_to_date": True,
-        }
-
-    if not installed:
-        # Comparing against 0.0.0 would report every change in the package's
-        # history. Be honest instead.
-        return {
-            "package": package, "current_version": None,
-            "target_version": target_version, "risks": [],
-            "safe_count": 0, "breaking_count": 0, "deprecated_count": 0,
-            "unchecked": True,
-            "warnings": ["current version unknown: install the package, pin it with ==, "
-                         "or give a lower bound (>=) so there is a baseline to compare"],
-        }
-
-    current = installed
-    import_names = import_names_for(package)
-    usages = scan_directory(directory, import_names, exclude_dirs=cfg.exclude_dirs)
-    if not usages:
-        return {
-            "package": package, "current_version": current,
-            "target_version": target_version, "risks": [],
-            "safe_count": 0, "breaking_count": 0, "deprecated_count": 0,
-            "no_usages": True, "import_names": import_names,
-        }
-
-    warnings: list[str] = []
-    try:
-        report = collect_changes(package, current, target_version, github_token=github_token)
-        changes = report.entries
-        if report.sources_failed:
-            warnings.append("could not read: " + ", ".join(report.sources_failed))
-        changelog_checked = report.checked
-    except Exception as e:
-        changes = []
-        changelog_checked = False
-        warnings.append(f"changelog lookup failed ({type(e).__name__})")
-
-    if since and changes:
-        changes = _filter_by_since(changes, since, package)
-
-    risks, safe = analyze(usages, changes, import_names)
-
-    min_rank = SEVERITY_RANK.get(cfg.min_severity, 2)
-    risks = [r for r in risks if SEVERITY_RANK.get(r.severity, 2) <= min_rank]
-
-    # deep mode: real API surface diff, argument-level precision
-    precise_findings = []
-    if deep:
-        try:
-            api_changes = get_api_changes(package, current, target_version)
-        except Exception as e:
-            api_changes = None
-            warnings.append(f"deep API diff failed ({type(e).__name__})")
-        if api_changes is None and not any("deep" in w for w in warnings):
-            warnings.append("deep API diff unavailable (no Python sources for one of the versions)")
-        if api_changes:
-            try:
-                returns = get_return_types(package, current, target_version)
-            except Exception:
-                returns = {}
-            precise = match_precise(usages, api_changes, import_names, returns)
-            # dedupe against changelog risks by (file, line, api)
-            existing_keys = {(r.usage.file, r.usage.line, r.usage.attr_chain) for r in risks}
-            for pr in precise:
-                key = (pr.usage.file, pr.usage.line, pr.usage.attr_chain)
-                if key in existing_keys:
-                    continue  # changelog already flagged this exact usage
-                existing_keys.add(key)
-                precise_findings.append({
-                    "file": pr.usage.file, "line": pr.usage.line,
-                    **_cell_fields(pr.usage),
-                    "code": pr.usage.code, "api": pr.usage.attr_chain,
-                    "severity": "breaking", "change_kind": pr.change.kind,
-                    "change_description": pr.reason,
-                    "change_version": target_version,
-                    "precise": True, "confidence": "high",
-                    "replacement": getattr(pr.change, "replacement", None),
-                })
-
-    risk_dicts = [
-        {
-            "file": r.usage.file, "line": r.usage.line, "code": r.usage.code,
-            **_cell_fields(r.usage),
-            "api": r.usage.attr_chain, "severity": r.severity,
-            "change_kind": r.change.kind,
-            "change_description": r.change.description,
-            "change_version": r.change.version,
-            "confidence": getattr(r.change, "confidence", "medium"),
-            "replacement": getattr(r.change, "replacement", None),
-        }
-        for r in risks
-    ]
-    # prepend precise (fact-based) findings — they're more trustworthy
-    all_risks = _dedupe_risks(precise_findings + risk_dicts)
-
-    return {
-        "package": package,
-        "current_version": current,
-        "target_version": target_version,
-        "risks": all_risks,
-        "safe_count": len(safe),
-        "breaking_count": sum(1 for r in all_risks if r["severity"] == "breaking"),
-        "deprecated_count": sum(1 for r in all_risks if r["severity"] == "deprecated"),
-        "deep": deep,
-        "current_source": current_source,
-        "warnings": warnings,
-        # nothing could be read at all: "OK" would be a lie
-        "unchecked": not changelog_checked and not (deep and api_changes is not None),
-    }
-
-
-def _dedupe_risks(risks: list[dict]) -> list[dict]:
-    """One finding per (file, line, API): the most severe, verified first.
-
-    A removed API usually also has an earlier deprecation notice; once a
-    line is known to break, repeating that it was deprecated is noise.
-    """
-    order = {"breaking": 0, "deprecated": 1, "warning": 2}
-    best: dict[tuple, dict] = {}
-    for r in risks:
-        key = (r["file"], r["line"], r["api"])
-        cur = best.get(key)
-        rank = (order.get(r["severity"], 3), 0 if r.get("precise") else 1)
-        if cur is None or rank < (order.get(cur["severity"], 3), 0 if cur.get("precise") else 1):
-            best[key] = r
-    kept = {id(r) for r in best.values()}
-    return [r for r in risks if id(r) in kept]
-
-
-def _should_fail(results: list[dict], fail_on: str) -> bool:
-    breaking = sum(r["breaking_count"] for r in results)
-    deprecated = sum(r["deprecated_count"] for r in results)
-    any_risk = sum(len(r["risks"]) for r in results)
-    if fail_on == "never":
-        return False
-    if fail_on == "breaking":
-        return breaking > 0
-    if fail_on == "deprecated":
-        return breaking > 0 or deprecated > 0
-    if fail_on == "any":
-        return any_risk > 0
-    return breaking > 0
-
-
-def _emit(results: list[dict], fmt: str, output: str | None, quiet: bool):
-    if fmt == "json":
-        # the report's shape, for tools that read it: bumped on a breaking change
-        text = _json.dumps({"schema_version": 1, "pyupcheck_version": __version__, "results": results}, indent=2)
-    elif fmt == "md":
-        text = render_markdown(results)
-    elif fmt == "html":
-        text = render_html(results)
-    elif fmt == "sarif":
-        text = render_sarif(results)
-    elif fmt == "github":
-        text = render_github_annotations(results)
-    else:
-        text = None
-
-    if text is not None:
-        if output:
-            with open(output, "w", encoding="utf-8") as f:
-                f.write(text)
-            if not quiet:
-                console.print(f"Report written to [bold]{output}[/]")
-        else:
-            print(text)
-        return
-
-    for r in results:
-        _print_terminal_result(r, quiet)
-
-
-def _esc(text: str) -> str:
-    """Text shown as is: never read as rich markup ("[cell 3] x = a[0]"), and
-    without terminal control sequences (it may come from release notes, PyPI
-    or a repository you just cloned)."""
-    from rich.markup import escape
-
-    from depshift.safe import plain
-    return escape(plain(text))
-
-
-# bounded patterns: release notes are untrusted input, and an unbounded
-# "[" or whitespace run made these quadratic
-_MD_LINK = re.compile(r"\[([^\[\]\n]{1,300})\]\((?:https?://|#)[^()\s]{0,2000}\)")
-_PR_CREDIT = re.compile(r"(?:(?<=\s)|^)\(?\b(?:PR|Pull request)\s+#?\d+(?:\s+by\s+@?[\w-]+)?\)?\.?\s*$",
-                        re.IGNORECASE)
-_LEAD_TAGS = re.compile(r"^\W*?(?:\*\*)?(?:\[[\w ]+\]\s*)+(?:\*\*)?\s*")
-
-
-def tidy_note(text: str, limit: int = 240) -> str:
-    """Release-note text as plain prose: no Markdown links, emoji, category
-    tags, PR credits or reST roles, cut at a sentence (or word) boundary."""
-    import unicodedata
-
-    from depshift.review import _clean
-    from depshift.safe import plain
-    # a note is a sentence or two: cap the input before any pattern runs on it
-    text = plain(text, keep_newlines=False)[: max(limit * 4, 2000)]
-    text = _MD_LINK.sub(r"\1", text)
-    text = _LEAD_TAGS.sub("", text)
-    text = "".join(ch for ch in text if unicodedata.category(ch) not in ("So", "Cn", "Co")
-                   and ch not in "\ufe0f\u200d")
-    text = text.replace("**", "")
-    text = _clean(text).replace("\\|", "|").strip(" -*")
-    text = _PR_CREDIT.sub("", text).strip()
-    if len(text) > limit:
-        cut = text[:limit]
-        end = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
-        text = cut[:end + 1] if end > limit // 3 else cut.rsplit(" ", 1)[0].rstrip(",;:") + "…"
-    return text
-
-
-def _clean_note(text: str) -> str:
-    """Release-note text for the terminal: tidy, and nothing rich would read
-    as a style tag."""
-    from rich.markup import escape
-    return escape(tidy_note(text))
-
-
-def _print_summary(results: list[dict], elapsed: float | None = None) -> None:
-    """The end of a check-all: totals, sources that couldn't be read (once,
-    not under every package), and the commands that fix what can be fixed."""
-    breaking = [r for r in results if r.get("breaking_count")]
-    total_breaking = sum(r["breaking_count"] for r in results)
-    total_deprecated = sum(r["deprecated_count"] for r in results)
-    unchecked = [r for r in results if r.get("unchecked") and not r.get("risks")]
-    safe = sum(1 for r in results if not r.get("breaking_count") and not r.get("deprecated_count")
-               and not (r.get("unchecked") and not r.get("risks")))
-
-    console.print()
-    console.rule(style="dim")
-    parts = [f"[bold red]{total_breaking} breaking[/]" if total_breaking else "[green]0 breaking[/]",
-             f"[yellow]{total_deprecated} deprecated[/]" if total_deprecated else "[dim]0 deprecated[/]",
-             f"[green]{safe} safe[/]"]
-    if unchecked:
-        parts.append(f"[magenta]{len(unchecked)} not checked[/]")
-    dot = _sym(" · ", " | ")
-    took = f" in {elapsed:.1f}s" if elapsed is not None else ""
-    console.print(dot.join(parts) + f" [dim]across {len(results)} package{'s' if len(results) != 1 else ''}{took}[/]")
-
-    # "could not read: GitHub releases (HTTP 403)" under every package is
-    # noise: say it once, with what to do about it
-    failed: dict[str, int] = {}
-    for r in results:
-        for w in r.get("warnings", []):
-            if w.startswith("could not read: "):
-                for src in w[len("could not read: "):].split(", "):
-                    failed[src] = failed.get(src, 0) + 1
-    for src, n in sorted(failed.items(), key=lambda kv: -kv[1]):
-        limited = "GitHub" in src and ("403" in src or "429" in src)
-        hint = " Set GITHUB_TOKEN for GitHub's higher limits." if limited else ""
-        packages = f"{n} package{'s' if n != 1 else ''}"
-        console.print(f"[magenta]note:[/] [dim]couldn't read {_esc(src)} for {packages}.{hint}[/]")
-    if unchecked:
-        console.print("[magenta]note:[/] [dim]packages that couldn't be checked are not counted as safe[/]")
-
-    if breaking:
-        console.print("\n[dim]Fix what can be fixed automatically (shows the diff first):[/]")
-        for r in breaking:
-            console.print(f"  [cyan]pyupcheck migrate {r['package']} {r['target_version']}[/]")
-    elif not total_deprecated and not unchecked:
-        console.print(f"[green]{_sym('✓', 'OK:')} Every checked package is safe to upgrade.[/]")
-
-
-def _sym(fancy: str, plain: str) -> str:
-    """A symbol the console can print: ✗ ✓ → where it can, x ok -> where not."""
-    enc = (getattr(console.file, "encoding", None) or "utf-8").lower()
-    try:
-        fancy.encode(enc)
-        return fancy
-    except (UnicodeEncodeError, LookupError):
-        return plain
-
-
-def _badge(text: str, style: str) -> str:
-    return f"[{style}] {text} [/]"
-
-
-def _print_terminal_result(r: dict, quiet: bool, hide_source_notes: bool = False):
-    """One package's result. ``hide_source_notes`` leaves out "could not
-    read: ..." notes, for a caller that summarises them once."""
-    from rich.padding import Padding
-
-    arrow = _sym("→", "->")
-    cur = r.get("current_version") or "?"
-    if r.get("up_to_date"):
-        if not quiet:
-            console.print(f"[bold]{r['package']}[/] {r['target_version']}  "
-                          f"{_badge(_sym('✓', '') + ' UP TO DATE', 'black on green')}")
-        return
-    if r.get("no_usages"):
-        if not quiet:
-            console.print(f"[bold]{r['package']}[/] {cur} {arrow} {r['target_version']}  "
-                          f"[dim]not used in your code, safe to upgrade[/]")
-        return
-
-    notes = [w for w in r.get("warnings", [])
-             if not (hide_source_notes and w.startswith("could not read: "))]
-
-    if r.get("unchecked") and not r["risks"]:
-        console.print(f"[bold]{r['package']}[/] {cur} {arrow} {r['target_version']}  "
-                      f"{_badge('? NOT CHECKED', 'black on magenta')}")
-        for w in notes:
-            console.print(Padding(f"[dim]{_esc(w)}[/]", (0, 0, 0, 4)))
-        return
-
-    via = " [dim](locked)[/]" if r.get("current_source") == "lockfile" else ""
-    undeclared = " [magenta](undeclared)[/]" if r.get("undeclared") else ""
-    header = f"[bold]{r['package']}[/]{undeclared} {cur}{via} [dim]{arrow}[/] {r['target_version']}"
-    if r["breaking_count"]:
-        badge = _badge(f"{_sym('✗', 'x')} {r['breaking_count']} BREAKING", "bold white on red")
-        console.print(f"{header}  {badge}")
-    elif r["deprecated_count"]:
-        console.print(f"{header}  {_badge('! ' + str(r['deprecated_count']) + ' DEPRECATED', 'black on yellow')}")
-    else:
-        if quiet:
-            return
-        safe = r["safe_count"]
-        console.print(f"{header}  {_badge(_sym('✓', '') + ' OK', 'black on green')} "
-                      f"[dim]{safe} usage{'s' if safe != 1 else ''} safe[/]")
-
-    _print_findings(r)
-    if not quiet:
-        for w in notes:
-            console.print(Padding(f"[magenta]note:[/] [dim]{_esc(w)}[/]", (0, 0, 0, 4)))
-
-
-def _rel(path: str) -> str:
-    """A path as the user knows it: relative to the project checked (or to
-    where pyupcheck runs, when that's shorter)."""
-    options = []
-    for base in (_ROOT, os.getcwd()):
-        if base:
-            try:
-                options.append(os.path.relpath(path, base))
-            except ValueError:
-                pass
-    return min(options, key=len) if options else path
-
-
-def _distinct(risks: list[dict]) -> list[dict]:
-    """One finding per line and note: a line that uses an API three ways
-    (``update(x).where(...)``) is one finding."""
-    seen, out = set(), []
-    for k in risks:
-        key = (k["file"], k["line"], k["severity"], tidy_note(k["change_description"]))
-        if key not in seen:
-            seen.add(key)
-            out.append(k)
-    return out
-
-
-def _print_findings(r: dict) -> None:
-    """Breaking and deprecated lines one by one; mentions ("worth a look")
-    grouped by the release note, with where your code uses it."""
-    from rich.padding import Padding
-
-    arrow = _sym("→", "->")
-    risks = _distinct(r["risks"])
-    for risk in (k for k in risks if k["severity"] != "warning"):
-        color = "red" if risk["severity"] == "breaking" else "yellow"
-        mark = _sym("✗", "x") if risk["severity"] == "breaking" else "!"
-        if risk.get("precise"):
-            tag = " [cyan]verified[/]"
-        elif risk.get("confidence") == "low":
-            tag = " [dim](low confidence)[/]"
-        else:
-            tag = ""
-        console.print(f"  [{color}]{mark}[/] [bold]{_esc(_rel(risk['file']))}:{risk['line']}[/]{tag}  "
-                      f"{_esc(risk['code'].strip())}", overflow="ellipsis", no_wrap=True)
-        console.print(Padding(f"[dim]{_clean_note(risk['change_description'])}[/]", (0, 0, 0, 4)))
-        if risk.get("replacement"):
-            console.print(Padding(f"[green]{arrow} use {_esc(risk['replacement'])}[/]", (0, 0, 0, 4)))
-
-    mentions = [k for k in risks if k["severity"] == "warning"]
-    shown = mentions if _VERBOSE else [k for k in mentions if k.get("confidence") != "low"]
-    groups: dict[str, list[dict]] = {}
-    for k in shown:
-        groups.setdefault(tidy_note(k["change_description"]), []).append(k)
-    for note, ks in groups.items():
-        where = sorted({(_rel(k["file"]), k["line"]) for k in ks})
-        places = ", ".join(f"{f}:{n}" for f, n in where[:4])
-        more = f" +{len(where) - 4} more" if len(where) > 4 else ""
-        console.print(f"  [blue]?[/] [dim]worth a look,[/] {_esc(places)}[dim]{more}[/]")
-        console.print(Padding(f"[dim]{_esc(note)}[/]", (0, 0, 0, 4)))
-    hidden = len({(k["file"], k["line"]) for k in mentions}) - len({(k["file"], k["line"]) for k in shown})
-    if hidden > 0 and not _VERBOSE:
-        console.print(f"  [dim]{hidden} more line{'s' if hidden != 1 else ''} named in release notes "
-                      f"without a stated change (-v to list)[/]")
-
-
-def _row(r: dict):
-    """(order, status text, style) for the results table."""
-    if r.get("up_to_date"):
-        return 5, _sym("✓", "ok") + " up to date", "green"
-    if r.get("unchecked") and not r["risks"]:
-        return 2, "? not checked", "magenta"
-    if r["breaking_count"]:
-        return 0, f"{_sym('✗', 'x')} {r['breaking_count']} breaking", "bold red"
-    if r["deprecated_count"]:
-        return 1, f"! {r['deprecated_count']} deprecated", "yellow"
-    if r.get("no_usages"):
-        return 4, _sym("✓", "ok") + " safe", "green"
-    return 3, _sym("✓", "ok") + " safe", "green"
-
-
-def _is_major(cur: str | None, new: str | None) -> bool:
-    if not cur or not new:
-        return False
-    try:
-        from packaging.version import Version
-        a, b = Version(cur), Version(new)
-    except Exception:
-        return False
-    return b.major > a.major
-
-
-def _print_table(results: list[dict]) -> None:
-    """Every package in one table, what needs attention first. Packages that
-    are already up to date are listed on one line after it."""
-    width = console.width
-    rows = sorted((r for r in results if not r.get("up_to_date")),
-                  key=lambda r: (_row(r)[0], r["package"].lower()))
-    table = styled_table(expand=False)
-    table.add_column("Package", no_wrap=True, overflow="ellipsis", max_width=28)
-    combined = width < 64
-    if combined:
-        table.add_column("Upgrade", no_wrap=True)
-    else:
-        table.add_column("Current", no_wrap=True, style="dim")
-        table.add_column("Latest", no_wrap=True)
-    table.add_column("Status", no_wrap=True)
-    if width >= 80:
-        table.add_column("Your code", overflow="fold")
-    arrow = _sym("→", "->")
-    for r in rows:
-        _, status, style = _row(r)
-        cur = r.get("current_version") or "?"
-        new = r.get("target_version") or "?"
-        major = _is_major(cur, new)
-        latest = f"[yellow]{_esc(new)}[/] [dim]major[/]" if major else _esc(new)
-        name = f"[bold]{_esc(r['package'])}[/]" + (" [magenta]*[/]" if r.get("undeclared") else "")
-        cells = [name]
-        cells += [f"{_esc(cur)} {arrow} {latest}"] if combined else [_esc(cur), latest]
-        cells.append(f"[{style}]{status}[/]")
-        if width >= 80:
-            if r.get("no_usages"):
-                code = "[dim]not imported[/]"
-            elif r.get("unchecked") and not r["risks"]:
-                code = "[dim]couldn't read its release notes[/]"
-            else:
-                lines = {(k["file"], k["line"]) for k in r["risks"]}
-                uses = r.get("safe_count", 0) + len(lines)
-                code = f"{uses} use{'s' if uses != 1 else ''}"
-                looks = {tidy_note(k["change_description"]) for k in r["risks"]
-                         if k["severity"] == "warning" and (_VERBOSE or k.get("confidence") != "low")}
-                if looks:
-                    code += f" [blue]· {len(looks)} to look at[/]"
-            cells.append(code)
-        table.add_row(*cells)
-    if rows:
-        console.print(table)
-    current = sorted(r["package"] for r in results if r.get("up_to_date"))
-    if current:
-        console.print(f"[green]{_sym('✓', 'ok')}[/] [dim]Already up to date ({len(current)}):[/] "
-                      f"[dim]{_esc(', '.join(current))}[/]")
-    if any(r.get("undeclared") for r in results):
-        console.print("[magenta]*[/] [dim]imported by your code but not declared as a dependency[/]")
-
-
-def _needs_details(r: dict) -> bool:
-    if r.get("up_to_date") or r.get("no_usages"):
-        return False
-    if r["breaking_count"] or r["deprecated_count"]:
-        return True
-    return any(k["severity"] == "warning" and (_VERBOSE or k.get("confidence") != "low")
-               for k in r["risks"])
 
 
 class _Ordered(click.Group):
@@ -844,9 +134,8 @@ def show_banner_cmd(static):
 def check(package, target_version, directory, github_token, fmt, output, fail_on,
           min_severity, exclude, no_cache, quiet, since, deep, verbose):
     """Check if upgrading PACKAGE to TARGET_VERSION will break your code."""
-    global _VERBOSE, _ROOT
-    _VERBOSE, _ROOT = verbose, os.path.abspath(directory)
     directory = os.path.abspath(directory)
+    view = View(verbose=verbose, root=directory)
     cfg = _config(directory)
     if fail_on:
         cfg.fail_on = fail_on
@@ -858,14 +147,16 @@ def check(package, target_version, directory, github_token, fmt, output, fail_on
 
     status_msg = f"Deep-checking [bold]{package}[/]..." if deep else f"Checking [bold]{package}[/]..."
     with console.status(status_msg):
-        result = _run_single_check(package, target_version, directory, github_token,
-                                   cfg, suppress_errors=quiet, since=since, deep=deep)
+        result = run_check(package, target_version, directory, github_token, cfg, since=since, deep=deep)
 
     if result is None:
+        if not quiet:
+            console.print(f"[red]{esc(package)}:[/] not found on PyPI. Check the name: "
+                          f"[cyan]pyupcheck versions {esc(package)}[/]")
         sys.exit(2)
 
-    _emit([result], fmt, output, quiet)
-    sys.exit(1 if _should_fail([result], cfg.fail_on) else 0)
+    emit([result], fmt, output, quiet, view)
+    sys.exit(1 if should_fail([result], cfg.fail_on) else 0)
 
 
 # ── check-all ─────────────────────────────────────────────────────────────────
@@ -894,9 +185,8 @@ def check_all(packages, directory, github_token, fmt, output, fail_on, min_sever
     lines that break or are deprecated, and a summary with the fixes to run.
     Name PACKAGES to check only those: pyupcheck check-all flask numpy
     """
-    global _VERBOSE, _ROOT
-    _VERBOSE, _ROOT = verbose, os.path.abspath(directory)
     directory = os.path.abspath(directory)
+    view = View(verbose=verbose, root=directory)
     cfg = _config(directory)
     if fail_on:
         cfg.fail_on = fail_on
@@ -921,7 +211,7 @@ def check_all(packages, directory, github_token, fmt, output, fail_on, min_sever
             for name in unknown:
                 close = difflib.get_close_matches(name, names, n=1)
                 hint = f" (did you mean {close[0]}?)" if close else ""
-                console.print(f"[red]{_esc(name)}[/] is not a dependency of this project{_esc(hint)}")
+                console.print(f"[red]{esc(name)}[/] is not a dependency of this project{esc(hint)}")
             sys.exit(2)
         deps = [d for d in deps if d.name in wanted]
     started = time.monotonic()
@@ -930,7 +220,7 @@ def check_all(packages, directory, github_token, fmt, output, fail_on, min_sever
     chatty = not quiet and (fmt == "terminal" or bool(output))
     if chatty:
         where = os.path.relpath(directory) if directory != os.getcwd() else "this project"
-        console.print(f"[dim]Checking[/] [bold]{len(deps)}[/] [dim]dependencies in {_esc(where)}[/]\n")
+        console.print(f"[dim]Checking[/] [bold]{len(deps)}[/] [dim]dependencies in {esc(where)}[/]\n")
 
     # collect all results with progress bar, then print
     results = []
@@ -970,22 +260,13 @@ def check_all(packages, directory, github_token, fmt, output, fail_on, min_sever
 
     # print results after progress bar closes cleanly
     if fmt == "terminal":
-        if quiet:
-            for r in results:
-                _print_terminal_result(r, quiet, hide_source_notes=True)
-        else:
-            _print_table(results)
-            detailed = [r for r in sorted(results, key=lambda r: _row(r)[0]) if _needs_details(r)]
-            for r in detailed:
-                console.print()
-                _print_terminal_result(r, quiet, hide_source_notes=True)
-            _print_summary(results, elapsed=time.monotonic() - started)
+        print_report(results, quiet, view, elapsed=time.monotonic() - started)
         if output:
-            _emit(results, "md", output, quiet)
+            emit(results, "md", output, quiet)
     else:
-        _emit(results, fmt, output, quiet)
+        emit(results, fmt, output, quiet)
 
-    sys.exit(1 if _should_fail(results, cfg.fail_on) else 0)
+    sys.exit(1 if should_fail(results, cfg.fail_on) else 0)
 
 
 # ── fix ───────────────────────────────────────────────────────────────────────
@@ -1033,36 +314,41 @@ def fix(directory, dry_run, deep, jobs, github_token, no_cache):
 
     updates: list[dict] = []
     table = styled_table("Package", "Pinned", "Moves to", "Latest", "Why")
-    arrow = _sym("→", "->")
+    stacked: list[tuple[str, str]] = []  # the same rows for a narrow terminal
+    arrow = sym("→", "->")
     for dep, plan in sorted(plans, key=lambda dp: dp[0].name):
-        name, pinned = f"[bold]{_esc(dep.name)}[/]", f"[dim]{_esc(dep.pinned_version)}[/]"
+        name, pinned = f"[bold]{esc(dep.name)}[/]", f"[dim]{esc(dep.pinned_version)}[/]"
         if plan is None or (plan["unchecked"] and plan["safe"] == dep.pinned_version):
             if plan is None or plan["latest"] != dep.pinned_version:
                 table.add_row(name, pinned, "[dim]stays[/]", "", "[magenta]couldn't be checked: never moved[/]")
+                stacked.append((f"{name} {pinned} [dim]stays[/]", "[magenta]couldn't be checked: never moved[/]"))
             continue
         latest = plan["latest"]
-        latest_cell = (f"[yellow]{_esc(latest)}[/] [dim]major[/]" if _is_major(dep.pinned_version, latest)
-                       else _esc(latest))
+        latest_cell = (f"[yellow]{esc(latest)}[/] [dim]major[/]" if is_major(dep.pinned_version, latest)
+                       else esc(latest))
         if plan["safe"] == latest:
             why = "[green]latest is safe[/]"
         else:
             n = plan["breaking_at_latest"]
-            why = (f"[yellow]{_esc(latest)} breaks {n} usage{'s' if n != 1 else ''}[/] [dim]·[/] "
-                   f"[cyan]pyupcheck migrate {_esc(dep.name)} {_esc(latest)}[/]")
+            why = (f"[yellow]{esc(latest)} breaks {n} usage{'s' if n != 1 else ''}[/] [dim]·[/] "
+                   f"[cyan]pyupcheck migrate {esc(dep.name)} {esc(latest)}[/]")
         if plan["safe"] != dep.pinned_version:
             updates.append({"name": dep.name, "old": dep.pinned_version, "new": plan["safe"], "source": dep.source})
-            moves = f"[green]{arrow} {_esc(plan['safe'])}[/]"
+            moves = f"[green]{arrow} {esc(plan['safe'])}[/]"
         else:
             moves = "[dim]stays[/]"
         if plan["safe"] != dep.pinned_version or plan["safe"] != latest:
             table.add_row(name, pinned, moves, latest_cell, why)
+            stacked.append((f"{name} {pinned} {moves}", why))
 
-    if table.row_count:
+    if table.row_count and console.width >= 80:
         console.print(table)
+    elif stacked:
+        print_stacked(stacked)
     if not updates:
-        console.print(f"\n[green]{_sym('✓', 'OK:')} Nothing to move:[/] every pin is at its highest safe version.")
+        console.print(f"\n[green]{sym('✓', 'OK:')} Nothing to move:[/] every pin is at its highest safe version.")
         return
-    files = sorted({_rel(p) for p in req_files})
+    files = sorted({display_path(p) for p in req_files})
     if dry_run:
         console.print(f"\n[bold]{len(updates)}[/] pin{'s' if len(updates) != 1 else ''} would move. "
                       f"[dim]Dry run: nothing written. Without --dry-run, {', '.join(files)} "
@@ -1083,56 +369,15 @@ def fix(directory, dry_run, deep, jobs, github_token, no_cache):
                     updated,
                 )
             if updated != content:
-                _replace_file(req_path, updated)
+                replace_file(req_path, updated)
         except OSError as e:
-            console.print(f"[red]Could not write {_esc(req_path)}:[/] {_esc(str(e))}")
+            console.print(f"[red]Could not write {esc(req_path)}:[/] {esc(str(e))}")
 
-    console.print(f"\n[green]{_sym('✓', 'OK:')} Moved {len(updates)} pin{'s' if len(updates) != 1 else ''}.[/] "
+    console.print(f"\n[green]{sym('✓', 'OK:')} Moved {len(updates)} pin{'s' if len(updates) != 1 else ''}.[/] "
                   "Run [bold]pip install -r requirements.txt[/] to install them.")
 
 
 # ── review ────────────────────────────────────────────────────────────────────
-
-def _fixable_count(package: str, old: str, new: str, directory: str, cfg,
-                   github_token: str | None) -> int | None:
-    """How many breaking usages `migrate` would fix automatically."""
-    from depshift.apisurface import extract_surface
-    from depshift.rewrite import plan_migration
-    names = import_names_for(package)
-    usages = scan_directory(directory, names, exclude_dirs=cfg.exclude_dirs)
-    changes = get_api_changes(package, old, new)
-    surface = extract_surface(package, new)
-    if changes is None or surface is None:
-        return None
-    try:
-        history = collect_changes(package, old, new, github_token=github_token, lookback=True).history
-    except Exception:
-        history = []
-    plan = plan_migration(usages, changes, surface, names, history,
-                          get_return_types(package, old, new))
-    return len(plan.fixes)
-
-
-def _check_change(change, directory: str, cfg, github_token: str | None, deep: bool) -> dict | None:
-    """Check one version change (a review.VersionChange) from its old version
-    to its new one, with what migrate could fix."""
-    r = _run_single_check(change.name, change.new, directory, github_token, cfg,
-                          suppress_errors=True, deep=deep, spec=specifier_of(change.raw),
-                          locked=change.old)
-    if r is None:
-        return None
-    r["current_source"] = "previous"  # the version before the change, not a lockfile's
-    if r.get("up_to_date"):
-        # a downgrade or no-op: nothing new to break
-        r.setdefault("warnings", []).append(f"{change.old} -> {change.new} is not an upgrade; not checked")
-        r["current_version"] = change.old
-    elif deep and r["breaking_count"]:
-        try:
-            r["fixable"] = _fixable_count(change.name, change.old, change.new, directory, cfg,
-                                          github_token)
-        except Exception:
-            r["fixable"] = None
-    return r
 
 
 @main.command(short_help="Check dependency changes in a PR")
@@ -1141,6 +386,9 @@ def _check_change(change, directory: str, cfg, github_token: str | None, deep: b
 @click.option("--deep/--no-deep", default=True, show_default=True,
               help="Diff real API surfaces and count what migrate can fix")
 @click.option("--output", "-o", default=None, help="Write the Markdown report to a file")
+@click.option("--format", "-f", "fmt", type=click.Choice(["auto", "terminal", "md"]), default="auto",
+              show_default=True,
+              help="auto: the terminal view when you run it, Markdown (for a PR comment) when piped or with -o")
 @click.option("--fail-on", type=click.Choice(["breaking", "deprecated", "any", "never"]), default="never",
               show_default=True)
 @click.option("--github-token", envvar="GITHUB_TOKEN", default=None)
@@ -1149,12 +397,13 @@ def _check_change(change, directory: str, cfg, github_token: str | None, deep: b
               help="Also print GitHub Actions annotations (one per finding, shown on the PR diff)")
 @click.option("--sarif", "sarif_out", default=None, help="Also write a SARIF file (GitHub code scanning)")
 @click.option("--no-cache", is_flag=True)
-def review(base, directory, deep, output, fail_on, github_token, jobs, annotations, sarif_out, no_cache):
+def review(base, directory, deep, output, fmt, fail_on, github_token, jobs, annotations, sarif_out, no_cache):
     """Check the dependency versions changed since BASE (for pull requests).
 
     Compares dependency files and lockfiles at --base with the working tree,
     then checks each package that changed version, from its old version to
-    its new one. Prints Markdown suitable for a PR comment.
+    its new one. In a terminal it shows the same table as check-all; piped,
+    or with -o, it writes Markdown for a pull-request comment.
     """
     # only for its exception type: nothing is run here
     import subprocess as _sp  # nosec B404
@@ -1168,24 +417,41 @@ def review(base, directory, deep, output, fail_on, github_token, jobs, annotatio
         cache_mod.disable_cache()
     try:
         changes = changed_dependencies(directory, base)
-    except (_sp.CalledProcessError, FileNotFoundError, ValueError) as e:
-        detail = getattr(e, "stderr", "") or str(e)
-        console.print(f"[red]Could not read dependency files at {base}:[/] {detail.strip()}")
+    except FileNotFoundError:
+        console.print("[red]git isn't installed[/] (or isn't on PATH): review compares two git revisions.")
+        sys.exit(2)
+    except (_sp.CalledProcessError, ValueError) as e:
+        detail = (getattr(e, "stderr", "") or str(e)).strip()
+        if "not a git repository" in detail:
+            console.print(f"[red]{esc(directory)} isn't a git repository:[/] review compares the dependency "
+                          f"files at a git revision with the working tree.")
+        else:
+            console.print(f"[red]Could not read the dependency files at {esc(base)}:[/] {esc(detail)}")
         sys.exit(2)
     ignored = {normalize_name(p) for p in cfg.ignore_packages}
     changes = [c for c in changes if c.name not in ignored]
 
     def one(change):
-        return _check_change(change, directory, cfg, github_token, deep)
+        return check_change(change, directory, cfg, github_token, deep)
 
-    with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+    started = time.monotonic()
+    terminal = fmt == "terminal" or (fmt == "auto" and not output and sys.stdout.isatty())
+    with console.status(f"Checking {len(changes)} changed dependenc{'ies' if len(changes) != 1 else 'y'}...") \
+            if terminal else nullcontext(), ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
         results = [r for r in pool.map(one, changes) if r]
 
+    if terminal:
+        if not results:
+            console.print(f"[green]{sym('✓', 'OK:')} No dependency versions changed since {esc(base)}.[/]")
+        else:
+            console.print(f"[dim]Dependency versions changed since[/] [bold]{esc(base)}[/]\n")
+            print_report(results, view=View(root=directory), elapsed=time.monotonic() - started,
+                         labels=("Before", "After"))
     text = render_review(results, repo_root=directory)
     if output:
         with open(output, "w", encoding="utf-8") as f:
             f.write(text)
-    else:
+    elif not terminal:
         print(text)
     if sarif_out:
         with open(sarif_out, "w", encoding="utf-8") as f:
@@ -1194,40 +460,10 @@ def review(base, directory, deep, output, fail_on, github_token, jobs, annotatio
         notes = render_github_annotations(results, directory)
         if notes:
             print(notes)
-    sys.exit(1 if _should_fail(results, fail_on) else 0)
+    sys.exit(1 if should_fail(results, fail_on) else 0)
 
 
 # ── watch ─────────────────────────────────────────────────────────────────────
-
-def _print_watch_event(ev, directory: str, quiet: bool) -> bool:
-    """Print one watcher event; True if it found something breaking."""
-    import datetime as _dt
-    stamp = _dt.datetime.now().strftime("%H:%M:%S")
-    if ev.kind == "error":
-        console.print(f"[dim]{stamp}[/] [yellow]{', '.join(ev.files) or 'dependency files'}:[/] {ev.message}"
-                      " [dim](keeping the last good state)[/]")
-        return False
-    if ev.kind == "release":
-        c = ev.changes[0]
-        console.print(f"[dim]{stamp}[/] [bold]new release:[/] {c.name} {c.new} [dim](you have {c.old})[/]")
-    else:
-        moved = f"{len(ev.changes)} version change(s)" if ev.changes else "no version changes"
-        console.print(f"[dim]{stamp}[/] [bold]{', '.join(ev.files)}[/] changed: {moved}")
-        if ev.added:
-            console.print(f"  [green]+[/] added: {', '.join(ev.added)} [dim](nothing to compare with)[/]")
-        if ev.removed:
-            console.print(f"  [red]-[/] removed: {', '.join(ev.removed)}")
-    breaking = False
-    for r in ev.results:
-        _print_terminal_result(r, quiet)
-        if r.get("breaking_count"):
-            breaking = True
-            if r.get("fixable"):
-                console.print(f"    [green]pyupcheck migrate {r['package']} {r['target_version']} --write[/] "
-                              f"fixes {r['fixable']} of these")
-    if ev.kind == "release" and ev.results and not breaking and not ev.results[0].get("unchecked"):
-        console.print("  [green]safe to upgrade:[/] nothing in your code breaks")
-    return breaking
 
 
 @main.command(short_help="Re-check as dependencies change")
@@ -1268,11 +504,11 @@ def watch(directory, interval, releases_every, deep, bell, quiet, jobs, github_t
     def check(change):
         if change.name in ignored:
             return None
-        return _check_change(change, directory, cfg, github_token, deep)
+        return check_change(change, directory, cfg, github_token, deep)
 
     def latest(name, raw):
         spec = specifier_of(raw)
-        return latest_allowed_version(name, None if _is_exact_pin(spec) else spec, fresh=True)
+        return latest_allowed_version(name, None if is_exact_pin(spec) else spec, fresh=True)
 
     def direct():
         return [d.name for d in discover_dependencies(directory) if d.name not in ignored]
@@ -1282,15 +518,15 @@ def watch(directory, interval, releases_every, deep, bell, quiet, jobs, github_t
     with console.status("Reading dependencies" + (" and their latest releases" if releases_every else "") + "..."):
         events = watcher.start()
     for ev in events:
-        _print_watch_event(ev, directory, quiet)
+        print_watch_event(ev, directory, quiet)
     files = sorted(dep_file_signature(directory))
     if not files:
-        console.print(f"[yellow]No dependency files in {directory}[/] (requirements*.txt, pyproject.toml, "
+        console.print(f"[yellow]No dependency files in {esc(directory)}[/] (requirements*.txt, pyproject.toml, "
                       "lockfiles...). Watching for one to appear.")
     else:
         rel = "" if not releases_every else \
             f", and PyPI every {releases_every:g} min for {len(watcher.known_latest)} direct dependencies"
-        console.print(f"Watching [bold]{', '.join(files)}[/] ({len(watcher.snapshot)} packages){rel}. "
+        console.print(f"Watching [bold]{esc(', '.join(files))}[/] ({len(watcher.snapshot)} packages){rel}. "
                       "[dim]Ctrl+C to stop.[/]")
     n = 0
     try:
@@ -1298,7 +534,7 @@ def watch(directory, interval, releases_every, deep, bell, quiet, jobs, github_t
             n += 1
             _time.sleep(interval)
             for ev in watcher.poll():
-                if _print_watch_event(ev, directory, quiet) and bell:
+                if print_watch_event(ev, directory, quiet) and bell:
                     console.bell()
     except KeyboardInterrupt:
         console.print("[dim]Stopped.[/]")
@@ -1342,29 +578,34 @@ def explain(package, target_version, directory, deep, max_findings, effort, mode
     dep = next((d for d in discover_dependencies(directory) if d.name == normalize_name(package)), None)
     spec = specifier_of(dep.raw) if dep else None
     with console.status(f"Checking what upgrading [bold]{package}[/] breaks..."):
-        r = _run_single_check(package, target_version, directory, github_token, cfg, deep=deep, spec=spec)
+        r = run_check(package, target_version, directory, github_token, cfg, deep=deep, spec=spec)
     if r is None:
+        console.print(f"[red]{esc(package)}:[/] not found on PyPI.")
         sys.exit(2)
     if r.get("up_to_date") or r.get("no_usages") or not r.get("breaking_count"):
-        _print_terminal_result(r, quiet=False)
-        console.print("[green]Nothing breaks, so there's nothing to explain.[/]")
+        print_result(r, quiet=False, view=View(root=directory))
+        console.print(f"[green]{sym('✓', 'OK:')} Nothing breaks, so there's nothing to explain.[/]")
         return
     findings = ex.findings_from(r, directory, limit=max_findings)
     prompt = ex.build_prompt(package, r.get("current_version") or "?", r["target_version"], findings)
+    lines = sum(f["code"].count("\n") + 1 for f in findings if f["code"])
+    more = r["breaking_count"] - len(findings)
+    what = (f"{plural(len(findings), 'finding')} and {plural(lines, 'line')} of your code"
+            + (f" ({more} more not included: --max)" if more > 0 else ""))
     if dry_run:
-        console.print(f"[dim]Would send to {model or ex.MODEL} (system prompt, then):[/]")
-        print(prompt)
+        from rich.panel import Panel
+        console.print(f"[bold]Dry run:[/] this is what would be sent to {esc(model or ex.MODEL)}, after its "
+                      f"system prompt: {what}.\n")
+        console.print(Panel(esc(prompt.rstrip()), border_style="dim", padding=(0, 1), expand=False))
+        console.print(f"\n[green]{sym('✓', 'OK:')} Nothing was sent.[/] [dim]Run without --dry-run to ask Claude.[/]")
         return
 
     try:
         client = ex.make_client()
     except ex.ExplainError as e:
-        console.print(f"[red]{_esc(str(e))}[/]")
+        console.print(f"[red]{esc(str(e))}[/]")
         sys.exit(2)
-    lines = sum(f["code"].count("\n") + 1 for f in findings if f["code"])
-    more = r["breaking_count"] - len(findings)
-    console.print(f"[dim]Sending {len(findings)} finding(s) and {lines} lines of your code to the Claude API "
-                  f"({model or ex.MODEL})" + (f"; {more} more not sent (--max)" if more > 0 else "") + ".[/]\n")
+    console.print(f"[dim]Sending {what} to the Claude API ({esc(model or ex.MODEL)}).[/]\n")
     try:
         from depshift.safe import plain
         # the model's answer is shown as text: never as terminal control sequences
@@ -1375,12 +616,12 @@ def explain(package, target_version, directory, deep, max_findings, effort, mode
         info = ex.stream_advice(client, prompt, write,
                                 model=model or ex.MODEL, effort=effort, fallbacks=not no_fallbacks)
     except ex.ExplainError as e:
-        console.print(f"\n[red]{_esc(str(e))}[/]")
+        console.print(f"\n[red]{esc(str(e))}[/]")
         sys.exit(2)
     print()
     if info["stop_reason"] == "refusal":
         console.print("[yellow]Claude declined this request.[/] The findings are still listed by "
-                      f"`pyupcheck check {package} {r['target_version']}`.")
+                      f"[cyan]pyupcheck check {esc(package)} {esc(r['target_version'])}[/].")
     elif info["stop_reason"] == "max_tokens":
         console.print("[yellow]The answer was cut off;[/] use --max to explain fewer findings at once.")
     console.print(f"[dim]{info['model']}: {info['input_tokens']} tokens in, {info['output_tokens']} out. "
@@ -1408,9 +649,10 @@ def migrate(package, target_version, directory, write, exclude, github_token, no
     Shows a diff by default; pass --write to change files. Exits 1 if
     anything still needs a manual change.
     """
+    from rich.padding import Padding
+
     from depshift import notebook
     from depshift.rewrite import unified_diff
-    from depshift.safe import plain
 
     directory = os.path.abspath(directory)
     cfg = _config(directory)
@@ -1418,179 +660,74 @@ def migrate(package, target_version, directory, write, exclude, github_token, no
     if no_cache or not cfg.cache:
         cache_mod.disable_cache()
 
-    with console.status(f"Comparing [bold]{package}[/]..."):
+    with console.status(f"Comparing [bold]{esc(package)}[/]..."):
         mp = plan_project_migration(package, target_version, directory, cfg, github_token)
     if mp.error:
-        console.print(f"[red]{package}:[/] {mp.error}")
+        console.print(f"[red]{esc(package)}:[/] {esc(mp.error)}")
         sys.exit(2)
     if mp.up_to_date:
-        console.print(f"[green]{package}[/] {mp.current} is already the latest allowed version.")
+        console.print(f"[green]{sym('✓', 'OK:')} {esc(package)} {esc(mp.current or '')}[/] is already the latest "
+                      "version your constraints allow.")
         return
-    console.print(f"[bold]{package}[/] {mp.current} [dim]({mp.source})[/] -> {mp.target}\n")
 
+    arrow = sym("→", "->")
+    console.print(f"[bold]{esc(package)}[/] {esc(mp.current or '')} {arrow} [bold]{esc(mp.target or '')}[/]  "
+                  f"[dim]({esc(mp.source or '')})[/]")
+
+    fixable = [fc for fc in mp.files if not fc.error]
+    if fixable:
+        n_fixes = sum(len(fc.fixes) for fc in fixable)
+        console.print(f"\n[bold]What pyupcheck fixes[/]  [dim]{plural(n_fixes, 'change')} in "
+                      f"{plural(len(fixable), 'file')}[/]")
+    written, failed = 0, 0
     for fc in mp.files:
         if fc.error:
-            console.print(f"[red]skipped {fc.rel}:[/] {fc.error}")
+            console.print(f"  [red]{sym('✗', 'x')} {esc(fc.rel)} skipped:[/] {esc(fc.error)}")
             continue
         for fx in fc.fixes:
-            console.print(f"  [green]fix[/] {mp.where(fx)}  {_esc(fx.description)}")
+            if console.width >= 80:
+                console.print(f"  [green]{sym('✓', '+')}[/] [bold]{esc(mp.where(fx))}[/]  {esc(fx.description)}")
+            else:
+                console.print(f"  [green]{sym('✓', '+')}[/] [bold]{esc(mp.where(fx))}[/]", overflow="fold")
+                console.print(Padding(esc(fx.description), (0, 0, 0, 4)))
         if fc.notebook is not None:
-            print(plain(unified_diff(fc.rel, notebook.cells_text(fc.notebook, fc.before),
-                                     notebook.cells_text(fc.notebook, fc.after))))
+            diff = unified_diff(fc.rel, notebook.cells_text(fc.notebook, fc.before),
+                                notebook.cells_text(fc.notebook, fc.after))
         else:
-            print(plain(unified_diff(fc.rel, fc.before, fc.after)))
+            diff = unified_diff(fc.rel, fc.before, fc.after)
+        console.print(Padding(diff_text(diff), (0, 0, 0, 4), expand=False))
         if write:
             try:
                 fc.write(directory)
+                written += 1
             except OSError as e:
-                console.print(f"[red]not written:[/] {_esc(str(e))}")
+                failed += 1
+                console.print(f"  [red]not written:[/] {esc(str(e))}")
 
     if mp.manual:
-        console.print(f"[yellow]{len(mp.manual)} change(s) need you:[/]")
+        console.print(f"\n[bold]What needs you[/]  [dim]{plural(len(mp.manual), 'change')}[/]")
         for m in mp.manual:
             code = re.sub(r"^\[cell \d+\] ", "", m.code) if m.cell else m.code  # the cell is in where()
-            console.print(f"  [yellow]![/] {mp.where(m)}  {_esc(code)}")
-            console.print(f"    [dim]{_esc(m.reason)}[/]")
+            if console.width >= 80:
+                console.print(f"  [yellow]![/] [bold]{esc(mp.where(m))}[/]  {esc(code.strip())}",
+                              overflow="ellipsis", no_wrap=True)
+            else:
+                console.print(f"  [yellow]![/] [bold]{esc(mp.where(m))}[/]", overflow="fold")
+                console.print(Padding(esc(code.strip()), (0, 0, 0, 4)), overflow="ellipsis", no_wrap=True)
+            console.print(Padding(f"[dim]{esc(m.reason)}[/]", (0, 0, 0, 4)))
 
-    changed_files = sum(1 for fc in mp.files if not fc.error)
+    console.print()
     if not mp.has_fixes and not mp.manual:
-        console.print("[green]Nothing to change:[/] no breaking API changes hit your code.")
-    elif changed_files:
-        verb = "Rewrote" if write else "Would rewrite"
-        console.print(f"\n{verb} {changed_files} file(s)." + ("" if write else " Run again with --write to apply."))
-    sys.exit(1 if mp.manual else 0)
-
-
-def _replace_file(path: str, text: str, newline: str = "") -> None:
-    """Replace a file's contents in one step (a crash never leaves it half
-    written), keeping its permissions. ``newline=""`` writes ``text`` exactly."""
-    import shutil
-    import tempfile
-    folder = os.path.dirname(os.path.abspath(path))
-    fd, tmp = tempfile.mkstemp(dir=folder, prefix=".pyupcheck-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline=newline) as f:
-            f.write(text)
-        shutil.copymode(path, tmp)
-        os.replace(tmp, path)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise
-
-
-class FileChange:
-    """One file's rewrite: its text before and after, and the fixes in it."""
-
-    def __init__(self, path: str, rel: str, before: str, after: str, fixes: list, nb=None, error=None):
-        self.path, self.rel, self.before, self.after = path, rel, before, after
-        self.fixes, self.notebook, self.error = fixes, nb, error
-
-    def write(self, root: str | None = None) -> None:
-        """Replace the file in one step (a crash never leaves it half written),
-        keeping its permissions. Refuses a symlink, or a file outside ``root``:
-        a cloned repository must not get its rewrite written somewhere else."""
-        from depshift import notebook
-        if os.path.islink(self.path):
-            raise PermissionError(f"{self.rel} is a symlink: not rewritten")
-        if root is not None:
-            real_root = os.path.realpath(root)
-            if os.path.commonpath([real_root, os.path.realpath(self.path)]) != real_root:
-                raise PermissionError(f"{self.rel} is outside {root}: not rewritten")
-        text = (notebook.dumps(notebook.restore(self.notebook, self.after))
-                if self.notebook is not None else self.after)
-        with open(self.path, "rb") as f:
-            newline = "\r\n" if b"\r\n" in f.read() else "\n"  # keep the file's line endings
-        _replace_file(self.path, text, newline)
-
-
-class MigrationPlan:
-    def __init__(self, package: str, directory: str):
-        self.package, self.directory = package, directory
-        self.current: str | None = None
-        self.source: str | None = None
-        self.target: str | None = None
-        self.error: str | None = None
-        self.up_to_date = False
-        self.has_fixes = False
-        self.files: list[FileChange] = []
-        self.manual: list = []
-
-    def where(self, item) -> str:
-        rel = os.path.relpath(item.file, self.directory)
-        return f"{rel} cell {item.cell}:{item.line}" if item.cell is not None else f"{rel}:{item.line}"
-
-
-def plan_project_migration(package: str, target_version: str | None, directory: str, cfg,
-                           github_token: str | None = None) -> MigrationPlan:
-    """What ``migrate`` would change, without printing or writing anything:
-    used by the migrate command and by ``pyupcheck ui``."""
-    import ast as _ast
-
-    from depshift import notebook
-    from depshift.apisurface import extract_surface
-    from depshift.rewrite import apply_edits, plan_migration
-
-    mp = MigrationPlan(package, directory)
-    dep = next((d for d in discover_dependencies(directory) if d.name == normalize_name(package)), None)
-    spec = specifier_of(dep.raw) if dep else None
-    current, source = _baseline_version(package, directory, dep.pinned_version if dep else None, spec)
-    mp.current, mp.source = current, source
-    if not current:
-        mp.error = ("current version unknown. Install it, pin it with ==, or lock it, "
-                    "so there is a version to migrate from.")
-        return mp
-    if not target_version:
-        try:
-            target_version = latest_allowed_version(package, None if _is_exact_pin(spec) else spec)
-        except Exception as e:
-            mp.error = f"not found on PyPI ({e})"
-            return mp
-    mp.target = target_version
-    if not target_version or _not_newer(target_version, current):
-        mp.up_to_date = True
-        return mp
-
-    names = import_names_for(package)
-    usages = scan_directory(directory, names, exclude_dirs=cfg.exclude_dirs)
-    changes = get_api_changes(package, current, target_version)
-    new_surface = extract_surface(package, target_version)
-    try:
-        entries = collect_changes(package, current, target_version, github_token=github_token,
-                                  lookback=True).history
-    except Exception:
-        entries = []
-    try:
-        returns = get_return_types(package, current, target_version)
-    except Exception:
-        returns = {}
-    if changes is None or new_surface is None:
-        mp.error = (f"could not read the API of {current} or {target_version} (no Python sources "
-                    "published), so nothing can be rewritten safely.")
-        return mp
-
-    plan = plan_migration(usages, changes, new_surface, names, entries, returns)
-    mp.has_fixes = bool(plan.fixes)
-    for path, fixes in sorted(plan.by_file().items()):
-        nb = notebook.load(path) if path.endswith(".ipynb") else None
-        if nb is not None:
-            before = nb.source
-        else:
-            with open(path, encoding="utf-8") as f:
-                before = f.read()
-        after = apply_edits(before, [e for fx in fixes for e in fx.edits])
-        if after == before:
-            continue
-        rel = os.path.relpath(path, directory)
-        error = None
-        try:
-            _ast.parse(after)
-        except (SyntaxError, ValueError, RecursionError, MemoryError):
-            error = "the rewrite would not parse"
-        mp.files.append(FileChange(path, rel, before, after,
-                                   sorted(fixes, key=lambda x: (x.cell or 0, x.line)), nb, error))
-    mp.manual = sorted(plan.manual, key=lambda m: (m.file, m.cell or 0, m.line))
-    return mp
+        console.print(f"[green]{sym('✓', 'OK:')} Nothing to change:[/] no breaking API change hits your code.")
+    elif write and written:
+        console.print(f"[green]{sym('✓', 'OK:')} Rewrote {plural(written, 'file')}.[/]"
+                      + (f" [red]{plural(failed, 'file')} not written.[/]" if failed else "")
+                      + (" Check the changes that need you, above." if mp.manual else ""))
+    elif fixable:
+        console.print(f"Would rewrite {plural(len(fixable), 'file')}. [dim]Run again with --write to apply.[/]")
+    elif mp.manual:
+        console.print("[dim]Nothing can be rewritten automatically: the changes above need you.[/]")
+    sys.exit(1 if mp.manual or failed else 0)
 
 
 # ── ui ────────────────────────────────────────────────────────────────────────
@@ -1712,86 +849,6 @@ def ci_setup(ci_type, directory):
 
 # ── outdated / highest safe version ───────────────────────────────────────────
 
-def _candidate_versions(package: str, current: str, spec: str | None) -> list[str]:
-    """The newest release of each minor series above ``current`` that the
-    project's constraint allows (no pre-releases, no yanked), oldest first."""
-    from packaging.specifiers import InvalidSpecifier, SpecifierSet
-    from packaging.version import InvalidVersion, Version
-    info = get_pypi_info(package)
-    try:
-        cur = Version(current)
-    except InvalidVersion:
-        return []
-    try:
-        allowed = SpecifierSet("" if _is_exact_pin(spec) else (spec or ""))
-    except InvalidSpecifier:
-        allowed = SpecifierSet("")
-    newest: dict = {}
-    for ver, files in (info.get("releases") or {}).items():
-        try:
-            v = Version(ver)
-        except InvalidVersion:
-            continue
-        if v <= cur or v.is_prerelease or v.is_devrelease:
-            continue
-        if files and all(f.get("yanked") for f in files):
-            continue
-        if allowed and v not in allowed:
-            continue
-        key = (v.major, v.minor)
-        if key not in newest or v > newest[key]:
-            newest[key] = v
-    return [str(v) for v in sorted(newest.values())]
-
-
-def highest_safe_version(package: str, current: str, directory: str, cfg,
-                         github_token: str | None = None, spec: str | None = None,
-                         deep: bool = True) -> dict:
-    """The newest version that breaks none of your code.
-
-    Breaking changes only pile up as versions go up, so the candidates (the
-    newest release of each minor series) are binary-searched: the latest is
-    checked first, then about log2(n) more. A version that couldn't be
-    checked never counts as safe.
-    """
-    candidates = _candidate_versions(package, current, spec)
-    checked: list[tuple[str, int | None]] = []
-    out = {"package": package, "current": current, "latest": candidates[-1] if candidates else current,
-           "safe": current, "breaking_at_latest": 0, "checked": checked, "unchecked": False}
-    if not candidates:
-        return out
-
-    cache: dict = {}
-
-    def breaks(version: str) -> int | None:
-        """Breaking usages at ``version``; None if it couldn't be checked."""
-        if version not in cache:
-            r = _run_single_check(package, version, directory, github_token, cfg, suppress_errors=True,
-                                  deep=deep, spec=spec, locked=current)
-            cache[version] = None if (r is None or r.get("unchecked")) else r["breaking_count"]
-            checked.append((version, cache[version]))
-        return cache[version]
-
-    latest = breaks(candidates[-1])
-    out["breaking_at_latest"] = latest if latest is not None else 0
-    if latest == 0:
-        out["safe"] = candidates[-1]
-        return out
-    if latest is None:
-        out["unchecked"] = True
-    lo, hi = 0, len(candidates) - 2  # the last one is known not to be safe
-    while lo <= hi:
-        mid = (lo + hi) // 2
-        n = breaks(candidates[mid])
-        if n == 0:
-            out["safe"] = candidates[mid]
-            lo = mid + 1
-        else:
-            if n is None:
-                out["unchecked"] = True
-            hi = mid - 1
-    return out
-
 
 @main.command(short_help="List dependencies with newer versions")
 @click.option("--dir", "-d", "directory", default=".")
@@ -1817,31 +874,10 @@ def outdated(directory, safe, jobs, github_token, no_cache):
         console.print("[yellow]No dependency files found[/]")
         sys.exit(2)
 
-    from packaging.version import InvalidVersion, Version
     locks = locked_versions(directory)
 
     def one(dep):
-        lock = locks.get(dep.name)
-        spec = specifier_of(dep.raw)
-        current, _ = _baseline_version(dep.name, directory, dep.pinned_version, spec,
-                                       lock.version if lock else None)
-        try:
-            latest = latest_allowed_version(dep.name, None if _is_exact_pin(spec) else spec) \
-                or get_current_version(dep.name)
-        except Exception:
-            return None
-        row = {"name": dep.name, "current": current, "latest": latest}
-        if not current:
-            return row
-        try:
-            row["outdated"] = Version(current) < Version(latest)
-            row["major"] = Version(current).major < Version(latest).major
-        except InvalidVersion:
-            row["outdated"] = current != latest
-            row["major"] = False
-        if safe and row["outdated"]:
-            row["plan"] = highest_safe_version(dep.name, current, directory, cfg, github_token, spec)
-        return row
+        return outdated_status(dep, locks, directory, cfg, github_token, safe)
 
     with console.status("Checking versions..." + (" (finding safe versions)" if safe else "")), \
             ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
@@ -1849,20 +885,22 @@ def outdated(directory, safe, jobs, github_token, no_cache):
 
     table = styled_table("Package", "Locked" if locks else "Current", "Latest",
                          *(["Highest safe"] if safe else []), "Status")
+    stacked: list[tuple[str, str]] = []  # the same rows for a narrow terminal
     outdated_count = 0
     # majors first: they carry the most risk
     for r in sorted(rows, key=lambda r: (not r.get("major"), r["name"])):
-        name = f"[bold]{_esc(r['name'])}[/]"
+        name = f"[bold]{esc(r['name'])}[/]"
         if not r.get("current"):
-            cells = [name, "[dim]?[/]", _esc(r["latest"])] + (["[dim]-[/]"] if safe else [])
+            cells = [name, "[dim]?[/]", esc(r["latest"])] + (["[dim]-[/]"] if safe else [])
             table.add_row(*cells, "[dim]current version unknown[/]")
+            stacked.append((f"{name} [dim]?[/] {sym('→', '->')} {esc(r['latest'])}", "[dim]current version unknown[/]"))
             continue
         if not r.get("outdated"):
             continue
         outdated_count += 1
-        latest = f"[yellow]{_esc(r['latest'])}[/] [dim]major[/]" if r["major"] else _esc(r["latest"])
+        latest = f"[yellow]{esc(r['latest'])}[/] [dim]major[/]" if r["major"] else esc(r["latest"])
         status = "[yellow]major upgrade[/]" if r["major"] else "[dim]update available[/]"
-        cells = [name, f"[dim]{_esc(r['current'])}[/]", latest]
+        cells = [name, f"[dim]{esc(r['current'])}[/]", latest]
         if safe:
             plan = r.get("plan") or {}
             if plan.get("safe") == r["latest"]:
@@ -1876,13 +914,18 @@ def outdated(directory, safe, jobs, github_token, no_cache):
                 status = f"[red]{r['latest']} breaks {plan.get('breaking_at_latest', '?')} usage(s)[/]"
         cells.append(status)
         table.add_row(*cells)
+        detail = status + (f" [dim]· highest safe:[/] {cells[3]}" if safe else "")
+        stacked.append((f"{name} [dim]{esc(r['current'])}[/] {sym('→', '->')} {esc(r['latest'])}", detail))
 
     if outdated_count:
-        console.print(table)
+        if console.width >= 64 + (16 if safe else 0):
+            console.print(table)
+        else:
+            print_stacked(stacked)
         hint = "" if safe else " Run with --safe to find the highest version that doesn't break your code."
         console.print(f"\n[bold]{outdated_count}[/] outdated.[dim]{hint}[/]")
     else:
-        console.print(f"[green]{_sym('✓', 'OK:')} All dependencies are up to date.[/]")
+        console.print(f"[green]{sym('✓', 'OK:')} All dependencies are up to date.[/]")
 
 
 # ── diff ──────────────────────────────────────────────────────────────────────
@@ -1928,57 +971,13 @@ def diff(package, from_version, to_version, github_token, no_cache, since):
             sys.exit(2)
 
     if since and changes:
-        changes = _filter_by_since(changes, since, package)
+        changes = filter_by_since(changes, since, package)
 
     if not changes:
         console.print(f"[green]No breaking/deprecated changes found[/] between {from_version} and {to_version}.")
         return
 
-    _print_changes(package, from_version, to_version, changes)
-
-
-_KIND_LABEL = {"removed": ("✗", "x", "removed", "red"), "deprecated": ("!", "!", "deprecated", "yellow"),
-               "renamed": ("→", "->", "renamed", "blue"), "changed": ("~", "~", "changed", "magenta")}
-
-
-def _print_changes(package: str, from_version: str, to_version: str, changes: list) -> None:
-    """Release-note changes grouped by release, newest first: each one once,
-    as plain prose, labelled by kind."""
-    from packaging.version import InvalidVersion, Version
-    from rich.padding import Padding
-
-    by_release: dict[str, list[tuple[str, str]]] = {}
-    seen: set[tuple[str, str]] = set()
-    for c in changes:
-        note = tidy_note(c.description, 400)
-        if note and (c.version, note) not in seen:
-            seen.add((c.version, note))
-            by_release.setdefault(c.version, []).append((c.kind, note))
-
-    def order(v: str):
-        try:
-            return (1, Version(v))
-        except InvalidVersion:
-            return (0, Version("0"))
-
-    counts: dict[str, int] = {}
-    for items in by_release.values():
-        for kind, _ in items:
-            counts[kind] = counts.get(kind, 0) + 1
-    summary = " · ".join(f"[{_KIND_LABEL.get(k, ('', '', k, 'white'))[3]}]{n} {k}[/]"
-                         for k, n in sorted(counts.items(), key=lambda kv: -kv[1]))
-    releases = f"{len(by_release)} release{'s' if len(by_release) != 1 else ''}"
-    console.print(f"\n[bold]{_esc(package)}[/] {_esc(from_version)} {_sym('→', '->')} {_esc(to_version)}   "
-                  f"{summary} [dim]in {releases}[/]")
-    for release in sorted(by_release, key=order, reverse=True):
-        console.print(f"\n[bold]{_esc(release)}[/]")
-        grid = Table.grid(padding=(0, 2))
-        grid.add_column(no_wrap=True)
-        grid.add_column(overflow="fold")
-        for kind, note in by_release[release]:
-            fancy, plain_mark, word, colour = _KIND_LABEL.get(kind, ("·", "-", kind, "white"))
-            grid.add_row(f"[{colour}]{_sym(fancy, plain_mark)} {word:<10}[/]", _clean_note(note))
-        console.print(Padding(grid, (0, 0, 0, 2)))
+    print_changes(package, from_version, to_version, changes)
 
 
 # ── scan ──────────────────────────────────────────────────────────────────────
@@ -2008,25 +1007,40 @@ def scan(package, directory, exclude):
     for u in usages:
         by_file.setdefault(u.file, {}).setdefault(u.line, []).append(u)
     lines = sum(len(v) for v in by_file.values())
-    for path in sorted(by_file, key=_rel):
+    for path in sorted(by_file, key=lambda p: display_path(p, directory)):
         found = by_file[path]
-        console.print(f"\n[bold]{_esc(_rel(path))}[/]  [dim]{len(found)} line{'s' if len(found) != 1 else ''}[/]")
+        count = f"{len(found)} line{'s' if len(found) != 1 else ''}"
+        console.print(f"\n[bold]{esc(display_path(path, directory))}[/]  [dim]{count}[/]")
         grid = Table.grid(padding=(0, 2))
         grid.add_column(justify="right", style="dim", no_wrap=True)
-        grid.add_column(no_wrap=True)
+        grid.add_column(no_wrap=True)  # what the line uses: never shortened
         grid.add_column(overflow="ellipsis", no_wrap=True)
+        rows = []
         for line in sorted(found):
             same_line = found[line]
             uses: dict[str, str] = {}  # each name used on the line, with how
             for u in same_line:
                 uses.setdefault(u.attr_chain, kinds.get(u.usage_type, u.usage_type.replace("_", " ")))
-            names_used = ", ".join(f"[cyan]{_esc(api)}[/] [dim]{kind}[/]" for api, kind in uses.items())
-            grid.add_row(str(line), names_used, f"[dim]{_esc(same_line[0].code.strip())}[/]")
-        console.print(Padding(grid, (0, 0, 0, 2)))
+            names_used = ", ".join(f"[cyan]{esc(api)}[/] [dim]{kind}[/]" for api, kind in uses.items())
+            code = f"[dim]{esc(same_line[0].code.strip())}[/]"
+            rows.append((str(line), names_used, code))
+        # the code column gets what's left; with less than 30 columns for it,
+        # each line's code goes on a line of its own, under what it uses
+        num_w = max(len(n) for n, _, _ in rows)
+        uses_w = max(Text.from_markup(u).cell_len for _, u, _ in rows)
+        if console.width - 2 - num_w - uses_w - 4 >= 30:
+            grid.columns[1].min_width = uses_w
+            for row in rows:
+                grid.add_row(*row)
+            console.print(Padding(grid, (0, 0, 0, 2)))
+        else:
+            for n, uses_text, code in rows:
+                console.print(f"  [dim]{n}[/]  {uses_text}", overflow="fold")
+                console.print(Padding(code, (0, 0, 0, 4)), overflow="ellipsis", no_wrap=True)
     files = len(by_file)
     console.print(f"\n[bold]{lines}[/] line{'s' if lines != 1 else ''} in [bold]{files}[/] "
-                  f"file{'s' if files != 1 else ''} use {_esc(package)}"
-                  + (f" [dim](imported as {_esc(', '.join(names))})[/]" if names != [package] else "") + ".")
+                  f"file{'s' if files != 1 else ''} use {esc(package)}"
+                  + (f" [dim](imported as {esc(', '.join(names))})[/]" if names != [package] else "") + ".")
 
 
 # ── versions ──────────────────────────────────────────────────────────────────
@@ -2041,57 +1055,42 @@ def versions(package, directory, show_all):
     Marks the latest release, the one your project is on (from its lockfile,
     pin or installed version), yanked releases and pre-releases.
     """
-    from packaging.version import InvalidVersion, Version
-    with console.status(f"Fetching versions for [bold]{_esc(package)}[/]..."):
+    with console.status(f"Fetching versions for [bold]{esc(package)}[/]..."):
         try:
             info = get_pypi_info(package)
         except Exception as e:
-            console.print(f"[red]{_esc(package)}:[/] not found on PyPI ({_esc(str(e))})")
+            console.print(f"[red]{esc(package)}:[/] not found on PyPI ({esc(str(e))})")
             sys.exit(1)
 
     latest = (info.get("info") or {}).get("version")
-    releases = []
-    for raw, files in (info.get("releases") or {}).items():
-        try:
-            version = Version(raw)
-        except InvalidVersion:
-            continue
-        date = next((f["upload_time"][:10] for f in files if f.get("upload_time")), "")
-        yanked = bool(files) and all(f.get("yanked") for f in files)
-        releases.append((version, raw, date, yanked))
-    releases.sort(reverse=True)
+    releases = release_history(info)
     if not releases:
-        console.print(f"[yellow]{_esc(package)} has no releases on PyPI.[/]")
+        console.print(f"[yellow]{esc(package)} has no releases on PyPI.[/]")
         return
+    yours, source = project_version(package, os.path.abspath(directory))
 
-    yours = None
-    directory = os.path.abspath(directory)
-    dep = next((d for d in discover_dependencies(directory) if d.name == normalize_name(package)), None)
-    if dep is not None:
-        yours, source = _baseline_version(dep.name, directory, dep.pinned_version, specifier_of(dep.raw))
     shown = releases if show_all else releases[:15]
-    if yours and not any(raw == yours for _, raw, _, _ in shown):
-        shown = shown + [r for r in releases if r[1] == yours]  # always show where you are
-
+    if yours and all(r.version != yours for r in shown):
+        shown = shown + [r for r in releases if r.version == yours]  # always show where you are
     table = styled_table("Version", "Released", "")
-    for version, raw, date, yanked in shown:
+    for r in shown:
         tags = []
-        if raw == latest:
+        if r.version == latest:
             tags.append("[green]latest[/]")
-        if raw == yours:
-            tags.append(f"[cyan]you're on this[/] [dim]({_esc(source)})[/]")
-        if yanked:
+        if r.version == yours:
+            tags.append(f"[cyan]you're on this[/] [dim]({esc(source or '')})[/]")
+        if r.yanked:
             tags.append("[red]yanked[/]")
-        if version.is_prerelease:
+        if r.prerelease:
             tags.append("[dim]pre-release[/]")
-        table.add_row(f"[bold]{_esc(raw)}[/]" if raw in (latest, yours) else _esc(raw), f"[dim]{date}[/]",
-                      " · ".join(tags))
+        name = f"[bold]{esc(r.version)}[/]" if r.version in (latest, yours) else esc(r.version)
+        table.add_row(name, f"[dim]{r.date}[/]", " · ".join(tags))
     console.print(table)
     hidden = len(releases) - len(shown)
     more = f" [dim]({hidden} older: --all lists them)[/]" if hidden > 0 else ""
     console.print(f"\n[bold]{len(releases)}[/] releases{more}")
-    if yours and latest and not _not_newer(latest, yours):
-        console.print(f"[dim]See what upgrading breaks:[/] [cyan]pyupcheck check {_esc(package)}[/]")
+    if yours and latest and not not_newer(latest, yours):
+        console.print(f"[dim]See what upgrading breaks:[/] [cyan]pyupcheck check {esc(package)}[/]")
 
 
 # ── cache-clear ───────────────────────────────────────────────────────────────

@@ -100,7 +100,8 @@ def findings_from(result: dict, root: str, fixable: dict[tuple, str] | None = No
 
 def build_prompt(package: str, current: str, target: str, findings: list[dict]) -> str:
     parts = [f"Upgrading `{package}` from {current} to {target}. "
-             f"{len(findings)} place(s) in the code break.\n"]
+             + ("1 place in the code breaks.\n" if len(findings) == 1
+                else f"{len(findings)} places in the code break.\n")]
     for i, f in enumerate(findings, 1):
         parts.append(f"## Finding {i}: `{f['api']}` at {f['where']}")
         parts.append(f"Release note: {f['note'] or '(none)'}")

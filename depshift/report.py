@@ -23,6 +23,7 @@ def render_markdown(results: list[dict]) -> str:
 
     Release notes, versions and code are untrusted text: they're made inert
     (no HTML, links, images or mentions, and code can't break out of its span)."""
+    from depshift.changelog import clip
     from depshift.safe import md_code, md_text
     lines = [
         "# pyupcheck report",
@@ -32,7 +33,7 @@ def render_markdown(results: list[dict]) -> str:
     ]
     total_breaking = sum(r["breaking_count"] for r in results)
     total_deprecated = sum(r["deprecated_count"] for r in results)
-    lines.append(f"**{len(results)}** package(s) checked | "
+    lines.append(f"**{len(results)}** package{'s' if len(results) != 1 else ''} checked | "
                  f"**{total_breaking}** breaking | **{total_deprecated}** deprecated")
     lines.append("")
 
@@ -56,7 +57,7 @@ def render_markdown(results: list[dict]) -> str:
         for risk in r["risks"]:
             loc = md_code(f"{_rel(risk['file'])}:{int(risk['line'])}", in_table=True)
             code = md_code(risk["code"][:60], in_table=True)
-            desc = md_text(risk["change_description"][:80])
+            desc = md_text(clip(risk["change_description"], 160), in_table=True)
             if risk.get("replacement"):
                 desc += f" (use {md_code(risk['replacement'][:120], in_table=True)})"
             sev = risk["severity"] if risk["severity"] in ("breaking", "deprecated") else "warning"

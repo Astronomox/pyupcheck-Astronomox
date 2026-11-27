@@ -4,6 +4,7 @@ import os
 
 from click.testing import CliRunner
 
+from depshift import cli, output
 from depshift.watch import Watcher, dep_file_signature
 
 
@@ -175,7 +176,6 @@ def test_releases_off_never_asks(tmp_path):
 
 
 def test_cli_starts_and_stops(tmp_path, monkeypatch):
-    from depshift import cli
     write(tmp_path / "requirements.txt", "a==1\n")
     monkeypatch.setattr("time.sleep", lambda s: None)
     res = CliRunner().invoke(cli.main, ["watch", "-d", str(tmp_path), "--releases", "0", "--cycles", "2"])
@@ -184,12 +184,11 @@ def test_cli_starts_and_stops(tmp_path, monkeypatch):
 
 
 def test_cli_prints_release_verdict(capsys):
-    from depshift import cli
     from depshift.review import VersionChange
     from depshift.watch import Event
     ok = Event("release", changes=[VersionChange("requests", "2.31.0", "2.32.0", "requests")],
                results=[{"package": "requests", "current_version": "2.31.0", "target_version": "2.32.0",
                          "risks": [], "breaking_count": 0, "deprecated_count": 0, "safe_count": 3}])
-    assert cli._print_watch_event(ok, ".", quiet=False) is False
+    assert output.print_watch_event(ok, ".", quiet=False) is False
     out = capsys.readouterr().out
-    assert "new release: requests 2.32.0" in out and "safe to upgrade" in out
+    assert "New release: requests 2.32.0" in out and "Safe to upgrade" in out
