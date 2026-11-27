@@ -53,11 +53,7 @@ def test_429_is_retried_after_the_wait_asked_for(monkeypatch):
 
     answers = [R(429, {"retry-after": "1"}), R(200)]
     slept = []
-
-    class C:
-        def get(self, url, **kw):
-            return answers.pop(0)
-    monkeypatch.setattr(http, "client", lambda: C())
+    monkeypatch.setattr(http, "_get", lambda url, max_bytes, **kw: answers.pop(0))
     monkeypatch.setattr(http.time, "sleep", slept.append)
     assert http._http_get("https://raw.githubusercontent.com/o/r/HEAD/x").status_code == 200
     assert slept == [1.0]
@@ -69,9 +65,6 @@ def test_long_retry_after_is_not_waited_for(monkeypatch):
     class R:
         status_code, headers = 429, {"retry-after": "3600"}
 
-    class C:
-        def get(self, url, **kw):
-            return R()
-    monkeypatch.setattr(http, "client", lambda: C())
+    monkeypatch.setattr(http, "_get", lambda url, max_bytes, **kw: R())
     monkeypatch.setattr(http.time, "sleep", lambda s: (_ for _ in ()).throw(AssertionError("waited")))
-    assert http._http_get("https://x/y").status_code == 429
+    assert http._http_get("https://example.com/y").status_code == 429

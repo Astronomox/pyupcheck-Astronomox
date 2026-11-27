@@ -4,6 +4,23 @@ All notable changes to pyupcheck are documented here.
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-11-27
+
+### Security
+A full security review of everything pyupcheck reads but doesn't control. Every fix has a test (`tests/test_security.py`); [SECURITY.md](SECURITY.md) has the threat model.
+- **VS Code extension:** a repository's own `.vscode/settings.json` could set `pyupcheck.path`, and the extension activates on opening a Python project, so opening a malicious repository could run a program of its choosing. That setting is now ignored in workspaces you haven't trusted (and is machine-overridable). The migrate quick fix no longer types a shell command into a terminal (which mixed in names from the repository, and quoted for POSIX shells only): it runs pyupcheck directly with an argument list, only for valid package names and versions, shows the diff, and writes after you confirm
+- **Requests to internal addresses (SSRF):** a package's PyPI "Changelog" link could make pyupcheck fetch any URL, including `http://`, `localhost`, private networks and the cloud metadata service (169.254.169.254) from a CI runner. Every request and redirect is now `https` on port 443 to a public host, at most 5 redirects
+- **Memory exhaustion:** downloads, pages and archive members had no size limit when PyPI didn't state one. Responses are capped (32 MB; 300 MB for distributions, counted after decompression), and so are archive members (16 MB each, 768 MB in all, 200,000 files)
+- **Terminal escape injection:** release notes, PyPI text and code lines from a cloned repository could carry control sequences that retitle the terminal, clear it or forge clickable links, and bidirectional overrides. Everything shown is cleaned, in the terminal, `ui`, reports and `explain`'s output; in GitHub Actions, text can't start a workflow command
+- **Pull-request comments:** release notes could @-mention people, embed images, HTML or links, and a code line with a backtick broke out of its code span. Comments and Markdown reports now make all of it inert. Lockfile entries that don't look like real package names and versions are ignored
+- **GitHub Action:** an input was pasted into a script (now passed through the environment); the action could update someone else's comment that started with its marker (now only its own); `base` must be a git revision, never an option (also checked by `review --base`)
+- **Workflows:** every workflow runs with a read-only token unless a job asks for more, and third-party actions are pinned to commits. `ci-setup` writes a workflow that does the same
+- **Hostile files:** a deeply nested notebook, Python file or package module crashed the whole check; it's now skipped. The releases feed is refused if it has a DTD (no entity-expansion attacks). Release-note tidying was quadratic on some input (a minute for 1 MB) and is now linear
+- **migrate --write:** never writes through a symlink or outside the project, replaces each file atomically, and keeps its permissions and line endings (it used to change them on Windows)
+- **Cache:** readable only by you (`0700`/`0600`); with a token it can hold a private repository's file listing
+- **Dependencies:** `h11>=0.16.0` (versions before it have a known vulnerability, PYSEC-2026-348, and `httpx>=0.24` allowed them), so `httpx>=0.27.0`
+- **Website:** a Content-Security-Policy that allows only its own script (by hash), its fonts and PyPI, plus `nosniff`, no framing and a referrer policy on Vercel
+
 ## [0.19.1] - 2026-11-27
 
 ### Added

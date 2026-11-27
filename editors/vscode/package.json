@@ -2,7 +2,7 @@
   "name": "pyupcheck",
   "displayName": "pyupcheck",
   "description": "See the lines of your Python code that a dependency upgrade breaks, and fix them with pyupcheck migrate.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "astronomox",
   "license": "MIT",
   "repository": {
@@ -12,8 +12,16 @@
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": ["Linters"],
-  "keywords": ["python", "dependencies", "upgrade", "breaking changes", "pip"],
+  "categories": [
+    "Linters"
+  ],
+  "keywords": [
+    "python",
+    "dependencies",
+    "upgrade",
+    "breaking changes",
+    "pip"
+  ],
   "main": "./extension.js",
   "activationEvents": [
     "workspaceContains:**/requirements*.txt",
@@ -27,7 +35,10 @@
   ],
   "contributes": {
     "commands": [
-      { "command": "pyupcheck.check", "title": "pyupcheck: Check dependency upgrades" }
+      {
+        "command": "pyupcheck.check",
+        "title": "pyupcheck: Check dependency upgrades"
+      }
     ],
     "configuration": {
       "title": "pyupcheck",
@@ -35,7 +46,8 @@
         "pyupcheck.path": {
           "type": "string",
           "default": "pyupcheck",
-          "description": "The pyupcheck executable (pip install pyupcheck). Set a full path if it isn't on PATH, e.g. a virtual environment's."
+          "description": "The pyupcheck executable (pip install pyupcheck). Set a full path if it isn't on PATH, e.g. a virtual environment's. A value set by a workspace you haven't trusted is ignored.",
+          "scope": "machine-overridable"
         },
         "pyupcheck.deep": {
           "type": "boolean",
@@ -44,7 +56,11 @@
         },
         "pyupcheck.checkOnSave": {
           "type": "string",
-          "enum": ["dependencies", "all", "off"],
+          "enum": [
+            "dependencies",
+            "all",
+            "off"
+          ],
           "default": "dependencies",
           "enumDescriptions": [
             "Re-check when a requirements file, pyproject.toml or lockfile is saved",
@@ -55,7 +71,10 @@
         },
         "pyupcheck.minSeverity": {
           "type": "string",
-          "enum": ["breaking", "deprecated"],
+          "enum": [
+            "breaking",
+            "deprecated"
+          ],
           "default": "deprecated",
           "description": "The least severe finding to show."
         },
@@ -69,5 +88,15 @@
   },
   "scripts": {
     "test": "node --test test/*.test.js"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "In a workspace you haven't trusted, pyupcheck runs only the executable from your user settings: a pyupcheck.path set by the workspace itself is ignored.",
+      "restrictedConfigurations": [
+        "pyupcheck.path"
+      ]
+    },
+    "virtualWorkspaces": false
   }
 }

@@ -66,6 +66,11 @@ class APIChange:
 
 
 MAX_DOWNLOAD_BYTES = 300 * 1024 * 1024  # skip absurdly large distributions
+# what an archive may make pyupcheck read, whatever its headers claim: a
+# "zip bomb" must not exhaust memory
+MAX_MEMBER_BYTES = 16 * 1024 * 1024      # one source file
+MAX_TOTAL_BYTES = 768 * 1024 * 1024      # all source files of one distribution
+MAX_MEMBERS = 200_000
 
 _SDIST_SUFFIXES = (".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".zip")
 _SOURCE_SUFFIXES = (".py", ".pyi")
@@ -149,7 +154,7 @@ def _find_sdist_or_wheel_url(package: str, version: str) -> Optional[Tuple[str, 
 
 def _download(url: str) -> Optional[bytes]:
     try:
-        resp = http_get(url, timeout=120, follow_redirects=True)
+        resp = http_get(url, max_bytes=MAX_DOWNLOAD_BYTES, timeout=120, follow_redirects=True)
         resp.raise_for_status()
         return resp.content
     except Exception:
@@ -223,38 +228,75 @@ def _wanted(rel: Optional[str]) -> bool:
     return bool(rel) and rel.endswith(_SOURCE_SUFFIXES + _EXT_SUFFIXES)
 
 
-def _read_wheel(data: bytes) -> List[Tuple[str, bytes]]:
+class _Budget:
+    """Bytes and files an archive may still make us read."""
+
+    def __init__(self):
+        self.bytes, self.files = MAX_TOTAL_BYTES, MAX_MEMBERS
+
+    def take(self, size: int) -> bool:
+        if size > MAX_MEMBER_BYTES or size > self.bytes or self.files <= 0:
+            return False
+        self.bytes -= size
+        self.files -= 1
+        return True
+
+
+def _zip_members(data: bytes, rel_path) -> List[Tuple[str, bytes]]:
     out = []
-    try:
-        with zipfile.ZipFile(io.BytesIO(data)) as zf:
-            for name in zf.namelist():
-                rel = _wheel_rel_path(name)
-                if not _wanted(rel):
-                    continue
-                try:
-                    raw = b"" if rel.endswith(_EXT_SUFFIXES) else zf.read(name)
+    budget = _Budget()
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        for info in zf.infolist()[:MAX_MEMBERS]:
+            rel = rel_path(info.filename)
+            if not _wanted(rel) or info.is_dir():
+                continue
+            if rel.endswith(_EXT_SUFFIXES):
+                out.append((rel, b""))  # only its name matters
+                continue
+            if not budget.take(info.file_size):
+                continue
+            try:
+                # reads at most file_size bytes, and checks the CRC
+                with zf.open(info) as f:
+                    raw = f.read(MAX_MEMBER_BYTES + 1)
+                if len(raw) <= MAX_MEMBER_BYTES:
                     out.append((rel, raw))
-                except Exception:
-                    continue
-    except Exception:
-        pass
+            except Exception:
+                continue
     return out
+
+
+def _read_wheel(data: bytes) -> List[Tuple[str, bytes]]:
+    try:
+        return _zip_members(data, _wheel_rel_path)
+    except Exception:
+        return []
 
 
 def _read_sdist(data: bytes) -> List[Tuple[str, bytes]]:
     out = []
+    budget = _Budget()
     try:
+        # members are read into memory one by one: nothing is ever extracted
+        # to disk, so paths like ../../x or symlinks can't escape anywhere
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as tf:
-            for member in tf.getmembers():
+            for seen, member in enumerate(tf):
+                if seen >= MAX_MEMBERS:
+                    break
                 if not member.isfile():
                     continue
                 rel = _sdist_rel_path(member.name)
                 if not _wanted(rel):
                     continue
+                if rel.endswith(_EXT_SUFFIXES):
+                    out.append((rel, b""))
+                    continue
+                if not budget.take(member.size):
+                    continue
                 try:
                     f = tf.extractfile(member)
                     if f:
-                        out.append((rel, f.read()))
+                        out.append((rel, f.read(MAX_MEMBER_BYTES)))
                 except Exception:
                     continue
         if out:
@@ -262,18 +304,9 @@ def _read_sdist(data: bytes) -> List[Tuple[str, bytes]]:
     except Exception:
         pass
     try:
-        with zipfile.ZipFile(io.BytesIO(data)) as zf:
-            for name in zf.namelist():
-                rel = _sdist_rel_path(name)
-                if not _wanted(rel):
-                    continue
-                try:
-                    out.append((rel, zf.read(name)))
-                except Exception:
-                    continue
+        return _zip_members(data, _sdist_rel_path)
     except Exception:
-        pass
-    return out
+        return out
 
 
 class _SurfaceVisitor(ast.NodeVisitor):
@@ -462,7 +495,7 @@ def _return_name(ann) -> Optional[str]:
     if isinstance(ann, ast.Constant) and isinstance(ann.value, str):
         try:
             ann = ast.parse(ann.value, mode="eval").body
-        except SyntaxError:
+        except (SyntaxError, ValueError, RecursionError, MemoryError):
             return None
     if isinstance(ann, ast.Subscript) and _base_name(ann.value) == "Optional":
         return _return_name(ann.slice)
@@ -520,11 +553,13 @@ def build_surface(version: str, sources: Dict[str, List[str]],
                     # old packages' invalid escapes ("\\420") are their business, not ours
                     warnings.simplefilter("ignore", SyntaxWarning)
                     tree = ast.parse(src)
-            except (SyntaxError, ValueError):
-                continue  # e.g. Python 2-only sources
-            visitor = _SurfaceVisitor(module_path)
-            visitor.visit(tree)
-            visitor.finalize()
+                visitor = _SurfaceVisitor(module_path)
+                visitor.visit(tree)
+                visitor.finalize()
+            except (SyntaxError, ValueError, RecursionError, MemoryError):
+                # Python 2-only sources, or a module nested too deeply to parse
+                # (MemoryError is the parser's "too complex"): skip that module
+                continue
             if visitor.star_imports:
                 stars.setdefault(module_path, []).extend(visitor.star_imports)
             if visitor.all_names is not None:

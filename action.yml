@@ -53,7 +53,7 @@ outputs:
 runs:
   using: composite
   steps:
-    - uses: actions/setup-python@v7
+    - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
       with:
         python-version: ${{ inputs.python-version }}
 
@@ -81,8 +81,13 @@ runs:
           sarif_args=(--sarif "$sarif_path")
           echo "sarif=$sarif_path" >> "$GITHUB_OUTPUT"
         fi
+        # a revision, never an option: inputs are passed through the
+        # environment and checked here before git sees them
+        case "$BASE" in
+          -*|*[!A-Za-z0-9_./@{}^~:+-]*) echo "::error::base is not a git revision: refusing it"; exit 2 ;;
+        esac
         # the base commit must be present locally to read its dependency files
-        git cat-file -e "$BASE^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$BASE"
+        git cat-file -e "$BASE^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin -- "$BASE"
         set +e
         # annotations go to stdout, where GitHub turns them into line comments
         pyupcheck review --base "$BASE" $DEEP --fail-on "$FAIL_ON" -o "$report" $ANNOTATE "${sarif_args[@]}"
@@ -105,8 +110,12 @@ runs:
         REPO: ${{ github.repository }}
       run: |
         marker='<!-- pyupcheck-review -->'
+        # only our own earlier comment: one written by the token's account
+        # (a bot). Anyone can post a comment that starts with the marker, and
+        # updating theirs would put the report under their name.
+        me=$(gh api user --jq .login 2>/dev/null || echo "github-actions[bot]")
         existing=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-          --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -n1)
+          --jq ".[] | select(.user.login == \"$me\" and (.body | startswith(\"$marker\"))) | .id" | head -n1)
         if grep -q '^No dependency versions changed' "$REPORT" && [ -z "$existing" ]; then
           echo "No dependency changes and no earlier comment: nothing to post."
           exit 0
@@ -123,6 +132,9 @@ runs:
     - name: Fail on findings
       if: steps.review.outputs.status != '0'
       shell: bash
+      env:  # never expanded into the script itself
+        BREAKING: ${{ steps.review.outputs.breaking }}
+        FAIL_ON: ${{ inputs.fail-on }}
       run: |
-        echo "pyupcheck found ${{ steps.review.outputs.breaking }} breaking usage(s) (fail-on: ${{ inputs.fail-on }})"
+        echo "pyupcheck found $BREAKING breaking usage(s) (fail-on: $FAIL_ON)"
         exit 1

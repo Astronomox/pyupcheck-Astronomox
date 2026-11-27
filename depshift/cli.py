@@ -455,13 +455,19 @@ def _emit(results: List[dict], fmt: str, output: Optional[str], quiet: bool):
 
 
 def _esc(text: str) -> str:
-    """Text shown as is, never read as rich markup ("[cell 3] x = a[0]")."""
+    """Text shown as is: never read as rich markup ("[cell 3] x = a[0]"), and
+    without terminal control sequences (it may come from release notes, PyPI
+    or a repository you just cloned)."""
     from rich.markup import escape
-    return escape(text)
+    from depshift.safe import plain
+    return escape(plain(text))
 
 
-_MD_LINK = re.compile(r"\[([^\]]+)\]\((?:https?://|#)[^)]*\)")
-_PR_CREDIT = re.compile(r"\s*\(?\b(?:PR|Pull request)\s+#?\d+(?:\s+by\s+@?[\w-]+)?\)?\.?\s*$", re.IGNORECASE)
+# bounded patterns: release notes are untrusted input, and an unbounded
+# "[" or whitespace run made these quadratic
+_MD_LINK = re.compile(r"\[([^\[\]\n]{1,300})\]\((?:https?://|#)[^()\s]{0,2000}\)")
+_PR_CREDIT = re.compile(r"(?:(?<=\s)|^)\(?\b(?:PR|Pull request)\s+#?\d+(?:\s+by\s+@?[\w-]+)?\)?\.?\s*$",
+                        re.IGNORECASE)
 _LEAD_TAGS = re.compile(r"^\W*?(?:\*\*)?(?:\[[\w ]+\]\s*)+(?:\*\*)?\s*")
 
 
@@ -470,6 +476,9 @@ def tidy_note(text: str, limit: int = 240) -> str:
     tags, PR credits or reST roles, cut at a sentence (or word) boundary."""
     import unicodedata
     from depshift.review import _clean
+    from depshift.safe import plain
+    # a note is a sentence or two: cap the input before any pattern runs on it
+    text = plain(text, keep_newlines=False)[: max(limit * 4, 2000)]
     text = _MD_LINK.sub(r"\1", text)
     text = _LEAD_TAGS.sub("", text)
     text = "".join(ch for ch in text if unicodedata.category(ch) not in ("So", "Cn", "Co")
@@ -1095,7 +1104,8 @@ def review(base, directory, deep, output, fail_on, github_token, jobs, annotatio
     then checks each package that changed version, from its old version to
     its new one. Prints Markdown suitable for a PR comment.
     """
-    import subprocess as _sp
+    # only for its exception type: nothing is run here
+    import subprocess as _sp  # nosec B404
     from concurrent.futures import ThreadPoolExecutor
     from depshift.review import changed_dependencies, render_review
 
@@ -1105,7 +1115,7 @@ def review(base, directory, deep, output, fail_on, github_token, jobs, annotatio
         cache_mod.disable_cache()
     try:
         changes = changed_dependencies(directory, base)
-    except (_sp.CalledProcessError, FileNotFoundError) as e:
+    except (_sp.CalledProcessError, FileNotFoundError, ValueError) as e:
         detail = getattr(e, "stderr", "") or str(e)
         console.print(f"[red]Could not read dependency files at {base}:[/] {detail.strip()}")
         sys.exit(2)
@@ -1302,7 +1312,9 @@ def explain(package, target_version, directory, deep, max_findings, effort, mode
     console.print(f"[dim]Sending {len(findings)} finding(s) and {lines} lines of your code to the Claude API "
                   f"({model or ex.MODEL})" + (f"; {more} more not sent (--max)" if more > 0 else "") + ".[/]\n")
     try:
-        info = ex.stream_advice(client, prompt, lambda t: (sys.stdout.write(t), sys.stdout.flush()),
+        from depshift.safe import plain
+        # the model's answer is shown as text: never as terminal control sequences
+        info = ex.stream_advice(client, prompt, lambda t: (sys.stdout.write(plain(t)), sys.stdout.flush()),
                                 model=model or ex.MODEL, effort=effort, fallbacks=not no_fallbacks)
     except ex.ExplainError as e:
         console.print(f"\n[red]{_esc(str(e))}[/]")
@@ -1340,6 +1352,7 @@ def migrate(package, target_version, directory, write, exclude, github_token, no
     """
     from depshift import notebook
     from depshift.rewrite import unified_diff
+    from depshift.safe import plain
 
     directory = os.path.abspath(directory)
     cfg = load_config(directory)
@@ -1364,12 +1377,15 @@ def migrate(package, target_version, directory, write, exclude, github_token, no
         for fx in fc.fixes:
             console.print(f"  [green]fix[/] {mp.where(fx)}  {_esc(fx.description)}")
         if fc.notebook is not None:
-            print(unified_diff(fc.rel, notebook.cells_text(fc.notebook, fc.before),
-                               notebook.cells_text(fc.notebook, fc.after)))
+            print(plain(unified_diff(fc.rel, notebook.cells_text(fc.notebook, fc.before),
+                                     notebook.cells_text(fc.notebook, fc.after))))
         else:
-            print(unified_diff(fc.rel, fc.before, fc.after))
+            print(plain(unified_diff(fc.rel, fc.before, fc.after)))
         if write:
-            fc.write()
+            try:
+                fc.write(directory)
+            except OSError as e:
+                console.print(f"[red]not written:[/] {_esc(str(e))}")
 
     if mp.manual:
         console.print(f"[yellow]{len(mp.manual)} change(s) need you:[/]")
@@ -1394,11 +1410,34 @@ class FileChange:
         self.path, self.rel, self.before, self.after = path, rel, before, after
         self.fixes, self.notebook, self.error = fixes, nb, error
 
-    def write(self) -> None:
+    def write(self, root: Optional[str] = None) -> None:
+        """Replace the file in one step (a crash never leaves it half written),
+        keeping its permissions. Refuses a symlink, or a file outside ``root``:
+        a cloned repository must not get its rewrite written somewhere else."""
+        import tempfile
+        import shutil
         from depshift import notebook
-        with open(self.path, "w", encoding="utf-8") as f:
-            f.write(notebook.dumps(notebook.restore(self.notebook, self.after))
-                    if self.notebook is not None else self.after)
+        if os.path.islink(self.path):
+            raise PermissionError(f"{self.rel} is a symlink: not rewritten")
+        if root is not None:
+            real_root = os.path.realpath(root)
+            if os.path.commonpath([real_root, os.path.realpath(self.path)]) != real_root:
+                raise PermissionError(f"{self.rel} is outside {root}: not rewritten")
+        text = (notebook.dumps(notebook.restore(self.notebook, self.after))
+                if self.notebook is not None else self.after)
+        with open(self.path, "rb") as f:
+            newline = "\r\n" if b"\r\n" in f.read() else "\n"  # keep the file's line endings
+        folder = os.path.dirname(os.path.abspath(self.path))
+        fd, tmp = tempfile.mkstemp(dir=folder, prefix=".pyupcheck-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline=newline) as f:
+                f.write(text)
+            shutil.copymode(self.path, tmp)
+            os.replace(tmp, self.path)
+        except BaseException:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            raise
 
 
 class MigrationPlan:
@@ -1479,7 +1518,7 @@ def plan_project_migration(package: str, target_version: Optional[str], director
         error = None
         try:
             _ast.parse(after)
-        except SyntaxError:
+        except (SyntaxError, ValueError, RecursionError, MemoryError):
             error = "the rewrite would not parse"
         mp.files.append(FileChange(path, rel, before, after,
                                    sorted(fixes, key=lambda x: (x.cell or 0, x.line)), nb, error))
@@ -1531,16 +1570,22 @@ on:
   schedule:
     - cron: '0 9 * * 1'  # every Monday 9am UTC
 
+# the check only reads the repository
+permissions:
+  contents: read
+
 jobs:
   pyupcheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # actions pinned to a commit (the tag in the comment): a moved tag can't
+      # change what runs here. Dependabot keeps them current.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         with:
-          python-version: '3.11'
+          python-version: '3.13'
 
       - name: Install pyupcheck
         run: pip install pyupcheck

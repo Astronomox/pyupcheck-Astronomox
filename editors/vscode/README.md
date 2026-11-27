@@ -43,3 +43,9 @@ npm test                      # unit tests and an activation test, no VS Code ne
 npx @vscode/vsce package      # builds pyupcheck-<version>.vsix
 code --install-extension pyupcheck-0.1.0.vsix
 ```
+
+## Security
+
+- In a workspace you haven't trusted, a `pyupcheck.path` set by the workspace itself is ignored, so opening a repository can't make the extension run a program of its choosing. Set it in your user settings instead.
+- pyupcheck is run directly with a list of arguments, never through a shell, and only for package names and versions that look like real ones.
+- The quick fix shows the diff in the pyupcheck output first, and rewrites files only after you confirm.

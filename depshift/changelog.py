@@ -77,6 +77,23 @@ def get_current_version(package: str) -> str:
     return info["info"]["version"]
 
 
+# what GitHub allows: owners are 1-39 letters, digits and single hyphens;
+# repository names letters, digits, '.', '_' and '-' (but not "." or "..")
+_GH_OWNER = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
+_GH_REPO = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
+_GH_REF = re.compile(r"^[A-Za-z0-9._/-]{1,200}$")
+_SAFE_PATH = re.compile(r"^[A-Za-z0-9._/ -]{1,300}$")
+
+
+def valid_repo(owner: str, repo: str) -> bool:
+    """A real GitHub owner/repo, safe to put in a URL path."""
+    return bool(_GH_OWNER.match(owner or "")) and bool(_GH_REPO.match(repo or "")) and repo not in (".", "..")
+
+
+def _safe_path(path: str) -> bool:
+    return bool(_SAFE_PATH.match(path)) and ".." not in path.split("/") and not path.startswith("/")
+
+
 def extract_github_repo(pypi_info: dict) -> Optional[Tuple[str, str]]:
     """Try to find the GitHub owner/repo from PyPI metadata."""
     info = pypi_info.get("info", {})
@@ -102,12 +119,15 @@ def extract_github_repo(pypi_info: dict) -> Optional[Tuple[str, str]]:
             owner, repo = m.group(1), m.group(2)
             if repo.endswith(".git"):
                 repo = repo[: -len(".git")]
-            return owner, repo
+            if valid_repo(owner, repo):
+                return owner, repo
     return None
 
 
 def fetch_github_releases(owner: str, repo: str, token: Optional[str] = None) -> List[dict]:
     """Fetch releases from GitHub (cached)."""
+    if not valid_repo(owner, repo):
+        return []
     key = f"gh-releases:{owner}/{repo}"
     cached = cache_get(key)
     if cached is not None:
@@ -170,10 +190,15 @@ def html_to_text(html_text: str) -> str:
 def parse_releases_feed(xml_text: str) -> List[dict]:
     """GitHub's releases Atom feed as release dicts (``tag_name``, ``name``,
     ``body``), like the API returns."""
-    import xml.etree.ElementTree as ET
+    # a document with a DTD is refused below, before parsing: no entity expansion
+    import xml.etree.ElementTree as ET  # nosec B405
     from urllib.parse import unquote
+    # an Atom feed never needs a DTD: refusing one rules out entity-expansion
+    # ("billion laughs") and external-entity tricks before the parser runs
+    if not xml_text or re.search(r"<!(?:DOCTYPE|ENTITY)", xml_text, re.IGNORECASE):
+        return []
     try:
-        root = ET.fromstring(xml_text)
+        root = ET.fromstring(xml_text)  # nosec B314
     except ET.ParseError:
         return []
     out = []
@@ -894,6 +919,8 @@ def _parallel(fn, items: list) -> list:
 
 def fetch_raw_changelog(owner: str, repo: str, token: Optional[str] = None) -> Optional[str]:
     """Try to fetch the raw changelog file from GitHub (cached)."""
+    if not valid_repo(owner, repo):
+        return None
     key = f"gh-changelog4:{owner}/{repo}"
     cached = cache_get(key)
     if cached is not None:
@@ -988,6 +1015,8 @@ def changelog_link_candidates(pypi_info: dict) -> List[str]:
             # a package's folder in a monorepo (google-cloud-python/packages/google-auth):
             # its changelog is there, not at the repository root
             o, r, branch, path = m.groups()
+            if not (valid_repo(o, r) and _GH_REF.match(branch) and _safe_path(path)):
+                continue
             out += [f"https://raw.githubusercontent.com/{o}/{r}/{branch}/{path.rstrip('/')}/{f}"
                     for f in ("CHANGELOG.md", "CHANGES.md", "CHANGELOG.rst", "CHANGES.rst")]
             continue
@@ -996,6 +1025,8 @@ def changelog_link_candidates(pypi_info: dict) -> List[str]:
         m = _GITHUB_BLOB.match(url)
         if m:
             o, r, branch, path = m.groups()
+            if not (valid_repo(o, r) and _GH_REF.match(branch) and _safe_path(path)):
+                continue
             out.append(f"https://raw.githubusercontent.com/{o}/{r}/{branch}/{path}")
             continue
         if "github.com/" in url and url.rstrip("/").endswith("/releases"):
@@ -1011,7 +1042,9 @@ def changelog_link_candidates(pypi_info: dict) -> List[str]:
             out += [f"{base}/_sources/{stem}.rst.txt", f"{base}/_sources/{stem}.md.txt"]
         elif re.search(r"\.(md|rst|txt)$", url):
             out.append(url)
-    return list(dict.fromkeys(out))
+    # links anyone can publish: only https to a public host (http.check_url
+    # enforces the same on every request and redirect)
+    return [u for u in dict.fromkeys(out) if u.startswith("https://")]
 
 
 def fetch_linked_changelog(package: str, pypi_info: dict) -> Optional[str]:
@@ -1073,7 +1106,7 @@ def repo_files(owner: str, repo: str) -> Optional[set]:
     """The repository's changelog-like files (paths that look like release
     notes), from one GitHub API call, when a token allows it (cached). None
     when unknown: callers then probe for each candidate."""
-    if not _github_token:
+    if not _github_token or not valid_repo(owner, repo):
         return None
     key = f"gh-files:{owner}/{repo}"
     cached = cache_get(key)
@@ -1100,6 +1133,8 @@ def repo_files(owner: str, repo: str) -> Optional[set]:
 def _raw(owner: str, repo: str, path: str, branch: str = DEFAULT_BRANCH) -> Optional[str]:
     """Fetch a public file from GitHub; None if it doesn't exist. Raises on
     network errors so callers can report them."""
+    if not (valid_repo(owner, repo) and _GH_REF.match(branch) and _safe_path(path)):
+        return None  # names from metadata or release notes: never odd URL paths
     listed = repo_files(owner, repo)
     if listed is not None and _LISTED.search(path) and path not in listed:
         return None  # the listing says it isn't there: no request

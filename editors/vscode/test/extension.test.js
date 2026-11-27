@@ -30,9 +30,11 @@ function fakeVscode(settings, workspaceRoot) {
       registerCodeActionsProvider: (_sel, provider) => { calls.codeActions = provider; return disposable; },
     },
     window: {
-      createOutputChannel: () => ({ appendLine() {}, dispose() {} }),
+      createOutputChannel: () => ({ appendLine() {}, show() {}, dispose() {} }),
       createStatusBarItem: () => (calls.status = { show() {}, dispose() {} }),
-      showWarningMessage: async () => undefined,
+      showWarningMessage: async (...a) => { calls.asked = a; return settings.answer; },
+      showInformationMessage: async (...a) => { calls.told = a; },
+      showErrorMessage: async (...a) => { calls.error = a; },
       createTerminal: (opts) => {
         const t = { opts, sent: [], show() {}, sendText(s) { t.sent.push(s); } };
         calls.terminals.push(t);
@@ -55,6 +57,10 @@ function fakeVscode(settings, workspaceRoot) {
     },
   };
   return { vscode, calls };
+}
+
+function settingsAnswer(calls, vscode, answer) {
+  vscode.window.showWarningMessage = async (...a) => { calls.asked = a; return answer; };
 }
 
 function loadExtension(vscode) {
@@ -84,10 +90,18 @@ test("a check run becomes diagnostics, a status and a migrate quick fix", async 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pyupcheck-vscode-"));
   const fixture = path.join(__dirname, "fixtures", "check-all.json");
   const fake = path.join(dir, "pyupcheck");
-  // prints the recorded output with its paths moved under this test's folder
-  fs.writeFileSync(fake, `#!/bin/sh\nsed "s|/project|${dir}|g" "${fixture}"\n`, { mode: 0o755 });
+  const log = path.join(dir, "calls.log");
+  // check-all prints the recorded output with its paths moved under this
+  // test's folder; migrate logs its arguments, one per line, and prints a diff
+  fs.writeFileSync(fake, `#!/bin/sh
+if [ "$1" = migrate ]; then
+  for a in "$@"; do printf '%s\\n' "$a" >> "${log}"; done; echo "--" >> "${log}"
+  echo "--- a/app.py"; echo "+++ b/app.py"; exit 0
+fi
+sed "s|/project|${dir}|g" "${fixture}"
+`, { mode: 0o755 });
 
-  const { vscode, calls } = fakeVscode({ path: fake }, dir);
+  const { vscode, calls } = fakeVscode({ path: fake, answer: "Rewrite" }, dir);
   const ext = loadExtension(vscode);
   ext.activate({ subscriptions: [] });
   await until(() => calls.diagnostics.size > 0);
@@ -105,8 +119,24 @@ test("a check run becomes diagnostics, a status and a migrate quick fix", async 
   const [action] = calls.codeActions.provideCodeActions(
     { uri: vscode.Uri.file(path.join(dir, "app.py")) }, null, { diagnostics: app });
   assert.strictEqual(action.title, "Fix with pyupcheck migrate numpy 2.5.5");
-  calls.commands.get("pyupcheck.migrate")(...action.command.arguments);
-  assert.deepStrictEqual(calls.terminals[0].sent, [`${fake} migrate numpy 2.5.5 --dir ${dir} --write`]);
+  // the quick fix previews, asks, then writes: run directly, never in a shell
+  await calls.commands.get("pyupcheck.migrate")(...action.command.arguments);
+  const runs = fs.readFileSync(log, "utf8").split("--\n").filter(Boolean).map((r) => r.trim().split("\n"));
+  assert.deepStrictEqual(runs, [["migrate", "numpy", "2.5.5", "--dir", dir],
+    ["migrate", "numpy", "2.5.5", "--dir", dir, "--write"]]);
+  assert.match(calls.asked[0], /Rewrite 1 file for numpy 2\.5\.5\?/);
+  assert.strictEqual(calls.terminals.length, 0);
+
+  // declined: previewed again, nothing written
+  fs.unlinkSync(log);
+  settingsAnswer(calls, vscode, undefined);
+  await calls.commands.get("pyupcheck.migrate")(...action.command.arguments);
+  assert.deepStrictEqual(fs.readFileSync(log, "utf8").split("--\n").filter(Boolean).length, 1);
+
+  // a finding with a hostile package name never reaches the executable
+  fs.unlinkSync(log);
+  await calls.commands.get("pyupcheck.migrate")(dir, { package: "x;touch pwned", target: "1" });
+  assert.ok(!fs.existsSync(log) && calls.error);
   ext.deactivate();
 });
 

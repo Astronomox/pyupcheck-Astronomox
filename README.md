@@ -14,7 +14,7 @@
 - **Wide reach:** **96.7%** of the 1,000 most-downloaded PyPI packages can be deep-checked. It works with pip, uv, Poetry, PDM, Pipenv, conda and pixi, plus Jupyter notebooks.
 - **Fits your workflow:** a GitHub Action that comments on dependency PRs, `watch` mode, and a VS Code extension.
 
-Website: [pyupcheck.vercel.app](https://pyupcheck.vercel.app) · Changes: [CHANGELOG.md](CHANGELOG.md) · Latest: **0.19.1**
+Website: [pyupcheck.vercel.app](https://pyupcheck.vercel.app) · Changes: [CHANGELOG.md](CHANGELOG.md) · Latest: **0.20.0**
 
 ## Install
 
@@ -233,7 +233,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: Astronomox/pyupcheck-Astronomox@v0.19.1
+      - uses: Astronomox/pyupcheck-Astronomox@v0.20.0
         # with:
         #   fail-on: breaking   # make the check fail on breaking usages
         #   deep: "false"       # changelog only (faster)
@@ -362,6 +362,10 @@ Changelogs are read from GitHub releases, root CHANGES files, per-version releas
 - Packages that ship only compiled code (CUDA libraries, for example) have no Python API for deep mode to compare; they're checked from their release notes
 - `explain` hasn't been tried against the live Claude API yet
 
+## Security
+
+pyupcheck reads package archives, metadata and release notes it doesn't control, and projects you may have just cloned. It never installs, imports or runs any of it. It fetches only public `https` hosts, with size limits, and shows untrusted text without terminal control sequences or Markdown that could ping people. [SECURITY.md](SECURITY.md) has the full threat model and how to report a vulnerability.
+
 ## Contributing
 
 Contributions are welcome. Here is how to get started:
@@ -444,6 +448,7 @@ What has shipped, newest first (details in [CHANGELOG.md](CHANGELOG.md)):
 
 | Version | Date | Highlights |
 |---|---|---|
+| 0.20.0 | 2026-11-27 | Security review: SSRF, terminal and Markdown injection, VS Code workspace trust, size limits, Action hardening ([SECURITY.md](SECURITY.md)) |
 | 0.19.1 | 2026-11-27 | `ui`: where your code uses each package (`u` lists every line); status no longer cut off |
 | 0.19.0 | 2026-11-27 | `pyupcheck ui`: a full-screen app to browse upgrades, preview fixes and apply them |
 | 0.18.0 | 2026-11-26 | `check-all` results as one table; release-note mentions grouped; false alarms on FastAPI and SQLAlchemy projects fixed |
@@ -463,7 +468,7 @@ What has shipped, newest first (details in [CHANGELOG.md](CHANGELOG.md)):
 | 0.7.0 | 2026-11-20 | `migrate`: verified, mechanical rewrites |
 | 0.6.0 | 2026-11-20 | Accuracy overhaul, accuracy benchmark, lockfiles, object tracking, parallel `check-all`, Trusted Publishing |
 
-Where it stands now: deep mode catches 100% of breaking lines on 52 real upgrades with no false alarms; release notes alone catch 80.6%, also with no false alarms; `migrate` gets 8 of 8 rewrite cases exactly right; 96.7% of the top 1,000 PyPI packages can be deep-checked. There are 435 tests on Python 3.10 to 3.14.
+Where it stands now: deep mode catches 100% of breaking lines on 52 real upgrades with no false alarms; release notes alone catch 80.6%, also with no false alarms; `migrate` gets 8 of 8 rewrite cases exactly right; 96.7% of the top 1,000 PyPI packages can be deep-checked. There are 482 tests on Python 3.10 to 3.14.
 
 ## Roadmap
 

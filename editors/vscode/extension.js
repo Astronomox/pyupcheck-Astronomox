@@ -4,7 +4,7 @@
 
 const vscode = require("vscode");
 const { execFile } = require("child_process");
-const { buildArgs, parseFindings, summary, migrateCommand, isDependencyFile } = require("./lib");
+const { buildArgs, parseFindings, summary, migrateArgs, isDependencyFile } = require("./lib");
 
 const SOURCE = "pyupcheck";
 let diagnostics;
@@ -170,13 +170,50 @@ function provideCodeActions(document, range, context) {
   return actions;
 }
 
-function runMigrate(root, finding) {
-  if (!root || !finding) return;
-  // in a terminal, so the diff and the manual items stay readable and you
-  // see exactly what was changed
-  const term = vscode.window.createTerminal({ name: `pyupcheck migrate ${finding.package}`, cwd: root });
-  term.show();
-  term.sendText(migrateCommand(config().executable, root, finding));
+/** Run pyupcheck (no shell: arguments are passed as a list). */
+function runPyupcheck(args, cwd) {
+  return new Promise((resolve) => {
+    const cfg = config();
+    output.appendLine(`$ ${cfg.executable} ${args.join(" ")}`);
+    execFile(cfg.executable, args, { cwd, maxBuffer: 64 * 1024 * 1024, timeout: 15 * 60 * 1000 },
+      (err, stdout, stderr) => resolve({ err, stdout: stdout || "", stderr: stderr || "" }));
+  });
+}
+
+/**
+ * The quick fix: show what `pyupcheck migrate` would change, and rewrite the
+ * files only after you say so.
+ */
+async function runMigrate(root, finding) {
+  const preview = migrateArgs(root, finding, false);
+  if (!preview) {
+    vscode.window.showErrorMessage("pyupcheck: not a valid package or version, so nothing was run.");
+    return;
+  }
+  output.show(true);
+  const first = await runPyupcheck(preview, root);
+  output.appendLine(first.stdout.trimEnd());
+  if (first.stderr) output.appendLine(first.stderr.trimEnd());
+  if (first.err && first.err.code === "ENOENT") {
+    vscode.window.showWarningMessage(`pyupcheck was not found ("${config().executable}").`);
+    return;
+  }
+  const files = (first.stdout.match(/^\+\+\+ /gm) || []).length;
+  if (!files) {
+    vscode.window.showInformationMessage(
+      `pyupcheck: nothing ${finding.package} ${finding.target} can rewrite automatically. ` +
+      "What needs a manual change is in the pyupcheck output.");
+    return;
+  }
+  const pick = await vscode.window.showWarningMessage(
+    `Rewrite ${files} file${files === 1 ? "" : "s"} for ${finding.package} ${finding.target}? ` +
+    "The changes are shown in the pyupcheck output.", { modal: true }, "Rewrite");
+  if (pick !== "Rewrite") return;
+  const second = await runPyupcheck(migrateArgs(root, finding, true), root);
+  output.appendLine(second.stdout.trimEnd());
+  if (second.stderr) output.appendLine(second.stderr.trimEnd());
+  const folder = (vscode.workspace.workspaceFolders || []).find((f) => f.uri.fsPath === root);
+  if (folder) checkFolder(folder);
 }
 
 module.exports = { activate, deactivate };

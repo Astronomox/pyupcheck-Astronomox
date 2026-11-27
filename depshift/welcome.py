@@ -111,10 +111,10 @@ def _can_encode(console: Console, s: str) -> bool:
 def _fetch_pypi_data() -> dict:
     """Latest version and the six newest releases with their dates."""
     try:
-        import httpx
         from packaging.version import InvalidVersion, Version
+        from depshift.http import http_get
 
-        resp = httpx.get("https://pypi.org/pypi/pyupcheck/json", timeout=5)
+        resp = http_get("https://pypi.org/pypi/pyupcheck/json", timeout=5)
         resp.raise_for_status()
         data = resp.json()
         parsed = []

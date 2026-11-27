@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-I85W0uEJHbEqwxMc8sgTPQuIZmWyQYGDK1W3v0sm2JE='; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src https://pypi.org; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>pyupcheck: know what breaks before you upgrade</title>
 <meta name="description" content="pyupcheck reads your code and the real API of both versions, then tells you exactly which lines a Python dependency upgrade breaks, and rewrites what it safely can.">
@@ -309,7 +310,7 @@ footer a:hover{text-decoration:underline}
 <section class="hero" id="top">
   <div class="wrap">
     <div>
-      <span class="kicker"><span class="dot"></span>Free &amp; open source<span class="ver">v<span id="ver">0.16</span></span></span>
+      <span class="kicker"><span class="dot"></span>Free &amp; open source<span class="ver">v<span id="ver">0.20.0</span></span></span>
       <h1>Know what breaks <span class="mark">before</span> you upgrade.</h1>
       <p class="lead">pyupcheck reads your code and the real API of both versions, then shows you the exact lines a dependency upgrade breaks, and rewrites the ones it safely can.</p>
       <div class="install">
@@ -494,7 +495,7 @@ footer a:hover{text-decoration:underline}
       - <span class="y-k">uses:</span> <span class="y-s">actions/checkout@v7</span>
         <span class="y-k">with:</span>
           <span class="y-k">fetch-depth:</span> <span class="y-s">0</span>
-      - <span class="y-k">uses:</span> <span class="y-s">Astronomox/pyupcheck-Astronomox@v0.16.1</span>
+      - <span class="y-k">uses:</span> <span class="y-s">Astronomox/pyupcheck-Astronomox@v0.20.0</span>
         <span class="y-k">with:</span>
           <span class="y-k">fail-on:</span> <span class="y-s">breaking</span>  <span class="y-c"># or: never</span></pre>
     </div>

@@ -17,6 +17,8 @@ from rich.console import Group
 from rich.padding import Padding
 from rich.text import Text
 from textual import on, work
+
+from depshift.safe import plain, plain_all
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -84,7 +86,7 @@ def _diff_text(diff: str) -> Text:
             style = "#FF6B6B"
         else:
             style = "#E7E5E4"
-        out.append(line + "\n", style=style)
+        out.append(plain(line) + "\n", style=style)
     return out
 
 
@@ -102,8 +104,9 @@ def places(usages: List, risks: List[dict], root: str) -> List[dict]:
         key = (u.file, u.line)
         if key not in seen:
             cell = getattr(u, "cell", None)
-            seen[key] = {"file": _rel(u.file, root), "line": u.line, "cell": cell,
-                         "code": (u.code or "").strip(), "severity": worst.get(key, "")}
+            seen[key] = {"file": plain(_rel(u.file, root)), "line": u.line, "cell": cell,
+                         "code": plain(u.code or "", keep_newlines=False).strip(),
+                         "severity": worst.get(key, "")}
     return sorted(seen.values(), key=lambda x: (x["file"], x["line"]))
 
 
@@ -299,7 +302,7 @@ class MigrateScreen(ModalScreen[bool]):
         self.plan = plan
         body: list = []
         if plan.error:
-            body.append(Text(plan.error, style="#FF6B6B"))
+            body.append(Text(plain(plan.error), style="#FF6B6B"))
         elif plan.up_to_date:
             body.append(Text(f"{self.package} {plan.current} is already the latest allowed version.",
                              style="#7EE787"))
@@ -313,7 +316,7 @@ class MigrateScreen(ModalScreen[bool]):
                     continue
                 for fx in fc.fixes:
                     body.append(Text.assemble(("fix ", "#7EE787"), (plan.where(fx), "bold"), "  ",
-                                              fx.description))
+                                              plain(fx.description)))
                 if fc.notebook is not None:
                     diff = unified_diff(fc.rel, notebook.cells_text(fc.notebook, fc.before),
                                         notebook.cells_text(fc.notebook, fc.after))
@@ -324,8 +327,9 @@ class MigrateScreen(ModalScreen[bool]):
                 n = len(plan.manual)
                 body += [Text(), Text(f"{n} change{'s need' if n != 1 else ' needs'} you", style="bold #F2CC60")]
                 for m in plan.manual:
-                    body += [Text.assemble(("! ", "#F2CC60"), (plan.where(m), "bold"), "  ", m.code.strip()),
-                             _indent(Text(m.reason, style="#8a8f98"))]
+                    body += [Text.assemble(("! ", "#F2CC60"), (plain(plan.where(m)), "bold"), "  ",
+                                           plain(m.code, keep_newlines=False).strip()),
+                             _indent(Text(plain(m.reason), style="#8a8f98"))]
             if not self.writable():
                 if not plan.manual:
                     body.append(Text("Nothing to change: no breaking API change hits your code.",
@@ -347,10 +351,18 @@ class MigrateScreen(ModalScreen[bool]):
         def done(yes: Optional[bool]) -> None:
             if not yes:
                 return
+            written, failed = 0, []
             for fc in files:
-                fc.write()
-            self.notify(f"Rewrote {len(files)} file{'s' if len(files) != 1 else ''}.")
-            self.dismiss(True)
+                try:
+                    fc.write(self.root)
+                    written += 1
+                except OSError as e:
+                    failed.append(plain(str(e)))
+            if failed:
+                self.notify("Not written: " + "; ".join(failed[:3]), severity="error", timeout=10)
+            if written:
+                self.notify(f"Rewrote {written} file{'s' if written != 1 else ''}.")
+            self.dismiss(written > 0)
 
         names = ", ".join(fc.rel for fc in files[:3]) + (" …" if len(files) > 3 else "")
         self.app.push_screen(ConfirmScreen(f"Rewrite {len(files)} file(s)? {names}"), done)
@@ -477,6 +489,9 @@ class PyupcheckApp(App):
         self.update_status()
 
     def finish_one(self, name: str, r: Optional[dict]) -> None:
+        # release notes, versions and code lines: shown as text, never as
+        # terminal control sequences
+        r = plain_all(r) if r else r
         self.results[name] = r or {"package": name, "current_version": None, "target_version": "?",
                                    "risks": [], "safe_count": 0, "breaking_count": 0, "deprecated_count": 0,
                                    "unchecked": True, "warnings": ["no result"]}
