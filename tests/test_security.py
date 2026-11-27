@@ -18,7 +18,6 @@ import pytest
 from depshift import apisurface, changelog, http
 from depshift.safe import md_code, md_text, plain
 
-
 # ── URLs pyupcheck will fetch ─────────────────────────────────────────────────
 
 @pytest.mark.parametrize("url", [
@@ -169,6 +168,7 @@ def test_workflow_commands_neutralised_in_actions(monkeypatch):
 
 def test_terminal_output_has_no_injected_sequences(monkeypatch):
     from rich.console import Console
+
     from depshift import cli
     buf = io.StringIO()
     monkeypatch.setattr(cli, "console", Console(file=buf, force_terminal=True, width=120))

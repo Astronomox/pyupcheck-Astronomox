@@ -1,6 +1,7 @@
 """The banner fits every terminal width and survives PyPI being down."""
 
 import io
+import os
 
 import pytest
 from rich.console import Console
@@ -83,3 +84,25 @@ def test_not_live_without_a_terminal(monkeypatch):
     monkeypatch.setattr(w, "run_live", lambda c: pytest.fail("went full screen in a pipe"))
     monkeypatch.setattr(w, "_fetch_pypi_data", lambda: DATA)
     w.show_banner(Console(file=io.StringIO(), width=80), live=True)
+
+
+@pytest.mark.skipif(not hasattr(os, "openpty"), reason="needs a Unix pseudo-terminal")
+def test_key_reader_in_a_real_terminal(monkeypatch):
+    """The full-screen banner's key reader, on a real pseudo-terminal: it
+    switches the terminal to cbreak, sees a key press, and restores it."""
+    import sys
+    import termios
+    master, slave = os.openpty()
+    stdin = os.fdopen(slave, "r")
+    monkeypatch.setattr(sys, "stdin", stdin)
+    before = termios.tcgetattr(slave)
+    try:
+        with w._Keys() as keys:
+            assert keys.pressed() is False
+            os.write(master, b"q")
+            assert keys.pressed() is True
+            assert keys.pressed() is False  # the key was consumed
+        assert termios.tcgetattr(slave) == before
+    finally:
+        stdin.close()
+        os.close(master)

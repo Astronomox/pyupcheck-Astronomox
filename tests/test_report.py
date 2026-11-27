@@ -1,8 +1,7 @@
 """Tests for HTML and Markdown report generation."""
 
-import pytest
 
-from depshift.report import render_markdown, render_html
+from depshift.report import render_html, render_markdown
 
 
 def make_result(breaking=0, deprecated=0, safe=5, package="flask", risks=None):

@@ -6,7 +6,7 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 CACHE_DIR = Path(os.environ.get("PYUPCHECK_CACHE_DIR", Path.home() / ".cache" / "pyupcheck"))
 DEFAULT_TTL = 24 * 3600  # 24 hours
@@ -24,14 +24,14 @@ def _key_path(key: str) -> Path:
     return CACHE_DIR / f"{h}.json"
 
 
-def cache_get(key: str, ttl: int = DEFAULT_TTL) -> Optional[Any]:
+def cache_get(key: str, ttl: int = DEFAULT_TTL) -> Any | None:
     if _disabled:
         return None
     path = _key_path(key)
     try:
         if not path.exists():
             return None
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             entry = json.load(f)
         if time.time() - entry["ts"] > ttl:
             path.unlink(missing_ok=True)
@@ -41,7 +41,7 @@ def cache_get(key: str, ttl: int = DEFAULT_TTL) -> Optional[Any]:
         return None
 
 
-_dir_ready: Optional[Path] = None
+_dir_ready: Path | None = None
 
 
 def _ensure_dir() -> None:

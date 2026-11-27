@@ -13,8 +13,8 @@ def _no_network(monkeypatch):
         raise NetworkBlocked(f"test tried to fetch {url}")
     import depshift.http
     monkeypatch.setattr(depshift.http, "http_get", blocked)
-    import depshift.changelog
     import depshift.apisurface
+    import depshift.changelog
     monkeypatch.setattr(depshift.changelog, "http_get", blocked)
     monkeypatch.setattr(depshift.apisurface, "http_get", blocked)
     # the URL policy resolves host names: answer "public" without DNS

@@ -20,7 +20,6 @@ import ast
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
 
 _CELL = "# pyupcheck:cell {}"
 _CELL_RE = re.compile(r"^# pyupcheck:cell (\d+)$")
@@ -39,11 +38,11 @@ class Notebook:
     path: str
     data: dict
     source: str = ""
-    kept: List[str] = field(default_factory=list)  # original lines behind placeholders
-    starts: Dict[int, int] = field(default_factory=dict)  # cell number -> marker line
-    file_lines: Dict[int, List[int]] = field(default_factory=dict)  # cell -> .ipynb line per source line
+    kept: list[str] = field(default_factory=list)  # original lines behind placeholders
+    starts: dict[int, int] = field(default_factory=dict)  # cell number -> marker line
+    file_lines: dict[int, list[int]] = field(default_factory=dict)  # cell -> .ipynb line per source line
 
-    def locate(self, line: int) -> Tuple[int, int]:
+    def locate(self, line: int) -> tuple[int, int]:
         """(cell number, line within the cell) of a line of the joined source."""
         cell, start = 0, 0
         for c, s in self.starts.items():  # in line order
@@ -64,11 +63,11 @@ class Notebook:
         return lines[min(line, len(lines)) - 1]
 
 
-def _source_lines(text: str) -> Dict[int, List[int]]:
+def _source_lines(text: str) -> dict[int, list[int]]:
     """{cell number: [file line of each source string]} for a notebook's
     JSON text: where each ``cells[i].source`` element starts."""
-    out: Dict[int, List[int]] = {}
-    stack: List[list] = []  # [kind, key or index, ...]; kind "{" or "["
+    out: dict[int, list[int]] = {}
+    stack: list[list] = []  # [kind, key or index, ...]; kind "{" or "["
     key = None  # last object key read, before its value
     line, i, n = 1, 0, len(text)
 
@@ -132,28 +131,25 @@ def _placeholder(nb: Notebook, line: str, with_pass: bool) -> str:
     return f"{indent}{'pass  ' if with_pass else ''}{_KEEP.format(len(nb.kept) - 1)}"
 
 
-def _python_lines(nb: Notebook, text: str) -> List[str]:
+def _python_lines(nb: Notebook, text: str) -> list[str]:
     lines = text.split("\n")
     first = lines[0].strip() if lines else ""
     if first.startswith("%%"):
         magic = first[2:].split()[0] if first[2:].split() else ""
         if magic not in _PYTHON_CELL_MAGICS:  # %%bash, %%writefile, %%html, ...
-            return [_placeholder(nb, l, False) for l in lines]
+            return [_placeholder(nb, line, False) for line in lines]
     out = []
-    for l in lines:
-        if _LINE_NOT_PYTHON.match(l):
-            out.append(_placeholder(nb, l, True))
-        else:
-            out.append(l)
+    for line in lines:
+        out.append(_placeholder(nb, line, True) if _LINE_NOT_PYTHON.match(line) else line)
     try:
         ast.parse("\n".join(out))
     except (SyntaxError, ValueError):
-        del nb.kept[len(nb.kept) - sum(1 for l in out if _KEEP_RE.match(l)):]
-        return [_placeholder(nb, l, False) for l in lines]
+        del nb.kept[len(nb.kept) - sum(1 for line in out if _KEEP_RE.match(line)):]
+        return [_placeholder(nb, line, False) for line in lines]
     return out
 
 
-def load(path: str) -> Optional[Notebook]:
+def load(path: str) -> Notebook | None:
     """The notebook at ``path`` with its code cells joined, or None if it is
     not a notebook pyupcheck can read."""
     try:
@@ -169,7 +165,7 @@ def load(path: str) -> Optional[Notebook]:
         nb.file_lines = _source_lines(text)
     except (IndexError, TypeError):
         nb.file_lines = {}
-    out: List[str] = []
+    out: list[str] = []
     for i, cell in enumerate(data["cells"]):
         if not isinstance(cell, dict) or cell.get("cell_type") != "code":
             continue
@@ -183,7 +179,7 @@ def load(path: str) -> Optional[Notebook]:
 def restore(nb: Notebook, source: str) -> dict:
     """The notebook data with its code cells taken from ``source``, a
     (possibly rewritten) joined source from :func:`load`."""
-    cells: Dict[int, List[str]] = {}
+    cells: dict[int, list[str]] = {}
     current = None
     for line in source.split("\n"):
         m = _CELL_RE.match(line)

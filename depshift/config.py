@@ -1,59 +1,82 @@
-"""Load pyupcheck configuration from [tool.pyupcheck] in pyproject.toml and .pyupcheckignore."""
+"""Load pyupcheck configuration from [tool.pyupcheck] in pyproject.toml and .pyupcheckignore.
 
+Mistakes are reported, not silently ignored: an unknown key ("ignores") or a
+value pyupcheck doesn't accept (``fail_on = "breakng"``) becomes a message in
+``Config.problems``, with a suggestion when one is close, and the setting
+keeps its default.
+"""
+
+import difflib
 import os
-import warnings
 from dataclasses import dataclass, field
-from typing import Set
 
 from ._toml import MISSING_TOML_HINT, TOMLDecodeError, tomllib
+
+FAIL_ON = ("breaking", "deprecated", "any", "never")
+SEVERITIES = ("breaking", "deprecated", "warning")
+KNOWN_KEYS = ("exclude", "ignore", "fail_on", "min_severity", "cache")
 
 
 @dataclass
 class Config:
-    exclude_dirs: Set[str] = field(default_factory=set)
-    ignore_packages: Set[str] = field(default_factory=set)
+    exclude_dirs: set[str] = field(default_factory=set)
+    ignore_packages: set[str] = field(default_factory=set)
     fail_on: str = "breaking"  # breaking | deprecated | any | never
     min_severity: str = "warning"  # breaking | deprecated | warning
     cache: bool = True
+    # what was wrong with the configuration, for the user to fix
+    problems: list[str] = field(default_factory=list)
 
 
-def _load_pyproject_section(path: str) -> dict:
+def _suggest(word: str, options) -> str:
+    close = difflib.get_close_matches(word, options, n=1, cutoff=0.6)
+    return f" (did you mean {close[0]!r}?)" if close else ""
+
+
+def _load_pyproject_section(path: str, problems: list[str]) -> dict:
     """Return [tool.pyupcheck] from a pyproject.toml, or {} if unreadable."""
     if tomllib is None:
-        warnings.warn(
-            "Found {} but cannot read [tool.pyupcheck] from it. {}".format(
-                path, MISSING_TOML_HINT
-            ),
-            RuntimeWarning,
-            stacklevel=3,
-        )
+        problems.append(f"can't read [tool.pyupcheck] from {path}. {MISSING_TOML_HINT}")
         return {}
-
     try:
         with open(path, "rb") as f:
             data = tomllib.load(f)
     except TOMLDecodeError as exc:
-        warnings.warn(
-            "Could not parse {} as TOML: {}".format(path, exc),
-            RuntimeWarning,
-            stacklevel=3,
-        )
+        problems.append(f"{path} is not valid TOML ({exc}): [tool.pyupcheck] ignored")
         return {}
     except OSError as exc:
-        warnings.warn(
-            "Could not read {}: {}".format(path, exc),
-            RuntimeWarning,
-            stacklevel=3,
-        )
+        problems.append(f"could not read {path}: {exc}")
         return {}
 
     tool = data.get("tool")
-    if not isinstance(tool, dict):
+    section = tool.get("pyupcheck") if isinstance(tool, dict) else None
+    if section is None:
         return {}
-    section = tool.get("pyupcheck")
     if not isinstance(section, dict):
+        problems.append("[tool.pyupcheck] must be a table: ignored")
         return {}
     return section
+
+
+def _string_list(section: dict, key: str, problems: list[str]) -> list[str]:
+    value = section.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)) or not all(isinstance(v, str) for v in value):
+        problems.append(f"{key} must be a list of strings, like {key} = [\"name\"]: ignored")
+        return []
+    return [v.strip() for v in value if v.strip()]
+
+
+def _choice(section: dict, key: str, options, problems: list[str]) -> str | None:
+    value = section.get(key)
+    if value is None:
+        return None
+    if value not in options:
+        problems.append(f"{key} = {value!r} is not one of {', '.join(options)}{_suggest(str(value), options)}: "
+                        "the default is used")
+        return None
+    return value
 
 
 def load_config(directory: str) -> Config:
@@ -61,45 +84,34 @@ def load_config(directory: str) -> Config:
 
     pyproject = os.path.join(directory, "pyproject.toml")
     if os.path.isfile(pyproject):
-        section = _load_pyproject_section(pyproject)
+        section = _load_pyproject_section(pyproject, cfg.problems)
+        for key in section:
+            if key not in KNOWN_KEYS:
+                cfg.problems.append(f"unknown key {key!r} in [tool.pyupcheck]{_suggest(key, KNOWN_KEYS)}: ignored")
 
-        exclude = section.get("exclude") or []
-        if isinstance(exclude, (list, tuple)):
-            cfg.exclude_dirs.update(str(e).rstrip("/") for e in exclude if str(e).strip())
-
-        ignore = section.get("ignore") or []
-        if isinstance(ignore, (list, tuple)):
-            cfg.ignore_packages.update(str(p).lower() for p in ignore if str(p).strip())
-
-        fail_on = section.get("fail_on")
-        if isinstance(fail_on, str):
-            cfg.fail_on = fail_on
-
-        min_severity = section.get("min_severity")
-        if isinstance(min_severity, str):
-            cfg.min_severity = min_severity
-
+        cfg.exclude_dirs.update(e.rstrip("/") for e in _string_list(section, "exclude", cfg.problems))
+        cfg.ignore_packages.update(p.lower() for p in _string_list(section, "ignore", cfg.problems))
+        cfg.fail_on = _choice(section, "fail_on", FAIL_ON, cfg.problems) or cfg.fail_on
+        cfg.min_severity = _choice(section, "min_severity", SEVERITIES, cfg.problems) or cfg.min_severity
         cache = section.get("cache")
         if isinstance(cache, bool):
             cfg.cache = cache
+        elif cache is not None:
+            cfg.problems.append("cache must be true or false: the default (true) is used")
 
     ignore_file = os.path.join(directory, ".pyupcheckignore")
     if os.path.isfile(ignore_file):
         try:
-            with open(ignore_file, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.split("#")[0].strip()
-                    if not line:
+            with open(ignore_file, encoding="utf-8") as f:
+                for raw in f:
+                    entry = raw.split("#")[0].strip()
+                    if not entry:
                         continue
-                    if line.endswith("/"):
-                        cfg.exclude_dirs.add(line.rstrip("/"))
+                    if entry.endswith("/"):
+                        cfg.exclude_dirs.add(entry.rstrip("/"))
                     else:
-                        cfg.ignore_packages.add(line.lower())
+                        cfg.ignore_packages.add(entry.lower())
         except OSError as exc:
-            warnings.warn(
-                "Could not read {}: {}".format(ignore_file, exc),
-                RuntimeWarning,
-                stacklevel=2,
-            )
+            cfg.problems.append(f"could not read {ignore_file}: {exc}")
 
     return cfg

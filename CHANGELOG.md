@@ -4,6 +4,34 @@ All notable changes to pyupcheck are documented here.
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-11-27
+
+### Added
+- `pyupcheck check-all PACKAGE...` checks only the packages you name (`check-all flask numpy`); a name that isn't a dependency gets a "did you mean" suggestion
+- `versions` shows each release's date and marks the latest, the one your project is on (lockfile, pin or installed), yanked releases and pre-releases; the newest 15 by default, `--all` for every one
+- Configuration mistakes are reported (on stderr, so they never mix into `-f json`): unknown keys in `[tool.pyupcheck]` and values pyupcheck doesn't accept, with a suggestion when one is close. Before, they were silently ignored
+- The JSON report carries `schema_version` (1) and `pyupcheck_version`, for tools that read it
+- `check-all`'s summary says how long the check took
+
+### Changed
+- One table style across `check-all`, `outdated`, `fix` and `versions`; majors marked the same way everywhere
+- `fix` prints one table: each pin, where it moves (or that it stays), the latest release, and why, with the `migrate` command for releases that break your code
+- `diff` groups changes by release, newest first, shows each once as plain prose (no `:pr:` roles or doubled backticks) with wrapped lines indented, and starts with a count by kind
+- `scan` groups lines by file and names every use on a line, with how it's used (call, attribute, import)
+- Release-note items keep up to 300 characters, cut at a word: more of each note is read, and changelog-only recall rises from 80.6% to 83.5%, still with no false alarms
+
+### Fixed
+- Found by the stricter checks now run in CI (ruff and mypy, both clean):
+  - `pyupcheck ui` defined a `visible()` method that replaced the attribute Textual uses to decide whether a widget is shown
+  - the banner's info block reused the name of its `commands` flag for a list
+  - a closure in changelog fetching captured a loop variable instead of binding it
+- `fix` rewrote requirements files in place, not atomically, and changed their line endings on Windows; it now replaces them in one step, exactly as they were apart from the moved pins
+- `zip()` calls that rely on equal lengths are now strict, so a mismatch fails loudly instead of silently dropping data
+
+### Internal
+- Type hints modernised to Python 3.10 syntax throughout; mypy (with `check_untyped_defs`) and ruff (pycodestyle, pyflakes, isort, bugbear, pyupgrade, simplify, ruff's own rules) are clean and run in CI (`make lint`)
+- `explain` keeps the cause of each error (`raise ... from`); file replacement shared by `migrate` and `fix`
+
 ## [0.20.0] - 2026-11-27
 
 ### Security

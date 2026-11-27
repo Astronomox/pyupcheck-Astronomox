@@ -1,13 +1,11 @@
 """Tests for changelog parsing."""
 
-import pytest
 
 from depshift.changelog import (
+    extract_github_repo,
     parse_changelog_text,
     parse_sectioned_changelog,
-    extract_github_repo,
 )
-
 
 # ── parse_changelog_text ──────────────────────────────────────────────────────
 

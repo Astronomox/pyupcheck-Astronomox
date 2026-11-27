@@ -1,10 +1,9 @@
 """Tests for the changelog-based analyzer."""
 
-import pytest
 
-from depshift.scanner import Usage
+from depshift.analyzer import analyze, match_usage_to_change, normalize_api
 from depshift.changelog import ChangeEntry
-from depshift.analyzer import analyze, normalize_api, match_usage_to_change
+from depshift.scanner import Usage
 
 
 def make_usage(attr_chain: str, usage_type: str = "function_call") -> Usage:

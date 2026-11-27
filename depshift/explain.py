@@ -12,7 +12,7 @@ Nothing is sent without them, and ``--dry-run`` shows exactly what would be.
 """
 
 import os
-from typing import Callable, Dict, List, Optional
+from collections.abc import Callable
 
 MODEL = "claude-opus-5-5"
 INSTALL_HINT = 'pip install "pyupcheck[ai]"'
@@ -46,8 +46,8 @@ class ExplainError(Exception):
     """A problem the user can fix (missing package, credentials)."""
 
 
-def _snippet(path: str, line: int, context: int = 3, cell: Optional[int] = None,
-             cell_line: Optional[int] = None) -> str:
+def _snippet(path: str, line: int, context: int = 3, cell: int | None = None,
+             cell_line: int | None = None) -> str:
     """The lines around a finding, numbered, with the finding marked."""
     if cell is not None and path.endswith(".ipynb"):
         from depshift import notebook
@@ -68,8 +68,8 @@ def _snippet(path: str, line: int, context: int = 3, cell: Optional[int] = None,
     return "\n".join(f"{'>' if n == line else ' '} {n:>{width}} | {lines[n - 1]}" for n in range(lo, hi + 1))
 
 
-def findings_from(result: dict, root: str, fixable: Optional[Dict[tuple, str]] = None,
-                  limit: int = 20) -> List[dict]:
+def findings_from(result: dict, root: str, fixable: dict[tuple, str] | None = None,
+                  limit: int = 20) -> list[dict]:
     """Breaking findings of one check result, one per (file, line, API),
     with the code around each. ``fixable`` marks what ``migrate`` rewrites."""
     from depshift.review import _clean
@@ -98,7 +98,7 @@ def findings_from(result: dict, root: str, fixable: Optional[Dict[tuple, str]] =
     return out
 
 
-def build_prompt(package: str, current: str, target: str, findings: List[dict]) -> str:
+def build_prompt(package: str, current: str, target: str, findings: list[dict]) -> str:
     parts = [f"Upgrading `{package}` from {current} to {target}. "
              f"{len(findings)} place(s) in the code break.\n"]
     for i, f in enumerate(findings, 1):
@@ -119,25 +119,25 @@ def make_client():
     """An Anthropic client, or ExplainError saying what's missing."""
     try:
         import anthropic
-    except ImportError:
-        raise ExplainError(f"`pyupcheck explain` needs the anthropic package: {INSTALL_HINT}")
+    except ImportError as e:
+        raise ExplainError(f"`pyupcheck explain` needs the anthropic package: {INSTALL_HINT}") from e
     try:
         return anthropic.Anthropic()
     except anthropic.AnthropicError as e:
-        raise ExplainError(f"No Claude API credentials ({e}). {CREDENTIALS_HINT}")
+        raise ExplainError(f"No Claude API credentials ({e}). {CREDENTIALS_HINT}") from e
 
 
 def stream_advice(client, prompt: str, write: Callable[[str], None], model: str = MODEL,
                   effort: str = "high", fallbacks: bool = True) -> dict:
     """Stream Claude's advice through ``write``; returns a summary of the call."""
     import anthropic
-    kwargs = dict(
-        model=model,
-        max_tokens=32000,
-        system=[{"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}}],
-        output_config={"effort": effort},
-        messages=[{"role": "user", "content": prompt}],
-    )
+    kwargs = {
+        "model": model,
+        "max_tokens": 32000,
+        "system": [{"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}}],
+        "output_config": {"effort": effort},
+        "messages": [{"role": "user", "content": prompt}],
+    }
     if fallbacks:
         # a request a safety classifier declines is retried on another model
         # in the same call, instead of ending with nothing
@@ -151,17 +151,17 @@ def stream_advice(client, prompt: str, write: Callable[[str], None], model: str 
         if "authentication method" not in str(e):
             raise
         # the SDK found no API key, token or `ant auth login` profile
-        raise ExplainError(f"No Claude API credentials found. {CREDENTIALS_HINT}")
-    except anthropic.AuthenticationError:
-        raise ExplainError(f"The Claude API rejected the credentials. {CREDENTIALS_HINT}")
+        raise ExplainError(f"No Claude API credentials found. {CREDENTIALS_HINT}") from e
+    except anthropic.AuthenticationError as e:
+        raise ExplainError(f"The Claude API rejected the credentials. {CREDENTIALS_HINT}") from e
     except anthropic.PermissionDeniedError as e:
-        raise ExplainError(f"The Claude API refused the request: {e.message}")
-    except anthropic.RateLimitError:
-        raise ExplainError("Rate limited by the Claude API; try again in a minute.")
-    except anthropic.APIConnectionError:
-        raise ExplainError("Could not reach the Claude API (network error).")
+        raise ExplainError(f"The Claude API refused the request: {e.message}") from e
+    except anthropic.RateLimitError as e:
+        raise ExplainError("Rate limited by the Claude API; try again in a minute.") from e
+    except anthropic.APIConnectionError as e:
+        raise ExplainError("Could not reach the Claude API (network error).") from e
     except anthropic.APIStatusError as e:
-        raise ExplainError(f"Claude API error {e.status_code}: {e.message}")
+        raise ExplainError(f"Claude API error {e.status_code}: {e.message}") from e
     usage = getattr(final, "usage", None)
     return {
         "stop_reason": final.stop_reason,

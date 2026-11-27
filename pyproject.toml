@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyupcheck"
-version = "0.20.0"
+version = "0.21.0"
 description = "Check if upgrading a Python dependency will break your code"
 readme = "README.md"
 license = "MIT"
@@ -44,3 +44,33 @@ Issues = "https://github.com/Astronomox/pyupcheck-Astronomox/issues"
 
 [tool.setuptools.packages.find]
 include = ["depshift*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+# pyflakes, pycodestyle and sorted imports (I), plus bug-prone patterns (B), modern syntax (UP),
+# simpler code (SIM, C4, PIE, RET), performance (PERF) and ruff's own (RUF)
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "C4", "PIE", "RET", "PERF", "RUF"]
+ignore = [
+    "PERF203",  # try/except in a loop: deliberate, one bad item must not stop the rest
+    "PERF401",  # an explicit loop that appends often reads more clearly than a comprehension
+    "SIM105",   # contextlib.suppress reads worse than try/except/pass here
+    "RET505",   # "else after return" is often the clearer shape
+    "RUF001", "RUF002", "RUF003",  # ambiguous unicode: arrows and dashes in user-facing text are intended
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Textual declares BINDINGS and CSS as plain class attributes
+"depshift/tui.py" = ["RUF012"]
+# tests: long fixture strings, throwaway unpacking and lambda stubs are fine
+"tests/*" = ["E501", "B006", "B011", "E731", "RUF012", "RUF059", "SIM115"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["depshift"]
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true

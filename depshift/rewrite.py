@@ -15,8 +15,8 @@ comments are untouched.
 
 import ast
 import difflib
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
-from typing import Callable, Dict, Iterable, List, Optional, Tuple, Union
 
 from depshift import notebook
 from depshift.analyzer import COMMON_ALIASES
@@ -28,8 +28,8 @@ from depshift.scanner import Usage
 @dataclass
 class Edit:
     """Replace source between two (line, byte-col) positions (1-based lines)."""
-    start: Tuple[int, Optional[int]]  # col None: end of that line
-    end: Tuple[int, Optional[int]]
+    start: tuple[int, int | None]  # col None: end of that line
+    end: tuple[int, int | None]
     new: str
 
 
@@ -38,9 +38,9 @@ class Fix:
     file: str
     line: int
     description: str
-    edits: List[Edit] = field(default_factory=list)
-    needs_import: Optional[str] = None  # module the rewritten code refers to
-    cell: Optional[int] = None  # notebook cell; line is then within it (edits are not)
+    edits: list[Edit] = field(default_factory=list)
+    needs_import: str | None = None  # module the rewritten code refers to
+    cell: int | None = None  # notebook cell; line is then within it (edits are not)
 
 
 @dataclass
@@ -49,16 +49,16 @@ class Manual:
     line: int
     code: str
     reason: str
-    cell: Optional[int] = None
+    cell: int | None = None
 
 
 @dataclass
 class MigrationPlan:
-    fixes: List[Fix] = field(default_factory=list)
-    manual: List[Manual] = field(default_factory=list)
+    fixes: list[Fix] = field(default_factory=list)
+    manual: list[Manual] = field(default_factory=list)
 
-    def by_file(self) -> Dict[str, List[Fix]]:
-        out: Dict[str, List[Fix]] = {}
+    def by_file(self) -> dict[str, list[Fix]]:
+        out: dict[str, list[Fix]] = {}
         for f in self.fixes:
             out.setdefault(f.file, []).append(f)
         return out
@@ -66,7 +66,7 @@ class MigrationPlan:
 
 # ── source positions ──────────────────────────────────────────────────────────
 
-def _offset(lines: List[str], pos: Tuple[int, int]) -> int:
+def _offset(lines: list[str], pos: tuple[int, int | None]) -> int:
     """Character offset of (1-based line, UTF-8 byte column) in the joined source."""
     line, bcol = pos
     if bcol is None:  # end of that line, including its newline
@@ -76,7 +76,20 @@ def _offset(lines: List[str], pos: Tuple[int, int]) -> int:
     return before + ccol
 
 
-def apply_edits(source: str, edits: List[Edit]) -> str:
+def _start(node: ast.AST) -> tuple[int, int]:
+    """Where a parsed node starts (1-based line, UTF-8 byte column)."""
+    return node.lineno, node.col_offset  # type: ignore[attr-defined]
+
+
+def _end(node: ast.AST) -> tuple[int, int]:
+    """Where a parsed node ends. ``ast.parse`` always sets end positions; the
+    stubs only call them optional for hand-built nodes."""
+    end_line, end_col = node.end_lineno, node.end_col_offset  # type: ignore[attr-defined]
+    assert end_line is not None and end_col is not None
+    return end_line, end_col
+
+
+def apply_edits(source: str, edits: list[Edit]) -> str:
     """Apply non-overlapping edits; overlapping ones after the first are skipped."""
     lines = source.splitlines(keepends=True)
     spans = sorted(((_offset(lines, e.start), _offset(lines, e.end), e.new) for e in edits),
@@ -108,23 +121,23 @@ class _Index:
         self.lines = source.splitlines()
         self.n_lines = len(source.splitlines())
         self.ends_with_newline = source.endswith("\n")
-        self.calls: Dict[Tuple[int, int], ast.Call] = {}
-        self.attrs: Dict[Tuple[int, int], List[ast.Attribute]] = {}
-        self.imports: Dict[int, ast.ImportFrom] = {}
+        self.calls: dict[tuple[int, int], ast.Call] = {}
+        self.attrs: dict[tuple[int, int], list[ast.Attribute]] = {}
+        self.imports: dict[int, ast.ImportFrom] = {}
         # modules bound by a top-level `import x` / `import x.y`, and the line
         # after the last top-level import (or after the docstring) for new ones
-        self.imported_modules = set()
+        self.imported_modules: set[str] = set()
         self.insert_line = 1
         body = self.tree.body
-        if body and isinstance(body[0], ast.Expr) and isinstance(getattr(body[0], "value", None), ast.Constant) \
-                and isinstance(body[0].value.value, str):
-            self.insert_line = body[0].end_lineno + 1
+        first = body[0] if body else None
+        if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
+            self.insert_line = _end(first)[0] + 1  # after the module docstring
         for stmt in body:
             if isinstance(stmt, ast.Import):
                 self.imported_modules.update(a.name for a in stmt.names if not a.asname)
-                self.insert_line = stmt.end_lineno + 1
+                self.insert_line = _end(stmt)[0] + 1
             elif isinstance(stmt, ast.ImportFrom):
-                self.insert_line = stmt.end_lineno + 1
+                self.insert_line = _end(stmt)[0] + 1
         for node in ast.walk(self.tree):
             if isinstance(node, ast.Call):
                 self.calls.setdefault((node.lineno, node.col_offset), node)
@@ -133,18 +146,20 @@ class _Index:
             elif isinstance(node, ast.ImportFrom) and not node.level:
                 self.imports.setdefault(node.lineno, node)
 
-    def call(self, u: Usage) -> Optional[ast.Call]:
+    def call(self, u: Usage) -> ast.Call | None:
         return self.calls.get((u.line, u.col)) if u.col is not None else None
 
-    def attribute(self, u: Usage, attr: str) -> Optional[ast.Attribute]:
+    def attribute(self, u: Usage, attr: str) -> ast.Attribute | None:
         """The outermost Attribute at the usage position ending in ``attr``."""
+        if u.col is None:
+            return None
         cands = [a for a in self.attrs.get((u.line, u.col), []) if a.attr == attr]
-        return max(cands, key=lambda a: (a.end_lineno, a.end_col_offset), default=None)
+        return max(cands, key=_end, default=None)
 
 
 # ── replacements ──────────────────────────────────────────────────────────────
 
-def _normalize(api: str, roots: List[str]) -> str:
+def _normalize(api: str, roots: list[str]) -> str:
     head, _, rest = api.partition(".")
     full = COMMON_ALIASES.get(head)
     if full and any(full == r or full.startswith(r + ".") for r in roots):
@@ -152,9 +167,9 @@ def _normalize(api: str, roots: List[str]) -> str:
     return api
 
 
-def replacement_map(entries: Iterable, roots: List[str]) -> Dict[str, str]:
+def replacement_map(entries: Iterable, roots: list[str]) -> dict[str, str]:
     """{old api (full and short): replacement} from changelog entries."""
-    out: Dict[str, str] = {}
+    out: dict[str, str] = {}
     for e in entries:
         repl = getattr(e, "replacement", None)
         if not repl or not e.api or e.api == "unknown":
@@ -166,7 +181,7 @@ def replacement_map(entries: Iterable, roots: List[str]) -> Dict[str, str]:
     return out
 
 
-def _resolve_replacement(old_api: str, repl: str, roots: List[str]) -> str:
+def _resolve_replacement(old_api: str, repl: str, roots: list[str]) -> str:
     """Make a replacement fully qualified: a bare name lives where the old one did."""
     if any(repl == r or repl.startswith(r + ".") for r in roots):
         return repl
@@ -186,9 +201,9 @@ def _param_exists(surface: APISurface, func_api: str, param: str) -> bool:
         short = func_api.rsplit(".", 1)[-1]
         for name, s in surface.functions.items():
             parts = name.split(".")
-            if parts[-1] == short or (parts[-1] == "__init__" and len(parts) > 1 and parts[-2] == short):
-                if param in s.params:
-                    return True
+            named = parts[-1] == short or (parts[-1] == "__init__" and len(parts) > 1 and parts[-2] == short)
+            if named and param in s.params:
+                return True
         return False
     return param in sig.params
 
@@ -221,19 +236,19 @@ def exists_elsewhere(dotted: str) -> bool:
     from depshift.apisurface import extract_surface
     from depshift.changelog import get_current_version
     try:
-        surface = extract_surface(top, get_current_version(top))
+        published = extract_surface(top, get_current_version(top))
     except Exception:
         return False
-    return surface is not None and _exists(surface, dotted)
+    return published is not None and _exists(published, dotted)
 
 
 # ── planning ──────────────────────────────────────────────────────────────────
 
-def plan_migration(usages: List[Usage], changes: List[APIChange], new_surface: APISurface,
-                   package: Union[str, Iterable[str]], changelog_entries: Iterable = (),
-                   returns: Optional[Dict[str, str]] = None,
-                   sources: Optional[Dict[str, str]] = None,
-                   verify_external: Optional[Callable[[str], bool]] = None) -> MigrationPlan:
+def plan_migration(usages: list[Usage], changes: list[APIChange], new_surface: APISurface,
+                   package: str | Iterable[str], changelog_entries: Iterable = (),
+                   returns: dict[str, str] | None = None,
+                   sources: dict[str, str] | None = None,
+                   verify_external: Callable[[str], bool] | None = None) -> MigrationPlan:
     """Turn the breaking changes that hit ``usages`` into fixes and manual items.
 
     ``sources`` maps file path -> source text (read from disk when missing).
@@ -245,14 +260,14 @@ def plan_migration(usages: List[Usage], changes: List[APIChange], new_surface: A
     repl_map = replacement_map(changelog_entries, roots)
 
     # notebook usages in the coordinates of the notebook's joined source
-    notebooks: Dict[str, Optional[notebook.Notebook]] = {}
+    notebooks: dict[str, notebook.Notebook | None] = {}
     joined = []
     for u in usages:
         if u.cell is not None:
             if u.file not in notebooks:
                 notebooks[u.file] = notebook.load(u.file)
             nb = notebooks[u.file]
-            if nb is None or u.cell not in nb.starts:
+            if nb is None or u.cell not in nb.starts or u.cell_line is None:
                 continue
             u = replace(u, line=nb.global_line(u.cell, u.cell_line))
         joined.append(u)
@@ -260,22 +275,25 @@ def plan_migration(usages: List[Usage], changes: List[APIChange], new_surface: A
     risks = match_precise(usages, changes, roots, returns)
 
     sources = dict(sources or {})
-    indexes: Dict[str, Optional[_Index]] = {}
+    indexes: dict[str, _Index | None] = {}
 
-    def index_for(path: str) -> Optional[_Index]:
+    def index_for(path: str) -> _Index | None:
         if path not in indexes:
+            nb = notebooks.get(path)
+            idx: _Index | None
             try:
-                if path in notebooks:
-                    sources[path] = notebooks[path].source
+                if nb is not None:
+                    sources[path] = nb.source
                 elif path not in sources:
                     with open(path, encoding="utf-8") as f:
                         sources[path] = f.read()
-                indexes[path] = _Index(sources[path])
+                idx = _Index(sources[path])
             except (OSError, SyntaxError, ValueError, AttributeError):
-                indexes[path] = None
-            if path in notebooks and indexes[path] is not None:
+                idx = None
+            if nb is not None and idx is not None:
                 # new imports go in a cell, never above the first cell's marker
-                indexes[path].insert_line = max(indexes[path].insert_line, 2)
+                idx.insert_line = max(idx.insert_line, 2)
+            indexes[path] = idx
         return indexes[path]
 
     def manual(u: Usage, reason: str):
@@ -283,7 +301,7 @@ def plan_migration(usages: List[Usage], changes: List[APIChange], new_surface: A
 
     # group keyword-only changes per call: every positional from the first
     # keyword-only parameter on must be converted together
-    kwonly_by_call: Dict[Tuple[str, int, Optional[int]], List[APIChange]] = {}
+    kwonly_by_call: dict[tuple[str, int, int | None], list[APIChange]] = {}
     handled = set()
 
     fixed_imports = set()  # (file, api) whose import line is rewritten with an alias
@@ -398,7 +416,7 @@ def _add_needed_imports(plan: "MigrationPlan", index_for) -> None:
             fix.edits.append(Edit((idx.insert_line, 0), (idx.insert_line, 0), f"import {mod}\n"))
 
 
-def _fix_keyword_only(u: Usage, chs: List[APIChange], idx: _Index) -> Optional[Fix]:
+def _fix_keyword_only(u: Usage, chs: list[APIChange], idx: _Index) -> Fix | None:
     call = idx.call(u)
     if call is None:
         return None
@@ -419,8 +437,8 @@ def _fix_keyword_only(u: Usage, chs: List[APIChange], idx: _Index) -> Optional[F
     return Fix(u.file, u.line, f"pass {params} by keyword ({chs[0].api.rsplit('.', 1)[-1]})", edits)
 
 
-def _fix_renamed_kwarg(u: Usage, ch: APIChange, idx: _Index, repl_map: Dict[str, str],
-                       new_surface: APISurface) -> Optional[Fix]:
+def _fix_renamed_kwarg(u: Usage, ch: APIChange, idx: _Index, repl_map: dict[str, str],
+                       new_surface: APISurface) -> Fix | None:
     call = idx.call(u)
     if call is None or not ch.param:
         return None
@@ -441,9 +459,9 @@ def _fix_renamed_kwarg(u: Usage, ch: APIChange, idx: _Index, repl_map: Dict[str,
                [Edit(start, end, new_param)])
 
 
-def _fix_moved_name(u: Usage, ch: APIChange, idx: _Index, repl_map: Dict[str, str],
-                    new_surface: APISurface, roots: List[str],
-                    verify_external: Optional[Callable[[str], bool]] = None) -> Optional[Fix]:
+def _fix_moved_name(u: Usage, ch: APIChange, idx: _Index, repl_map: dict[str, str],
+                    new_surface: APISurface, roots: list[str],
+                    verify_external: Callable[[str], bool] | None = None) -> Fix | None:
     old_api = u.attr_chain
     removed_short = ch.api.rsplit(".", 1)[-1]
     parts = old_api.split(".")
@@ -480,7 +498,7 @@ def _fix_moved_name(u: Usage, ch: APIChange, idx: _Index, repl_map: Dict[str, st
         local = alias.asname or alias.name
         new_text = f"from {new_mod} import {new_short}" + (f" as {local}" if local != new_short else "")
         return Fix(u.file, u.line, f"import {new_short} from {new_mod}",
-                   [Edit((node.lineno, node.col_offset), (node.end_lineno, node.end_col_offset), new_text)])
+                   [Edit(_start(node), _end(node), new_text)])
 
     old_mod = old_api.rpartition(".")[0]
     if u.usage_type == "dynamic_attribute":
@@ -494,22 +512,22 @@ def _fix_moved_name(u: Usage, ch: APIChange, idx: _Index, repl_map: Dict[str, st
             return None
         quote = '"' if idx_text_quote(idx, lit) == '"' else "'"
         return Fix(u.file, u.line, f"use {new_short} instead of {old_short}",
-                   [Edit((lit.lineno, lit.col_offset), (lit.end_lineno, lit.end_col_offset),
-                         f"{quote}{new_short}{quote}")])
+                   [Edit(_start(lit), _end(lit), f"{quote}{new_short}{quote}")])
     if external:
         # flask.Markup(...) -> markupsafe.Markup(...), plus `import markupsafe`
         attr = idx.attribute(u, old_short)
         if attr is None or not _plain_dotted(attr):
             return None  # e.g. get_module().Markup: not a plain name to rewrite
         return Fix(u.file, u.line, f"use {target} instead of {_dotted_text(attr)}",
-                   [Edit((attr.lineno, attr.col_offset), (attr.end_lineno, attr.end_col_offset), target)],
+                   [Edit(_start(attr), _end(attr), target)],
                    needs_import=new_mod)
     if new_mod == old_mod and new_short != old_short:
         # same place, new name: np.float_ -> np.float64
         attr = idx.attribute(u, old_short)
         if attr is None:
             return None
-        end = (attr.end_lineno, attr.end_col_offset)
-        start = (attr.end_lineno, attr.end_col_offset - len(old_short.encode("utf-8")))
+        end_line, end_col = _end(attr)
+        end = (end_line, end_col)
+        start = (end_line, end_col - len(old_short.encode("utf-8")))
         return Fix(u.file, u.line, f"use {new_short} instead of {old_short}", [Edit(start, end, new_short)])
     return None

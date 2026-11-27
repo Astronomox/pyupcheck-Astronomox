@@ -1,10 +1,9 @@
 """Tests for argument-level precise risk matching."""
 
-import pytest
 
-from depshift.scanner import Usage
 from depshift.apisurface import APIChange
-from depshift.precise import match_precise, _short_name, _usage_callable
+from depshift.precise import _short_name, _usage_callable, match_precise
+from depshift.scanner import Usage
 
 
 def make_usage(attr_chain: str, kwargs=None, usage_type="function_call") -> Usage:
@@ -28,12 +27,12 @@ def make_change(kind: str, api: str, param=None) -> APIChange:
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def test_short_name():
-    assert _short_name("requests.auth.HTTPBasicAuth", "requests") == "HTTPBasicAuth"
+    assert _short_name("requests.auth.HTTPBasicAuth") == "HTTPBasicAuth"
 
 
 def test_usage_callable():
     u = make_usage("requests.get")
-    assert _usage_callable(u, "requests") == "get"
+    assert _usage_callable(u) == "get"
 
 
 # ── removed function ──────────────────────────────────────────────────────────

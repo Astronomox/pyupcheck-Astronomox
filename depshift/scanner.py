@@ -2,8 +2,8 @@
 
 import ast
 import os
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Set, Union
 
 
 @dataclass
@@ -14,32 +14,32 @@ class Usage:
     code: str
     attr_chain: str  # e.g. "requests.get" or "requests.packages.urllib3"
     usage_type: str  # "import", "function_call", "attribute_access", "submodule"
-    call_args: Optional[List[str]] = None  # positional arg count marker + keyword names
-    kwargs: Optional[List[str]] = None  # keyword argument names used in a call
-    col: Optional[int] = None  # column (UTF-8 byte offset) of the node, for rewriting
+    call_args: list[str] | None = None  # positional arg count marker + keyword names
+    kwargs: list[str] | None = None  # keyword argument names used in a call
+    col: int | None = None  # column (UTF-8 byte offset) of the node, for rewriting
     # notebooks: the cell number and the line within it; line is the .ipynb
     # file's line holding that source line, so file:line points at it
-    cell: Optional[int] = None
-    cell_line: Optional[int] = None
+    cell: int | None = None
+    cell_line: int | None = None
 
 
 class PackageVisitor(ast.NodeVisitor):
     """Walk an AST and collect every reference to the target package."""
 
-    def __init__(self, package_name: str, source_lines: List[str], filepath: str):
+    def __init__(self, package_name: str, source_lines: list[str], filepath: str):
         self.package = package_name
         self.lines = source_lines
         self.filepath = filepath
-        self.usages: List[Usage] = []
-        self.aliases: Dict[str, str] = {}  # alias -> real dotted name
-        self.from_imports: Dict[str, str] = {}  # local name -> full dotted name
+        self.usages: list[Usage] = []
+        self.aliases: dict[str, str] = {}  # alias -> real dotted name
+        self.from_imports: dict[str, str] = {}  # local name -> full dotted name
         # variable -> package class it holds an instance of, e.g. s -> requests.Session
-        self.instances: Dict[str, str] = {}
-        self._call_funcs: Set[int] = set()  # Name nodes already recorded as calls
+        self.instances: dict[str, str] = {}
+        self._call_funcs: set[int] = set()  # Name nodes already recorded as calls
         # light inference, filled by prepare() before the walk
-        self.func_returns: Dict[str, str] = {}             # user function -> package class it returns
-        self.attr_types: Dict[tuple, str] = {}             # (user class, attr) -> package class
-        self._class_stack: List[str] = []
+        self.func_returns: dict[str, str] = {}             # user function -> package class it returns
+        self.attr_types: dict[tuple, str] = {}             # (user class, attr) -> package class
+        self._class_stack: list[str] = []
 
     # ── pre-pass: what user functions return, what classes keep on self ──────
 
@@ -93,9 +93,9 @@ class PackageVisitor(ast.NodeVisitor):
                             if cls:
                                 self.attr_types.setdefault((c.name, t.attr), cls)
 
-    def _infer_returns(self, fn) -> Optional[str]:
+    def _infer_returns(self, fn) -> str | None:
         """Package class a function returns, from its return statements."""
-        local: Dict[str, str] = {}
+        local: dict[str, str] = {}
         for node in ast.walk(fn):
             if isinstance(node, ast.Assign):
                 cls = self._class_of(node.value)
@@ -118,7 +118,7 @@ class PackageVisitor(ast.NodeVisitor):
 
     # ── light type tracking ──────────────────────────────────────────────────
 
-    def _class_of(self, value) -> Optional[str]:
+    def _class_of(self, value) -> str | None:
         """Package class an expression evaluates to an instance of, if obvious."""
         if isinstance(value, ast.Call):
             if isinstance(value.func, ast.Name) and value.func.id in self.func_returns:
@@ -133,7 +133,7 @@ class PackageVisitor(ast.NodeVisitor):
             return self._class_of(value.value)
         return None
 
-    def _annotation_class(self, ann) -> Optional[str]:
+    def _annotation_class(self, ann) -> str | None:
         if ann is None:
             return None
         if isinstance(ann, ast.Constant) and isinstance(ann.value, str):
@@ -150,7 +150,7 @@ class PackageVisitor(ast.NodeVisitor):
             return chain
         return None
 
-    def _bind(self, target, cls: Optional[str]):
+    def _bind(self, target, cls: str | None):
         if isinstance(target, ast.Name):
             if cls:
                 self.instances[target.id] = cls
@@ -236,7 +236,7 @@ class PackageVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Attribute(self, node: ast.Attribute):
-        root = node
+        root: ast.expr = node
         while isinstance(root, ast.Attribute):
             root = root.value
         if isinstance(root, ast.Name):
@@ -321,7 +321,7 @@ class PackageVisitor(ast.NodeVisitor):
 
         self.generic_visit(node)
 
-    def _resolve_attr_chain(self, node) -> Optional[str]:
+    def _resolve_attr_chain(self, node) -> str | None:
         """Turn a nested Attribute node into a dotted string."""
         parts = []
         current = node
@@ -364,29 +364,29 @@ class PackageVisitor(ast.NodeVisitor):
         return chain == self.package or chain.startswith(f"{self.package}.")
 
 
-PackageNames = Union[str, Iterable[str]]
+PackageNames = str | Iterable[str]
 
 
-def _as_names(package_name: PackageNames) -> List[str]:
+def _as_names(package_name: PackageNames) -> list[str]:
     if isinstance(package_name, str):
         return [package_name]
     return [n for n in package_name if n]
 
 
-def scan_file(filepath: str, package_name: PackageNames) -> List[Usage]:
+def scan_file(filepath: str, package_name: PackageNames) -> list[Usage]:
     """Scan a single Python file for usages of package_name.
 
     package_name may be one import name or several (e.g. ``["attr", "attrs"]``).
     """
     try:
-        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+        with open(filepath, encoding="utf-8", errors="ignore") as f:
             source = f.read()
         lines = source.splitlines()
         tree = ast.parse(source, filename=filepath)
     except (SyntaxError, UnicodeDecodeError, ValueError, OSError):
         return []
 
-    found: List[Usage] = []
+    found: list[Usage] = []
     for name in _as_names(package_name):
         visitor = PackageVisitor(name, lines, filepath)
         visitor.prepare(tree)
@@ -394,8 +394,8 @@ def scan_file(filepath: str, package_name: PackageNames) -> List[Usage]:
         found.extend(visitor.usages)
 
     # dedupe by (file, line, attr_chain)
-    seen: Set[tuple] = set()
-    deduped: List[Usage] = []
+    seen: set[tuple] = set()
+    deduped: list[Usage] = []
     for u in found:
         key = (u.file, u.line, u.attr_chain)
         if key not in seen:
@@ -404,7 +404,7 @@ def scan_file(filepath: str, package_name: PackageNames) -> List[Usage]:
     return deduped
 
 
-def scan_notebook(filepath: str, package_name: PackageNames) -> List[Usage]:
+def scan_notebook(filepath: str, package_name: PackageNames) -> list[Usage]:
     """Scan a Jupyter notebook's code cells for usages of package_name.
 
     The cells are scanned as one module, as they run, so a name imported in
@@ -419,8 +419,8 @@ def scan_notebook(filepath: str, package_name: PackageNames) -> List[Usage]:
     except (SyntaxError, ValueError):
         return []
     lines = nb.source.splitlines()
-    usages: List[Usage] = []
-    seen: Set[tuple] = set()
+    usages: list[Usage] = []
+    seen: set[tuple] = set()
     for name in _as_names(package_name):
         visitor = PackageVisitor(name, lines, filepath)
         visitor.prepare(tree)
@@ -437,15 +437,15 @@ def scan_notebook(filepath: str, package_name: PackageNames) -> List[Usage]:
     return usages
 
 
-def scan_directory(directory: str, package_name: PackageNames, exclude_dirs: Optional[Set[str]] = None,
-                   include_notebooks: bool = True) -> List[Usage]:
+def scan_directory(directory: str, package_name: PackageNames, exclude_dirs: set[str] | None = None,
+                   include_notebooks: bool = True) -> list[Usage]:
     """Recursively scan a directory for usages of package_name."""
     default_excludes = set(DEFAULT_EXCLUDES)
     if exclude_dirs:
         default_excludes = default_excludes | set(exclude_dirs)
     exclude_dirs = default_excludes
 
-    usages: List[Usage] = []
+    usages: list[Usage] = []
     for fpath in _source_files(directory, exclude_dirs, include_notebooks):
         try:
             if fpath.endswith(".ipynb"):
@@ -466,7 +466,7 @@ DEFAULT_EXCLUDES = {".venv", "venv", "env", ".env", "node_modules", "__pycache__
                     "site-packages", "__pypackages__", ".ruff_cache"}
 
 
-def _source_files(directory: str, exclude_dirs: Set[str], include_notebooks: bool = True):
+def _source_files(directory: str, exclude_dirs: set[str], include_notebooks: bool = True):
     for root, dirs, files in os.walk(directory):
         dirs[:] = [d for d in dirs if d not in exclude_dirs and not d.endswith(".egg-info")]
         for fname in files:
@@ -474,12 +474,12 @@ def _source_files(directory: str, exclude_dirs: Set[str], include_notebooks: boo
                 yield os.path.join(root, fname)
 
 
-def imported_top_modules(directory: str, exclude_dirs: Optional[Set[str]] = None) -> Set[str]:
+def imported_top_modules(directory: str, exclude_dirs: set[str] | None = None) -> set[str]:
     """Top-level names of every absolute import in the project (``import a.b``
     and ``from a.b import c`` both give ``a``), plus dotted prefixes so
     namespace packages (``google.protobuf``) can be matched too."""
     excludes = DEFAULT_EXCLUDES | set(exclude_dirs or ())
-    found: Set[str] = set()
+    found: set[str] = set()
     for fpath in _source_files(directory, excludes, include_notebooks=False):
         try:
             with open(fpath, encoding="utf-8", errors="replace") as f:

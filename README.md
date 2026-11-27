@@ -14,7 +14,7 @@
 - **Wide reach:** **96.7%** of the 1,000 most-downloaded PyPI packages can be deep-checked. It works with pip, uv, Poetry, PDM, Pipenv, conda and pixi, plus Jupyter notebooks.
 - **Fits your workflow:** a GitHub Action that comments on dependency PRs, `watch` mode, and a VS Code extension.
 
-Website: [pyupcheck.vercel.app](https://pyupcheck.vercel.app) · Changes: [CHANGELOG.md](CHANGELOG.md) · Latest: **0.20.0**
+Website: [pyupcheck.vercel.app](https://pyupcheck.vercel.app) · Changes: [CHANGELOG.md](CHANGELOG.md) · Latest: **0.21.0**
 
 ## Install
 
@@ -91,6 +91,7 @@ Reads every `requirements*.txt` (following `-r` includes), `pyproject.toml` (PEP
 ```bash
 pyupcheck check-all
 pyupcheck check-all --deep          # fact-based API diff for every dependency
+pyupcheck check-all flask numpy     # only the packages you name
 pyupcheck check-all -j 16           # check 16 dependencies in parallel (default 8)
 pyupcheck check-all --format html -o report.html
 ```
@@ -166,7 +167,7 @@ Every hour (`--releases MINUTES`, `0` to turn off) it also asks PyPI for new rel
 
 ### `diff` - changelog diff between versions
 
-See breaking/deprecated changes between any two versions without scanning code:
+See what the release notes say changed between any two versions, without scanning code: grouped by release, newest first, each change once, labelled removed, deprecated, renamed or changed.
 
 ```bash
 pyupcheck diff django 4.2.0 5.0.0
@@ -191,10 +192,20 @@ Only the few lines around each breaking usage are sent (`--max` caps how many us
 pyupcheck scan requests
 ```
 
-### `versions`, `ci-setup` and `cache-clear`
+Every line of your code that uses the package, file by file, with each name it uses and how (a call, an attribute, an import).
+
+### `versions` - a package's releases
 
 ```bash
-pyupcheck versions flask
+pyupcheck versions numpy
+pyupcheck versions numpy --all
+```
+
+Releases newest first, with their dates. The latest release, the one your project is on (from its lockfile, pin or installed version), yanked releases and pre-releases are marked.
+
+### `ci-setup` and `cache-clear`
+
+```bash
 pyupcheck ci-setup --type github     # or pre-commit, or all
 pyupcheck cache-clear
 ```
@@ -233,7 +244,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: Astronomox/pyupcheck-Astronomox@v0.20.0
+      - uses: Astronomox/pyupcheck-Astronomox@v0.21.0
         # with:
         #   fail-on: breaking   # make the check fail on breaking usages
         #   deep: "false"       # changelog only (faster)
@@ -296,6 +307,8 @@ min_severity = "deprecated"
 cache = true
 ```
 
+A mistake in that table is reported, not silently ignored: an unknown key (`ignores = [...]`) or a value pyupcheck doesn't accept (`fail_on = "breakng"`) is named on stderr, with a suggestion when one is close, and the setting keeps its default.
+
 Or `.pyupcheckignore`:
 
 ```
@@ -348,7 +361,7 @@ It also works where there's no code to diff directly. Type stub packages (`types
 
 ## Accuracy
 
-`benchmarks/` holds 52 real upgrades (103 breaking lines, plus 8 negative controls, and one Jupyter notebook) with known breaking changes (Django 4, Flask 3, NumPy 2, pandas 2, Pydantic 2, SQLAlchemy 2, SciPy 1.14, Pillow 10 and more). On the current set, `--deep` catches 100% of breaking lines with no false alarms; changelog-only mode catches 80.6%, also with no false alarms; `migrate` produces the exact expected rewrite in all 8 rewrite cases. Run it with `make bench`.
+`benchmarks/` holds 52 real upgrades (103 breaking lines, plus 8 negative controls, and one Jupyter notebook) with known breaking changes (Django 4, Flask 3, NumPy 2, pandas 2, Pydantic 2, SQLAlchemy 2, SciPy 1.14, Pillow 10 and more). On the current set, `--deep` catches 100% of breaking lines with no false alarms; changelog-only mode catches 83.5%, also with no false alarms; `migrate` produces the exact expected rewrite in all 8 rewrite cases. Run it with `make bench`.
 
 **Reach.** `benchmarks/coverage.py` runs pyupcheck against the most-downloaded PyPI packages (latest release against the newest one of the previous minor series). On the top 100, deep mode compared the real API of all 97 packages that have two series to compare, and release notes for the upgrade were found for 73% with this session's limited GitHub access. On the top 1,000 with a GitHub token (the monthly *PyPI coverage* workflow), 0.16.0 compared 96.7% in deep mode and found release notes for 82.7%. What deep mode can't compare is almost all compiled-only packages (CUDA libraries), which have no Python API.
 
@@ -378,7 +391,7 @@ pip install -e "."
 
 **Releasing (for maintainers)**
 
-Run the tests with `python -m pytest` (no network needed; they never touch the real cache) and the accuracy benchmark with `make bench`.
+Run the tests with `python -m pytest` (no network needed; they never touch the real cache), the linters with `make lint` (ruff and mypy, both must be clean: CI checks them), and the accuracy benchmark with `make bench`.
 
 Releases are published by GitHub Actions with PyPI Trusted Publishing (no tokens): bump the version with `python bump.py X.Y.Z`, merge to `main`, then run the *Release* workflow (or push a `vX.Y.Z` tag). See [RELEASING.md](RELEASING.md).
 
@@ -448,6 +461,7 @@ What has shipped, newest first (details in [CHANGELOG.md](CHANGELOG.md)):
 
 | Version | Date | Highlights |
 |---|---|---|
+| 0.21.0 | 2026-11-27 | Strict lint and type checks (three real bugs found); one table style; `fix`, `diff`, `versions`, `scan` redone; `check-all PACKAGE...`; config mistakes reported; release-notes recall 83.5% |
 | 0.20.0 | 2026-11-27 | Security review: SSRF, terminal and Markdown injection, VS Code workspace trust, size limits, Action hardening ([SECURITY.md](SECURITY.md)) |
 | 0.19.1 | 2026-11-27 | `ui`: where your code uses each package (`u` lists every line); status no longer cut off |
 | 0.19.0 | 2026-11-27 | `pyupcheck ui`: a full-screen app to browse upgrades, preview fixes and apply them |
@@ -468,7 +482,7 @@ What has shipped, newest first (details in [CHANGELOG.md](CHANGELOG.md)):
 | 0.7.0 | 2026-11-20 | `migrate`: verified, mechanical rewrites |
 | 0.6.0 | 2026-11-20 | Accuracy overhaul, accuracy benchmark, lockfiles, object tracking, parallel `check-all`, Trusted Publishing |
 
-Where it stands now: deep mode catches 100% of breaking lines on 52 real upgrades with no false alarms; release notes alone catch 80.6%, also with no false alarms; `migrate` gets 8 of 8 rewrite cases exactly right; 96.7% of the top 1,000 PyPI packages can be deep-checked. There are 482 tests on Python 3.10 to 3.14.
+Where it stands now: deep mode catches 100% of breaking lines on 52 real upgrades with no false alarms; release notes alone catch 83.5%, also with no false alarms; `migrate` gets 8 of 8 rewrite cases exactly right; 96.7% of the top 1,000 PyPI packages can be deep-checked. There are 495 tests on Python 3.10 to 3.14.
 
 ## Roadmap
 

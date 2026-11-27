@@ -1,13 +1,18 @@
 """Tests for the API surface extractor and differ."""
 
 import ast
-import pytest
 
 from depshift.apisurface import (
-    APISurface, FuncSig, _SurfaceVisitor, _is_public_api,
+    APISurface,
+    FuncSig,
+    _collect,
+    _is_public_api,
+    _module_path,
+    _sdist_rel_path,
+    _SurfaceVisitor,
+    _wheel_rel_path,
     diff_surfaces,
 )
-
 
 # ── _is_public_api ────────────────────────────────────────────────────────────
 
@@ -136,7 +141,6 @@ def test_diff_skips_private():
 
 # ── archive layout -> module paths ───────────────────────────────────────────
 
-from depshift.apisurface import _module_path, _sdist_rel_path, _wheel_rel_path, _collect
 
 
 def test_wheel_paths_use_real_import_name():

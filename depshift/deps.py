@@ -6,24 +6,21 @@ setup.py, conda environment.yml and pixi.toml.
 """
 
 import ast
+import configparser
 import glob
 import os
 import re
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Set
+from functools import partial
 
 from ._toml import MISSING_TOML_HINT, tomllib
-
-try:
-    import configparser
-except ImportError:
-    configparser = None
 
 
 @dataclass
 class Dependency:
     name: str
-    pinned_version: Optional[str]  # exact version if pinned with ==
+    pinned_version: str | None  # exact version if pinned with ==
     raw: str
     source: str  # which file it came from
 
@@ -40,7 +37,7 @@ def normalize_name(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
-def parse_requirement_line(line: str, source: str) -> Optional[Dependency]:
+def parse_requirement_line(line: str, source: str) -> Dependency | None:
     raw = line.strip()
     egg = _EGG.search(raw)
     line = re.split(r"\s#|^#", raw)[0].strip()
@@ -74,7 +71,7 @@ def _logical_lines(text: str) -> Iterable[str]:
         yield buf
 
 
-def parse_requirements_txt(path: str, _seen: Optional[Set[str]] = None) -> List[Dependency]:
+def parse_requirements_txt(path: str, _seen: set[str] | None = None) -> list[Dependency]:
     """Parse a pip requirements file, following -r / -c includes."""
     seen = _seen if _seen is not None else set()
     real = os.path.realpath(path)
@@ -82,9 +79,9 @@ def parse_requirements_txt(path: str, _seen: Optional[Set[str]] = None) -> List[
         return []
     seen.add(real)
 
-    deps = []
+    deps: list[Dependency] = []
     try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        with open(path, encoding="utf-8", errors="ignore") as f:
             text = f.read()
     except OSError:
         return deps
@@ -102,12 +99,12 @@ def parse_requirements_txt(path: str, _seen: Optional[Set[str]] = None) -> List[
     return deps
 
 
-def parse_pyproject_toml(path: str) -> List[Dependency]:
+def parse_pyproject_toml(path: str) -> list[Dependency]:
     if tomllib is None:
         import warnings
 
         warnings.warn(
-            "Skipping {}: dependencies cannot be read. {}".format(path, MISSING_TOML_HINT),
+            f"Skipping {path}: dependencies cannot be read. {MISSING_TOML_HINT}",
             RuntimeWarning,
             stacklevel=2,
         )
@@ -120,11 +117,11 @@ def parse_pyproject_toml(path: str) -> List[Dependency]:
         import warnings
 
         warnings.warn(
-            "Could not parse {}: {}".format(path, exc), RuntimeWarning, stacklevel=2
+            f"Could not parse {path}: {exc}", RuntimeWarning, stacklevel=2
         )
         return []
 
-    raw_deps: List[str] = []
+    raw_deps: list[str] = []
 
     def add_list(items):
         for item in items or []:
@@ -179,7 +176,7 @@ def parse_pyproject_toml(path: str) -> List[Dependency]:
     return deps
 
 
-def _poetry_style(table) -> List[str]:
+def _poetry_style(table) -> list[str]:
     """Convert a Poetry/Pipfile {name: spec} table to requirement strings."""
     out = []
     for name, spec in (table or {}).items():
@@ -202,7 +199,7 @@ def _poetry_style(table) -> List[str]:
     return out
 
 
-def parse_pipfile(path: str) -> List[Dependency]:
+def parse_pipfile(path: str) -> list[Dependency]:
     """Parse a Pipenv Pipfile ([packages] and [dev-packages])."""
     if tomllib is None:
         return []
@@ -220,10 +217,8 @@ def parse_pipfile(path: str) -> List[Dependency]:
     return deps
 
 
-def parse_setup_cfg(path: str) -> List[Dependency]:
+def parse_setup_cfg(path: str) -> list[Dependency]:
     """Parse dependencies from setup.cfg [options] install_requires."""
-    if configparser is None:
-        return []
     deps = []
     try:
         cfg = configparser.ConfigParser()
@@ -232,7 +227,7 @@ def parse_setup_cfg(path: str) -> List[Dependency]:
             "options": ["install_requires", "setup_requires"],
             "options.extras_require": None,
         }
-        raw_lines: List[str] = []
+        raw_lines: list[str] = []
         for section, keys in sections.items():
             if not cfg.has_section(section):
                 continue
@@ -252,11 +247,11 @@ def parse_setup_cfg(path: str) -> List[Dependency]:
     return deps
 
 
-def parse_setup_py(path: str) -> List[Dependency]:
+def parse_setup_py(path: str) -> list[Dependency]:
     """Best-effort AST parse of setup.py to extract install_requires."""
     deps = []
     try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        with open(path, encoding="utf-8", errors="ignore") as f:
             source = f.read()
         tree = ast.parse(source)
     except Exception:
@@ -292,16 +287,16 @@ def parse_setup_py(path: str) -> List[Dependency]:
     return deps
 
 
-def parse_conda_env(path: str) -> List[Dependency]:
+def parse_conda_env(path: str) -> list[Dependency]:
     """Parse conda environment.yml for pip dependencies."""
     deps = []
     try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        with open(path, encoding="utf-8", errors="ignore") as f:
             lines = f.readlines()
         in_pip = False
         in_deps = False
-        deps_indent = None
-        pip_indent = None
+        deps_indent = 0
+        pip_indent = 0
         for line in lines:
             stripped = line.split("#")[0].strip()
             if not stripped:
@@ -340,11 +335,11 @@ def parse_conda_env(path: str) -> List[Dependency]:
     return deps
 
 
-def requirement_files(directory: str) -> List[str]:
+def requirement_files(directory: str) -> list[str]:
     """All pip requirement files: requirements*.txt, requirements/*.txt, *.in."""
     patterns = ["requirements*.txt", "requirements*.in", "requirements/*.txt",
                 "requirements/*.in", "reqs/*.txt"]
-    out: List[str] = []
+    out: list[str] = []
     for pat in patterns:
         for path in sorted(glob.glob(os.path.join(directory, pat))):
             if os.path.isfile(path) and path not in out:
@@ -357,18 +352,20 @@ def requirement_files(directory: str) -> List[str]:
     return out
 
 
-def parse_pixi_toml(path: str) -> List[Dependency]:
+def parse_pixi_toml(path: str) -> list[Dependency]:
     """Conda and PyPI dependencies declared in pixi.toml."""
     from .conda import read_pixi_toml
     return [d for d in (parse_requirement_line(r, "pixi.toml") for r in read_pixi_toml(path)) if d]
 
 
-def discover_dependencies(directory: str) -> List[Dependency]:
+def discover_dependencies(directory: str) -> list[Dependency]:
     """Find and parse all dependency files in a directory."""
-    deps: List[Dependency] = []
+    deps: list[Dependency] = []
     seen = set()
 
-    parsers = [(p, parse_requirements_txt) for p in requirement_files(directory)]
+    seen_req: set[str] = set()  # requirement files reached through -r: read once
+    parsers: list[tuple[str, Callable[[str], list[Dependency]]]] = [
+        (p, partial(parse_requirements_txt, _seen=seen_req)) for p in requirement_files(directory)]
     parsers += [
         (os.path.join(directory, "pyproject.toml"), parse_pyproject_toml),
         (os.path.join(directory, "Pipfile"), parse_pipfile),
@@ -379,15 +376,10 @@ def discover_dependencies(directory: str) -> List[Dependency]:
         (os.path.join(directory, "pixi.toml"), parse_pixi_toml),
     ]
 
-    seen_req: Set[str] = set()
     for path, parser in parsers:
         if not os.path.isfile(path):
             continue
-        if parser is parse_requirements_txt:
-            found = parser(path, seen_req)
-        else:
-            found = parser(path)
-        for d in found:
+        for d in parser(path):
             if d.name not in seen:
                 seen.add(d.name)
                 deps.append(d)

@@ -17,14 +17,14 @@ written in several steps is read once, complete.
 
 import os
 import time
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from depshift.review import VersionChange, is_dep_file, resolved_versions, version_changes
 
-Snapshot = Dict[str, tuple]  # name -> (version, requirement text)
-Signature = Dict[str, Tuple[int, int]]  # relative path -> (mtime_ns, size)
+Snapshot = dict[str, tuple]  # name -> (version, requirement text)
+Signature = dict[str, tuple[int, int]]  # relative path -> (mtime_ns, size)
 
 
 def dep_file_signature(directory: str) -> Signature:
@@ -61,11 +61,11 @@ class Event:
     ``added``/``removed`` packages listed), "release" (a new release was
     checked), or "error" (``message`` says what could not be read)."""
     kind: str
-    files: List[str] = field(default_factory=list)
-    results: List[dict] = field(default_factory=list)
-    changes: List[VersionChange] = field(default_factory=list)
-    added: List[str] = field(default_factory=list)
-    removed: List[str] = field(default_factory=list)
+    files: list[str] = field(default_factory=list)
+    results: list[dict] = field(default_factory=list)
+    changes: list[VersionChange] = field(default_factory=list)
+    added: list[str] = field(default_factory=list)
+    removed: list[str] = field(default_factory=list)
     message: str = ""
 
 
@@ -86,9 +86,9 @@ class Watcher:
     are passed in so the loop can be driven without the network.
     """
 
-    def __init__(self, directory: str, check: Callable[[VersionChange], Optional[dict]],
-                 latest: Optional[Callable[[str, str], Optional[str]]] = None,
-                 direct: Optional[Callable[[], Iterable[str]]] = None,
+    def __init__(self, directory: str, check: Callable[[VersionChange], dict | None],
+                 latest: Callable[[str, str], str | None] | None = None,
+                 direct: Callable[[], Iterable[str]] | None = None,
                  releases_every: float = 0, jobs: int = 8,
                  resolve: Callable[[str], Snapshot] = resolved_versions,
                  clock: Callable[[], float] = time.monotonic):
@@ -102,13 +102,13 @@ class Watcher:
         self.clock = clock
         self.snapshot: Snapshot = {}
         self.signature: Signature = {}
-        self._pending: Optional[Signature] = None
-        self.known_latest: Dict[str, str] = {}
+        self._pending: Signature | None = None
+        self.known_latest: dict[str, str] = {}
         self._next_release_poll = 0.0
 
     # ── start ────────────────────────────────────────────────────────────
 
-    def start(self) -> List[Event]:
+    def start(self) -> list[Event]:
         """Record where the project is now (and, when watching releases, the
         newest release of each dependency) without reporting it."""
         self.signature = dep_file_signature(self.directory)
@@ -124,7 +124,7 @@ class Watcher:
 
     # ── one poll ─────────────────────────────────────────────────────────
 
-    def poll(self) -> List[Event]:
+    def poll(self) -> list[Event]:
         events = []
         ev = self._poll_files()
         if ev:
@@ -134,7 +134,7 @@ class Watcher:
             events.extend(self._poll_releases())
         return events
 
-    def _poll_files(self) -> Optional[Event]:
+    def _poll_files(self) -> Event | None:
         sig = dep_file_signature(self.directory)
         if sig == self.signature:
             self._pending = None
@@ -163,19 +163,22 @@ class Watcher:
                 self.known_latest[c.name] = c.new
         return ev
 
-    def _latest_all(self) -> Dict[str, Optional[str]]:
-        names = [n for n in self.direct() if n in self.snapshot]
+    def _latest_all(self) -> dict[str, str | None]:
+        latest, direct = self.latest, self.direct
+        if latest is None or direct is None:  # release polling is off
+            return {}
+        names = [n for n in direct() if n in self.snapshot]
 
         def one(name):
             try:
-                return name, self.latest(name, self.snapshot[name][1])
+                return name, latest(name, self.snapshot[name][1])
             except Exception:
                 return name, None
 
         with ThreadPoolExecutor(max_workers=self.jobs) as pool:
             return dict(pool.map(one, names))
 
-    def _poll_releases(self) -> List[Event]:
+    def _poll_releases(self) -> list[Event]:
         fresh = []
         for name, version in self._latest_all().items():
             if not version:
@@ -186,9 +189,9 @@ class Watcher:
             if seen and _newer(version, seen) and current and _newer(version, current):
                 fresh.append(VersionChange(name, current, version, self.snapshot[name][1]))
         return [Event("release", changes=[c], results=r)
-                for c, r in zip(fresh, (self._check_all([c]) for c in fresh))]
+                for c, r in zip(fresh, (self._check_all([c]) for c in fresh), strict=True)]
 
-    def _check_all(self, changes: List[VersionChange]) -> List[dict]:
+    def _check_all(self, changes: list[VersionChange]) -> list[dict]:
         if not changes:
             return []
 

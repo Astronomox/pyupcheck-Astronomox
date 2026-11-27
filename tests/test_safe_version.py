@@ -19,7 +19,7 @@ def pkg(monkeypatch):
 
     def check(package, target, *a, **k):
         calls.append(target)
-        broken = target.startswith("3.1") or target.startswith("3.2")
+        broken = target.startswith(("3.1", "3.2"))
         return {"breaking_count": 4 if broken else 0, "risks": [], "unchecked": target in unchecked}
 
     unchecked = set()

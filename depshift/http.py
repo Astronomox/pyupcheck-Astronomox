@@ -23,18 +23,17 @@ import ipaddress
 import socket
 import threading
 import time
-from typing import Dict, Optional
 from urllib.parse import urlsplit
 
 import httpx
 
-_client: Optional[httpx.Client] = None
+_client: httpx.Client | None = None
 _lock = threading.Lock()
 
 PER_HOST = 8          # concurrent requests to one host
 MAX_RETRY_WAIT = 20   # seconds; a longer Retry-After is reported, not waited for
 MAX_BYTES = 32 * 1024 * 1024  # a page of release notes or metadata; downloads pass their own limit
-_slots: Dict[str, threading.BoundedSemaphore] = {}
+_slots: dict[str, threading.BoundedSemaphore] = {}
 
 
 class BlockedURL(ValueError):
@@ -64,7 +63,7 @@ def _resolves_internal(host: str) -> bool:
         # itself goes through the proxy or fails; literal addresses and
         # internal names are still refused by check_url
         return False
-    return any(_internal_ip(info[4][0]) for info in infos)
+    return any(_internal_ip(str(info[4][0])) for info in infos)
 
 
 def check_url(url: str) -> None:
@@ -129,24 +128,23 @@ def _retry_after(resp: httpx.Response) -> float:
 
 def _get(url: str, max_bytes: int, **kwargs) -> httpx.Response:
     """GET, reading the body only up to ``max_bytes``."""
-    with _slot(url):
-        with client().stream("GET", url, **kwargs) as resp:
-            declared = resp.headers.get("content-length")
-            if declared and declared.isdigit() and int(declared) > max_bytes:
-                raise TooLarge(f"{url[:200]} is {int(declared)} bytes (limit {max_bytes})")
-            body = bytearray()
-            for chunk in resp.iter_bytes():
-                body += chunk
-                if len(body) > max_bytes:
-                    raise TooLarge(f"{url[:200]} is over {max_bytes} bytes")
-            # a complete, already-read response the callers use as before. The
-            # body is already decompressed (and counted that way, so a gzip
-            # bomb hits the limit too): the headers describing the encoded
-            # body would make httpx decode it a second time.
-            headers = [(k, v) for k, v in resp.headers.multi_items()
-                       if k.lower() not in ("content-encoding", "content-length", "transfer-encoding")]
-            return httpx.Response(resp.status_code, headers=headers, content=bytes(body),
-                                  request=resp.request, extensions=resp.extensions)
+    with _slot(url), client().stream("GET", url, **kwargs) as resp:
+        declared = resp.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > max_bytes:
+            raise TooLarge(f"{url[:200]} is {int(declared)} bytes (limit {max_bytes})")
+        body = bytearray()
+        for chunk in resp.iter_bytes():
+            body += chunk
+            if len(body) > max_bytes:
+                raise TooLarge(f"{url[:200]} is over {max_bytes} bytes")
+        # a complete, already-read response the callers use as before. The
+        # body is already decompressed (and counted that way, so a gzip
+        # bomb hits the limit too): the headers describing the encoded
+        # body would make httpx decode it a second time.
+        headers = [(k, v) for k, v in resp.headers.multi_items()
+                   if k.lower() not in ("content-encoding", "content-length", "transfer-encoding")]
+        return httpx.Response(resp.status_code, headers=headers, content=bytes(body),
+                              request=resp.request, extensions=resp.extensions)
 
 
 def http_get(url: str, max_bytes: int = MAX_BYTES, **kwargs) -> httpx.Response:
