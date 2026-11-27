@@ -232,6 +232,33 @@ def _cell_fields(usage) -> dict:
     return {"cell": usage.cell, "cell_line": usage.cell_line}
 
 
+def project_dependencies(directory: str, cfg):
+    """Declared dependencies (minus ignored ones) plus packages the code
+    imports that are only present through the lockfile; and the locks."""
+    deps = discover_dependencies(directory)
+    ignored = {normalize_name(p) for p in cfg.ignore_packages}
+    deps = [d for d in deps if d.name not in ignored]
+    locks = locked_versions(directory)
+    deps += _undeclared_imports(directory, deps, locks, ignored, cfg.exclude_dirs)
+    return deps, locks
+
+
+def check_dependency(dep, locks, directory: str, cfg, github_token: Optional[str] = None,
+                     deep: bool = False, since: Optional[str] = None) -> Optional[dict]:
+    """One dependency of a project, checked against its latest allowed version."""
+    lock = locks.get(dep.name)
+    r = _run_single_check(dep.name, None, directory, github_token, cfg,
+                          suppress_errors=True, since=since, pinned=dep.pinned_version,
+                          deep=deep, spec=specifier_of(dep.raw),
+                          locked=lock.version if lock else None)
+    if r and dep.source.endswith(UNDECLARED):
+        r["undeclared"] = True
+        r.setdefault("warnings", []).append(
+            f"imported by your code but not declared as a dependency "
+            f"(only present via {lock.source if lock else 'another package'})")
+    return r
+
+
 def _run_single_check(package: str, target_version: Optional[str], directory: str,
                       github_token: Optional[str], cfg, suppress_errors: bool = False,
                       since: Optional[str] = None, deep: bool = False,
@@ -837,11 +864,7 @@ def check_all(directory, github_token, fmt, output, fail_on, min_severity, exclu
     if no_cache or not cfg.cache:
         cache_mod.disable_cache()
 
-    deps = discover_dependencies(directory)
-    ignored = {normalize_name(p) for p in cfg.ignore_packages}
-    deps = [d for d in deps if d.name not in ignored]
-    locks = locked_versions(directory)
-    deps += _undeclared_imports(directory, deps, locks, ignored, cfg.exclude_dirs)
+    deps, locks = project_dependencies(directory, cfg)
 
     if not deps:
         console.print("[yellow]No dependency files found[/] (looked for requirements*.txt, "
@@ -868,17 +891,7 @@ def check_all(directory, github_token, fmt, output, fail_on, min_severity, exclu
         task = progress.add_task("Checking dependencies...", total=len(deps))
 
         def check_one(dep):
-            lock = locks.get(dep.name)
-            r = _run_single_check(dep.name, None, directory, github_token, cfg,
-                                  suppress_errors=True, since=since, pinned=dep.pinned_version,
-                                  deep=deep, spec=specifier_of(dep.raw),
-                                  locked=lock.version if lock else None)
-            if r and dep.source.endswith(UNDECLARED):
-                r["undeclared"] = True
-                r.setdefault("warnings", []).append(
-                    f"imported by your code but not declared as a dependency "
-                    f"(only present via {lock.source if lock else 'another package'})")
-            return r
+            return check_dependency(dep, locks, directory, cfg, github_token, deep, since)
 
         # Checks are almost entirely network waits (PyPI, GitHub, downloads),
         # so threads overlap them well. Results keep the dependency order.
@@ -1325,10 +1338,8 @@ def migrate(package, target_version, directory, write, exclude, github_token, no
     Shows a diff by default; pass --write to change files. Exits 1 if
     anything still needs a manual change.
     """
-    import ast as _ast
-    from depshift.apisurface import extract_surface
     from depshift import notebook
-    from depshift.rewrite import apply_edits, plan_migration, unified_diff
+    from depshift.rewrite import unified_diff
 
     directory = os.path.abspath(directory)
     cfg = load_config(directory)
@@ -1336,51 +1347,124 @@ def migrate(package, target_version, directory, write, exclude, github_token, no
     if no_cache or not cfg.cache:
         cache_mod.disable_cache()
 
+    with console.status(f"Comparing [bold]{package}[/]..."):
+        mp = plan_project_migration(package, target_version, directory, cfg, github_token)
+    if mp.error:
+        console.print(f"[red]{package}:[/] {mp.error}")
+        sys.exit(2)
+    if mp.up_to_date:
+        console.print(f"[green]{package}[/] {mp.current} is already the latest allowed version.")
+        return
+    console.print(f"[bold]{package}[/] {mp.current} [dim]({mp.source})[/] -> {mp.target}\n")
+
+    for fc in mp.files:
+        if fc.error:
+            console.print(f"[red]skipped {fc.rel}:[/] {fc.error}")
+            continue
+        for fx in fc.fixes:
+            console.print(f"  [green]fix[/] {mp.where(fx)}  {_esc(fx.description)}")
+        if fc.notebook is not None:
+            print(unified_diff(fc.rel, notebook.cells_text(fc.notebook, fc.before),
+                               notebook.cells_text(fc.notebook, fc.after)))
+        else:
+            print(unified_diff(fc.rel, fc.before, fc.after))
+        if write:
+            fc.write()
+
+    if mp.manual:
+        console.print(f"[yellow]{len(mp.manual)} change(s) need you:[/]")
+        for m in mp.manual:
+            code = re.sub(r"^\[cell \d+\] ", "", m.code) if m.cell else m.code  # the cell is in where()
+            console.print(f"  [yellow]![/] {mp.where(m)}  {_esc(code)}")
+            console.print(f"    [dim]{_esc(m.reason)}[/]")
+
+    changed_files = sum(1 for fc in mp.files if not fc.error)
+    if not mp.has_fixes and not mp.manual:
+        console.print("[green]Nothing to change:[/] no breaking API changes hit your code.")
+    elif changed_files:
+        verb = "Rewrote" if write else "Would rewrite"
+        console.print(f"\n{verb} {changed_files} file(s)." + ("" if write else " Run again with --write to apply."))
+    sys.exit(1 if mp.manual else 0)
+
+
+class FileChange:
+    """One file's rewrite: its text before and after, and the fixes in it."""
+
+    def __init__(self, path: str, rel: str, before: str, after: str, fixes: list, nb=None, error=None):
+        self.path, self.rel, self.before, self.after = path, rel, before, after
+        self.fixes, self.notebook, self.error = fixes, nb, error
+
+    def write(self) -> None:
+        from depshift import notebook
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write(notebook.dumps(notebook.restore(self.notebook, self.after))
+                    if self.notebook is not None else self.after)
+
+
+class MigrationPlan:
+    def __init__(self, package: str, directory: str):
+        self.package, self.directory = package, directory
+        self.current = self.source = self.target = None
+        self.error: Optional[str] = None
+        self.up_to_date = False
+        self.has_fixes = False
+        self.files: List[FileChange] = []
+        self.manual: list = []
+
+    def where(self, item) -> str:
+        rel = os.path.relpath(item.file, self.directory)
+        return f"{rel} cell {item.cell}:{item.line}" if item.cell is not None else f"{rel}:{item.line}"
+
+
+def plan_project_migration(package: str, target_version: Optional[str], directory: str, cfg,
+                           github_token: Optional[str] = None) -> MigrationPlan:
+    """What ``migrate`` would change, without printing or writing anything:
+    used by the migrate command and by ``pyupcheck ui``."""
+    import ast as _ast
+    from depshift.apisurface import extract_surface
+    from depshift import notebook
+    from depshift.rewrite import apply_edits, plan_migration
+
+    mp = MigrationPlan(package, directory)
     dep = next((d for d in discover_dependencies(directory) if d.name == normalize_name(package)), None)
     spec = specifier_of(dep.raw) if dep else None
     current, source = _baseline_version(package, directory, dep.pinned_version if dep else None, spec)
+    mp.current, mp.source = current, source
     if not current:
-        console.print(f"[red]{package}:[/] current version unknown. Install it, pin it with ==, "
-                      "or lock it, so there is a version to migrate from.")
-        sys.exit(2)
+        mp.error = ("current version unknown. Install it, pin it with ==, or lock it, "
+                    "so there is a version to migrate from.")
+        return mp
     if not target_version:
         try:
             target_version = latest_allowed_version(package, None if _is_exact_pin(spec) else spec)
         except Exception as e:
-            console.print(f"[red]{package}:[/] not found on PyPI ({e})")
-            sys.exit(2)
+            mp.error = f"not found on PyPI ({e})"
+            return mp
+    mp.target = target_version
     if not target_version or _not_newer(target_version, current):
-        console.print(f"[green]{package}[/] {current} is already the latest allowed version.")
-        return
+        mp.up_to_date = True
+        return mp
 
     names = import_names_for(package)
-    with console.status(f"Comparing [bold]{package}[/] {current} -> {target_version}..."):
-        usages = scan_directory(directory, names, exclude_dirs=cfg.exclude_dirs)
-        changes = get_api_changes(package, current, target_version)
-        new_surface = extract_surface(package, target_version)
-        try:
-            entries = collect_changes(package, current, target_version, github_token=github_token,
-                                      lookback=True).history
-        except Exception:
-            entries = []
-        try:
-            returns = get_return_types(package, current, target_version)
-        except Exception:
-            returns = {}
-
+    usages = scan_directory(directory, names, exclude_dirs=cfg.exclude_dirs)
+    changes = get_api_changes(package, current, target_version)
+    new_surface = extract_surface(package, target_version)
+    try:
+        entries = collect_changes(package, current, target_version, github_token=github_token,
+                                  lookback=True).history
+    except Exception:
+        entries = []
+    try:
+        returns = get_return_types(package, current, target_version)
+    except Exception:
+        returns = {}
     if changes is None or new_surface is None:
-        console.print(f"[red]{package}:[/] could not read the API of {current} or {target_version} "
-                      "(no Python sources published), so nothing can be rewritten safely.")
-        sys.exit(2)
+        mp.error = (f"could not read the API of {current} or {target_version} (no Python sources "
+                    "published), so nothing can be rewritten safely.")
+        return mp
 
     plan = plan_migration(usages, changes, new_surface, names, entries, returns)
-    console.print(f"[bold]{package}[/] {current} [dim]({source})[/] -> {target_version}\n")
-
-    def where(item) -> str:
-        rel = os.path.relpath(item.file, directory)
-        return f"{rel} cell {item.cell}:{item.line}" if item.cell is not None else f"{rel}:{item.line}"
-
-    changed_files = 0
+    mp.has_fixes = bool(plan.fixes)
     for path, fixes in sorted(plan.by_file().items()):
         nb = notebook.load(path) if path.endswith(".ipynb") else None
         if nb is not None:
@@ -1391,36 +1475,44 @@ def migrate(package, target_version, directory, write, exclude, github_token, no
         after = apply_edits(before, [e for fx in fixes for e in fx.edits])
         if after == before:
             continue
+        rel = os.path.relpath(path, directory)
+        error = None
         try:
             _ast.parse(after)
         except SyntaxError:
-            console.print(f"[red]skipped {os.path.relpath(path)}:[/] the rewrite would not parse")
-            continue
-        rel = os.path.relpath(path, directory)
-        for fx in sorted(fixes, key=lambda x: (x.cell or 0, x.line)):
-            console.print(f"  [green]fix[/] {where(fx)}  {_esc(fx.description)}")
-        if nb is not None:
-            print(unified_diff(rel, notebook.cells_text(nb, before), notebook.cells_text(nb, after)))
-        else:
-            print(unified_diff(rel, before, after))
-        changed_files += 1
-        if write:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(notebook.dumps(notebook.restore(nb, after)) if nb is not None else after)
+            error = "the rewrite would not parse"
+        mp.files.append(FileChange(path, rel, before, after,
+                                   sorted(fixes, key=lambda x: (x.cell or 0, x.line)), nb, error))
+    mp.manual = sorted(plan.manual, key=lambda m: (m.file, m.cell or 0, m.line))
+    return mp
 
-    if plan.manual:
-        console.print(f"[yellow]{len(plan.manual)} change(s) need you:[/]")
-        for m in sorted(plan.manual, key=lambda m: (m.file, m.cell or 0, m.line)):
-            code = re.sub(r"^\[cell \d+\] ", "", m.code) if m.cell else m.code  # the cell is in where()
-            console.print(f"  [yellow]![/] {where(m)}  {_esc(code)}")
-            console.print(f"    [dim]{_esc(m.reason)}[/]")
 
-    if not plan.fixes and not plan.manual:
-        console.print("[green]Nothing to change:[/] no breaking API changes hit your code.")
-    elif changed_files:
-        verb = "Rewrote" if write else "Would rewrite"
-        console.print(f"\n{verb} {changed_files} file(s)." + ("" if write else " Run again with --write to apply."))
-    sys.exit(1 if plan.manual else 0)
+# ── ui ────────────────────────────────────────────────────────────────────────
+
+@main.command(short_help="Browse upgrades and fix them, full screen")
+@click.option("--dir", "-d", "directory", default=".", help="Project directory")
+@click.option("--deep", is_flag=True, help="Start in deep mode (compare the real API of both versions)")
+@click.option("--jobs", "-j", type=click.IntRange(1, 64), default=8, show_default=True)
+@click.option("--exclude", "-e", multiple=True)
+@click.option("--github-token", envvar="GITHUB_TOKEN", default=None)
+@click.option("--no-cache", is_flag=True)
+def ui(directory, deep, jobs, exclude, github_token, no_cache):
+    """Browse every dependency upgrade and fix what breaks, in a full-screen app.
+
+    Packages fill in as they are checked, what needs attention first. Select
+    one to see the lines that break, with the release note and replacement.
+    Keys: m preview fixes (w in the preview applies them), f filter,
+    d deep mode, r re-check, v low-confidence mentions, q quit.
+    Needs the ui extra: pip install "pyupcheck[ui]".
+    """
+    try:
+        from depshift import tui
+    except ImportError:
+        console.print('pyupcheck ui needs Textual: [bold]pip install "pyupcheck\\[ui]"[/]')
+        sys.exit(2)
+    if no_cache:
+        cache_mod.disable_cache()
+    tui.run(directory, github_token=github_token, deep=deep, jobs=jobs, exclude=exclude)
 
 
 # ── ci-setup ──────────────────────────────────────────────────────────────────
