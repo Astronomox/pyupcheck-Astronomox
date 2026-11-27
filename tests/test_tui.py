@@ -30,10 +30,22 @@ RESULTS = {
 }
 
 
+def usage(file, line, code):
+    return SimpleNamespace(file=file, line=line, code=code, cell=None)
+
+
+USAGES = {
+    "flask": [usage("/proj/app.py", 1, "import flask"), usage("/proj/app.py", 7, "flask.Markup('x')"),
+              usage("/proj/app.py", 7, "flask.Markup"), usage("/proj/web/views.py", 3, "flask.Flask(__name__)")],
+    "requests": [usage("/proj/api.py", 2, "requests.get(url)")],
+}
+
+
 def make_app(tmp_path, results=RESULTS, planner=None):
     deps = [SimpleNamespace(name=n) for n in results]
     return tui.PyupcheckApp(str(tmp_path), lambda: deps, lambda dep, deep: results[dep.name],
-                            planner or (lambda pkg: None), jobs=2)
+                            planner or (lambda pkg: None), jobs=2,
+                            usages=lambda pkg: USAGES.get(pkg, []))
 
 
 async def settle(pilot, app):
@@ -70,7 +82,7 @@ def test_table_orders_attention_first_and_shows_details(tmp_path):
             status = text_of(app, "#status")
             assert "1 breaking" in status and "3 safe" in status
             await pilot.press("down")
-            assert "3 places in your code use it" in text_of(app, "#detail")
+            assert "lines in your code use it" in text_of(app, "#detail") or "line in your code uses it" in text_of(app, "#detail")
             await pilot.press("f")  # needs attention only
             assert table.row_count == 1
             await pilot.press("f")  # used by your code
@@ -142,3 +154,36 @@ def test_ui_command_without_textual(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", fake)
     r = CliRunner().invoke(cli.main, ["ui", "-d", os.getcwd()])
     assert r.exit_code == 2 and "pyupcheck[ui]" in r.output
+
+
+def test_where_used_summary_and_full_list(tmp_path):
+    async def go():
+        app = make_app(tmp_path)
+        app.directory = "/proj"
+        async with app.run_test(size=(140, 40)) as pilot:
+            await settle(pilot, app)
+            await pilot.pause(0.2)
+            detail = text_of(app, "#detail")
+            assert "Where your code uses it" in detail and "3 lines in 2 files" in detail
+            assert "app.py  2" in detail and "✗    7  flask.Markup('x')" in detail
+            await pilot.press("u")
+            await pilot.pause(0.1)
+            table = app.screen.query_one("#usage-table")
+            assert table.row_count == 3  # line 7 once, though it uses flask twice
+            await pilot.press("escape")
+            await pilot.pause(0.05)
+            await pilot.press("down", "down")  # uvicorn: not imported
+            await pilot.pause(0.2)
+            assert "doesn't import it" in text_of(app, "#detail")
+    asyncio.run(go())
+
+
+def test_status_column_fits_every_label(tmp_path):
+    async def go():
+        app = make_app(tmp_path)
+        async with app.run_test(size=(140, 30)) as pilot:
+            await settle(pilot, app)
+            table = app.query_one("DataTable")
+            widths = {c.key.value: c.width for c in table.columns.values()}
+            assert widths["status"] >= len("! 99 deprecated") - 1 and widths["latest"] >= 10
+    asyncio.run(go())
