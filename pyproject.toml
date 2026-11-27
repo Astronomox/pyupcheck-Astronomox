@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyupcheck"
-version = "0.18.0"
+version = "0.19.0"
 description = "Check if upgrading a Python dependency will break your code"
 readme = "README.md"
 license = "MIT"
@@ -29,6 +29,8 @@ dependencies = [
 [project.optional-dependencies]
 # pyupcheck explain: migration advice from the Claude API
 ai = ["anthropic>=2.12"]
+# pyupcheck ui: the full-screen app
+ui = ["textual>=1.0"]
 
 [project.scripts]
 pyupcheck = "depshift.cli:main"

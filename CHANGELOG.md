@@ -4,6 +4,14 @@ All notable changes to pyupcheck are documented here.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-11-27
+
+### Added
+- `pyupcheck ui`: a full-screen app (optional extra: `pip install "pyupcheck[ui]"`, built on Textual). Every dependency fills in its row as it is checked, with what needs attention first, and a running total underneath. The side panel shows the selected package's breaking lines with the release note and replacement, grouped notes worth a look, and source notes. `m` previews what `migrate` would rewrite (a coloured diff and the changes that need you); `w` applies it after a y/n confirmation, then re-checks the package. `f` filters (all, needs attention, used by your code), `d` toggles deep mode, `r` re-checks, `v` shows low-confidence mentions. Narrow windows stack the table over the details
+
+### Changed
+- The `migrate` planning is a function (`plan_project_migration`) shared by the command and the app; output unchanged
+
 ## [0.18.0] - 2026-11-26
 
 ### Changed

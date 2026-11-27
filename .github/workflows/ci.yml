@@ -24,7 +24,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -e ".[ai]"
+          pip install -e ".[ai,ui]"
           pip install pytest
 
       - name: Run tests
