@@ -14,7 +14,7 @@
 - **Wide reach:** **96.7%** of the 1,000 most-downloaded PyPI packages can be deep-checked. It works with pip, uv, Poetry, PDM, Pipenv, conda and pixi, plus Jupyter notebooks.
 - **Fits your workflow:** a GitHub Action that comments on dependency PRs, `watch` mode, and a VS Code extension.
 
-Website: [pyupcheck.vercel.app](https://pyupcheck.vercel.app) · Changes: [CHANGELOG.md](CHANGELOG.md) · Latest: **0.19.0**
+Website: [pyupcheck.vercel.app](https://pyupcheck.vercel.app) · Changes: [CHANGELOG.md](CHANGELOG.md) · Latest: **0.19.1**
 
 ## Install
 
@@ -70,6 +70,10 @@ pyupcheck ui
 Every dependency fills in its row as it is checked, with what needs attention first. Move through the table to see each package's breaking lines, release notes and replacements in the side panel. Press **m** to preview what `migrate` can rewrite: the diff, and what still needs a manual change. In the preview, **w** applies the fixes after you confirm, and the package is checked again.
 
 <p align="center"><img src="docs/ui-fixes.svg" alt="The fix preview for numpy: np.float_ rewritten to np.float64 in a diff, and np.cast listed as a change that needs you" width="820"></p>
+
+The details also show **where your code uses the package**: the files with the most uses, and the first lines of each, with lines that break marked. Press **u** for the full list of every line, file by file.
+
+<p align="center"><img src="docs/ui-usages.svg" alt="Every line that uses numpy, with the two that break marked" width="820"></p>
 
 Keys: **f** cycles the filter (all, needs attention, used by your code), **d** switches deep mode on or off, **r** re-checks, **v** shows low-confidence mentions, **q** quits. On a narrow window the table and the details stack.
 
@@ -229,7 +233,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: Astronomox/pyupcheck-Astronomox@v0.19.0
+      - uses: Astronomox/pyupcheck-Astronomox@v0.19.1
         # with:
         #   fail-on: breaking   # make the check fail on breaking usages
         #   deep: "false"       # changelog only (faster)
@@ -440,6 +444,7 @@ What has shipped, newest first (details in [CHANGELOG.md](CHANGELOG.md)):
 
 | Version | Date | Highlights |
 |---|---|---|
+| 0.19.1 | 2026-11-27 | `ui`: where your code uses each package (`u` lists every line); status no longer cut off |
 | 0.19.0 | 2026-11-27 | `pyupcheck ui`: a full-screen app to browse upgrades, preview fixes and apply them |
 | 0.18.0 | 2026-11-26 | `check-all` results as one table; release-note mentions grouped; false alarms on FastAPI and SQLAlchemy projects fixed |
 | 0.17.2 | 2026-11-26 | Full-screen animated `banner` that re-lays itself out on resize; readable over terminal background images |
@@ -458,7 +463,7 @@ What has shipped, newest first (details in [CHANGELOG.md](CHANGELOG.md)):
 | 0.7.0 | 2026-11-20 | `migrate`: verified, mechanical rewrites |
 | 0.6.0 | 2026-11-20 | Accuracy overhaul, accuracy benchmark, lockfiles, object tracking, parallel `check-all`, Trusted Publishing |
 
-Where it stands now: deep mode catches 100% of breaking lines on 52 real upgrades with no false alarms; release notes alone catch 80.6%, also with no false alarms; `migrate` gets 8 of 8 rewrite cases exactly right; 96.7% of the top 1,000 PyPI packages can be deep-checked. There are 433 tests on Python 3.10 to 3.14.
+Where it stands now: deep mode catches 100% of breaking lines on 52 real upgrades with no false alarms; release notes alone catch 80.6%, also with no false alarms; `migrate` gets 8 of 8 rewrite cases exactly right; 96.7% of the top 1,000 PyPI packages can be deep-checked. There are 435 tests on Python 3.10 to 3.14.
 
 ## Roadmap
 

@@ -88,12 +88,65 @@ def _diff_text(diff: str) -> Text:
     return out
 
 
-def details(r: Optional[dict], name: str, root: str, show_low: bool = False) -> Group:
+def places(usages: List, risks: List[dict], root: str) -> List[dict]:
+    """Each line of your code that uses the package once: file, line, code,
+    and the worst finding on it ("breaking", "deprecated", "warning" or "")."""
+    rank = {"breaking": 0, "deprecated": 1, "warning": 2}
+    worst: Dict[tuple, str] = {}
+    for k in risks:
+        key = (k["file"], k["line"])
+        if key not in worst or rank[k["severity"]] < rank[worst[key]]:
+            worst[key] = k["severity"]
+    seen: Dict[tuple, dict] = {}
+    for u in usages:
+        key = (u.file, u.line)
+        if key not in seen:
+            cell = getattr(u, "cell", None)
+            seen[key] = {"file": _rel(u.file, root), "line": u.line, "cell": cell,
+                         "code": (u.code or "").strip(), "severity": worst.get(key, "")}
+    return sorted(seen.values(), key=lambda x: (x["file"], x["line"]))
+
+
+_MARK = {"breaking": ("✗", "#FF6B6B"), "deprecated": ("!", "#F2CC60"), "warning": ("?", "#79C0FF"),
+         "": ("·", "#8a8f98")}
+
+
+def usage_summary(rows: Optional[List[dict]], limit_files: int = 8, lines_per_file: int = 3) -> list:
+    """The "Where your code uses it" section: files by number of uses, with
+    the first few lines of each."""
+    parts: list = [Text(), Text("Where your code uses it", style="bold underline")]
+    if rows is None:
+        return parts + [Text("Finding the places…", style="#8a8f98")]
+    if not rows:
+        return parts + [Text("Nowhere: your code doesn't import it.", style="#8a8f98")]
+    by_file: Dict[str, List[dict]] = {}
+    for row in rows:
+        by_file.setdefault(row["file"], []).append(row)
+    files = sorted(by_file.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+    parts.append(Text(f"{len(rows)} line{'s' if len(rows) != 1 else ''} in {len(by_file)} "
+                      f"file{'s' if len(by_file) != 1 else ''}", style="#8a8f98"))
+    for path, lines in files[:limit_files]:
+        parts += [Text(), Text.assemble((path, "bold"), (f"  {len(lines)}", "#8a8f98"))]
+        shown = sorted(lines, key=lambda x: (x["severity"] == "", x["line"]))[:lines_per_file]
+        for row in sorted(shown, key=lambda x: x["line"]):
+            mark, colour = _MARK[row["severity"]]
+            parts.append(_indent(Text.assemble((f"{mark} ", colour), (f"{row['line']:>4}  ", "#8a8f98"),
+                                               (row["code"], "#E7E5E4"), overflow="ellipsis", no_wrap=True)))
+        if len(lines) > lines_per_file:
+            parts.append(_indent(Text(f"+{len(lines) - lines_per_file} more", style="#8a8f98"), 4))
+    if len(files) > limit_files:
+        parts.append(Text(f"\n+{len(files) - limit_files} more files", style="#8a8f98"))
+    parts += [Text(), Text("Press u to see every place.", style="#5EEAD4")]
+    return parts
+
+
+def details(r: Optional[dict], name: str, root: str, show_low: bool = False,
+            rows: Optional[List[dict]] = None) -> Group:
     """What the right-hand pane shows for one package."""
     from depshift.cli import _distinct, _is_major, tidy_note
 
     if r is None:
-        return Group(Text(name, style="bold"), Text("Checking…", style="#8a8f98"))
+        return Group(Text(name, style="bold"), Text("Checking…", style="#8a8f98"), *usage_summary(rows))
     st = status_of(r)
     order, label, style = _STATUS[st]
     cur, new = r.get("current_version") or "?", r.get("target_version") or "?"
@@ -112,7 +165,8 @@ def details(r: Optional[dict], name: str, root: str, show_low: bool = False) -> 
         parts.append(Text("No release notes or API could be read for this upgrade, so it is not "
                           "counted as safe.", style="#8a8f98"))
     else:
-        parts.append(Text(f"{_uses(r)} place{'s' if _uses(r) != 1 else ''} in your code use it.",
+        n = len(rows) if rows is not None else _uses(r)
+        parts.append(Text(f"{n} line{'s' if n != 1 else ''} in your code use{'s' if n == 1 else ''} it.",
                           style="#8a8f98"))
 
     risks = _distinct(r.get("risks", []))
@@ -145,13 +199,50 @@ def details(r: Optional[dict], name: str, root: str, show_low: bool = False) -> 
         parts += [Text(), Text(f"{hidden} low-confidence mention{'s' if hidden != 1 else ''} hidden "
                                "(press v to show)", style="#8a8f98")]
 
+    if hard:
+        parts += [Text(), Text("Press m to preview what pyupcheck can fix automatically.", style="#5EEAD4")]
+    if st != "unused":
+        parts += usage_summary(rows)
     notes = [w for w in r.get("warnings", [])]
     if notes:
         parts += [Text(), Text("Notes", style="bold underline")]
         parts += [_indent(Text("• " + w, style="#8a8f98"), 0) for w in notes]
-    if hard:
-        parts += [Text(), Text("Press m to preview what pyupcheck can fix automatically.", style="#5EEAD4")]
     return Group(*parts)
+
+
+class UsagesScreen(ModalScreen):
+    """Every line of your code that uses one package."""
+    BINDINGS = [Binding("escape,q,u", "close", "Back")]
+
+    def __init__(self, package: str, rows: List[dict]):
+        super().__init__()
+        self.package, self.rows = package, rows
+
+    def compose(self) -> ComposeResult:
+        files = len({r["file"] for r in self.rows})
+        with Vertical(id="usages"):
+            yield Static(Text.assemble((f"Where your code uses {self.package}", "bold"),
+                                       (f"   {len(self.rows)} line{'s' if len(self.rows) != 1 else ''} in "
+                                        f"{files} file{'s' if files != 1 else ''}", "#8a8f98")))
+            yield DataTable(id="usage-table", cursor_type="row", zebra_stripes=True)
+        yield Footer()
+
+    def on_mount(self) -> None:
+        table = self.query_one("#usage-table", DataTable)
+        width = max([len(r["file"]) for r in self.rows] + [4])
+        table.add_column("", key="mark", width=1)
+        table.add_column("File", key="file", width=min(width, 48))
+        table.add_column("Line", key="line", width=6)
+        table.add_column("Code", key="code")
+        for i, r in enumerate(self.rows):
+            mark, colour = _MARK[r["severity"]]
+            line = f"cell {r['cell']}" if r.get("cell") is not None else str(r["line"])
+            table.add_row(Text(mark, style=colour), r["file"], Text(line, justify="right"),
+                          Text(r["code"], style="#E7E5E4"), key=str(i))
+        table.focus()
+
+    def action_close(self) -> None:
+        self.dismiss(None)
 
 
 class ConfirmScreen(ModalScreen[bool]):
@@ -281,7 +372,9 @@ class PyupcheckApp(App):
     #main.narrow #packages { width: 100%; height: 55%; }
     #main.narrow #detail-scroll { width: 100%; border-left: none; border-top: tall $primary 30%; }
     #status { height: 1; padding: 0 1; background: $panel; }
-    MigrateScreen, ConfirmScreen { align: center middle; }
+    MigrateScreen, ConfirmScreen, UsagesScreen { align: center middle; }
+    #usages { width: 94%; height: 90%; border: round $primary; background: $surface; padding: 0 1; }
+    #usages > Static { height: 1; }
     #migrate { width: 92%; height: 90%; border: round $primary; background: $surface; padding: 0 1; }
     #migrate-title { height: 1; }
     #confirm { width: auto; max-width: 80%; height: auto; border: round $warning; background: $surface;
@@ -290,6 +383,7 @@ class PyupcheckApp(App):
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("m", "migrate", "Preview fixes"),
+        Binding("u", "usages", "Where used"),
         Binding("f", "filter", "Filter"),
         Binding("d", "deep", "Deep mode"),
         Binding("r", "recheck", "Re-check"),
@@ -297,10 +391,14 @@ class PyupcheckApp(App):
     ]
 
     def __init__(self, directory: str, discover: Callable[[], List], check: Callable,
-                 planner: Callable, jobs: int = 8, deep: bool = False):
+                 planner: Callable, jobs: int = 8, deep: bool = False,
+                 usages: Optional[Callable[[str], List]] = None):
         super().__init__()
         self.directory = directory
         self.discover, self.check, self.planner = discover, check, planner
+        self.usages_of = usages or (lambda package: [])
+        self.usage_cache: Dict[str, List] = {}
+        self.loading_usages: set = set()
         self.jobs, self.deep = jobs, deep
         self.deps: List = []
         self.results: Dict[str, Optional[dict]] = {}
@@ -320,9 +418,7 @@ class PyupcheckApp(App):
 
     def on_mount(self) -> None:
         self.sub_title = os.path.basename(os.path.abspath(self.directory)) or self.directory
-        table = self.query_one(DataTable)
-        for col in ("Package", "Current", "Latest", "Status", "Uses"):
-            table.add_column(col, key=col.lower())
+        self.add_columns(12)
         self.layout_for(self.size.width)
         self.run_checks()
 
@@ -359,8 +455,19 @@ class PyupcheckApp(App):
     def _check_one(self, dep):
         return self.check(dep, self.deep)
 
+    def add_columns(self, name_width: int) -> None:
+        # fixed widths: Textual sizes a column from its first contents, so
+        # "… checking" would cut off "✓ up to date" and long versions later
+        table = self.query_one(DataTable)
+        table.clear(columns=True)
+        for label, width in (("Package", name_width), ("Current", 10), ("Latest", 12),
+                             ("Status", 14), ("Uses", 5)):
+            table.add_column(label, key=label.lower(), width=width)
+
     def start(self, deps: List) -> None:
+        self.add_columns(min(max([len(d.name) for d in deps] + [7]) + 2, 30))
         self.deps = deps
+        self.usage_cache.clear()  # files may have changed since the last check
         self.results = {d.name: None for d in deps}
         if not deps:
             self.query_one("#detail", Static).update(Text(
@@ -453,8 +560,45 @@ class PyupcheckApp(App):
                 self.query_one("#detail", Static).update(Text(
                     f"Nothing in “{FILTER_LABEL[self.filter]}”. Press f to change the filter.", style="#8a8f98"))
             return
+        rows = self.usage_rows(name)
         self.query_one("#detail", Static).update(
-            details(self.results.get(name), name, self.directory, self.show_low))
+            details(self.results.get(name), name, self.directory, self.show_low, rows))
+
+    def usage_rows(self, name: str) -> Optional[List[dict]]:
+        """This package's places in your code, or None while they're found."""
+        if name not in self.usage_cache:
+            if name not in self.loading_usages:
+                self.loading_usages.add(name)
+                self.load_usages(name)
+            return None
+        r = self.results.get(name) or {}
+        return places(self.usage_cache[name], r.get("risks", []), self.directory)
+
+    @work(thread=True)
+    def load_usages(self, name: str) -> None:
+        try:
+            found = self.usages_of(name)
+        except Exception:
+            found = []
+        self.call_from_thread(self._usages_loaded, name, found)
+
+    def _usages_loaded(self, name: str, found: List) -> None:
+        self.usage_cache[name] = found
+        self.loading_usages.discard(name)
+        if self.selected_name() == name:
+            self.show_selected()
+
+    def action_usages(self) -> None:
+        name = self.selected_name()
+        if not name:
+            return
+        rows = self.usage_rows(name)
+        if rows is None:
+            self.notify(f"Still finding where {name} is used…")
+        elif not rows:
+            self.notify(f"Your code doesn't import {name}.")
+        else:
+            self.push_screen(UsagesScreen(name, rows))
 
     def update_status(self) -> None:
         done = [r for r in self.results.values() if r is not None]
@@ -518,6 +662,7 @@ class PyupcheckApp(App):
         dep = next((d for d in self.deps if d.name == name), None)
         if dep is None:
             return
+        self.usage_cache.pop(name, None)
         self.call_from_thread(self.mark_pending, name)
         try:
             r = self._check_one(dep)
@@ -550,4 +695,9 @@ def run(directory: str, github_token: Optional[str] = None, deep: bool = False, 
     def planner(package):
         return plan_project_migration(package, None, directory, cfg, github_token)
 
-    PyupcheckApp(directory, discover, check, planner, jobs=jobs, deep=deep).run()
+    def usages(package):
+        from depshift.names import import_names_for
+        from depshift.scanner import scan_directory
+        return scan_directory(directory, import_names_for(package), exclude_dirs=cfg.exclude_dirs)
+
+    PyupcheckApp(directory, discover, check, planner, jobs=jobs, deep=deep, usages=usages).run()

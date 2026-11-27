@@ -4,6 +4,14 @@ All notable changes to pyupcheck are documented here.
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-11-27
+
+### Added
+- `pyupcheck ui` shows where your code uses each package: the details list the files with the most uses and their first lines (breaking lines marked), and `u` opens every line, file by file, with what breaks marked. Found when the package is selected, and found again after a re-check or after fixes are applied
+
+### Fixed
+- `pyupcheck ui` cut off "✓ up to date" and long versions ("0.165."): columns were sized from the "… checking" rows. They now have fixed widths, with the package column sized to the longest name
+
 ## [0.19.0] - 2026-11-27
 
 ### Added
