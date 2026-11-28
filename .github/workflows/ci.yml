@@ -29,10 +29,11 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -e ".[ai,ui]"
-          pip install pytest
+          pip install pytest pytest-cov
 
+      # the floor only rises: lower coverage than this fails the build
       - name: Run tests
-        run: pytest tests/ -v
+        run: pytest tests/ --cov=depshift --cov-report=term-missing:skip-covered --cov-fail-under=88
 
       - name: Smoke test CLI
         run: |

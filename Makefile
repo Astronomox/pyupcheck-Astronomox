@@ -13,10 +13,10 @@ help:
 
 install:
 	pip install -e .
-	pip install pytest pyflakes
+	pip install pytest pytest-cov ruff mypy
 
 test:
-	pytest tests/ -v
+	pytest tests/ --cov=depshift --cov-report=term-missing:skip-covered --cov-fail-under=88
 
 bench:
 	python benchmarks/run.py

@@ -67,6 +67,13 @@ ignore = [
 # tests: long fixture strings, throwaway unpacking and lambda stubs are fine
 "tests/*" = ["E501", "B006", "B011", "E731", "RUF012", "RUF059", "SIM115"]
 
+[tool.coverage.run]
+branch = false
+omit = ["depshift/__main__.py"]
+
+[tool.coverage.report]
+exclude_also = ["if __name__ == .__main__.:", "if TYPE_CHECKING:"]
+
 [tool.mypy]
 python_version = "3.10"
 files = ["depshift"]
