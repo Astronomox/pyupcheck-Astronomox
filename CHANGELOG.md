@@ -4,6 +4,28 @@ All notable changes to pyupcheck are documented here.
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-11-28
+
+### Fixed
+Checking a real Flask 1.0 app ([flask-realworld-example-app](https://github.com/gothinkster/flask-realworld-example-app)) against today's releases gave 46 findings, and running the new versions showed 32 of them were false. All four causes are fixed. It now gives 15, each confirmed, including one that was missed before. Four benchmark cases keep each of them fixed.
+- **Deep mode** reported 19 uses of `Blueprint.route()` as removed in Flask 3. The method moved to a base class imported under another name (`from .sansio.blueprints import Blueprint as SansioBlueprint`), and that name wasn't followed. Attributes that a base class now sets on instances (`self.root_path = ...`) also looked removed
+- **Release notes** that change a member or argument were matched to every use of its owner. "Rename ``DateTime``'s ``dateformat`` Meta option" flagged every `fields.DateTime(...)`; "passing a string argument as ``only`` to ``fields.Nested``" and "passing the string `"self"` to `fields.Nested`" flagged every `Nested(...)`; notes about positional arguments flagged `@pytest.fixture(scope=...)`. Each now matches only the calls it describes
+- Conditional notes ("If only a name is passed to `option()`, ...") are mentions, not changes
+- `` ``@pytest.fixture`` `` in a note now names `pytest.fixture`; it was an unknown API, so pytest 4's removal of positional fixture arguments went unreported
+- **Missed break:** objects created in one module and imported in others (`db = SQLAlchemy()` in `extensions.py`, `from .extensions import db` everywhere else) are now followed across the project. Flask-SQLAlchemy's `db` hands out SQLAlchemy's own names, so `db.Binary(...)` is checked as SQLAlchemy's `Binary`, removed in 1.4. Before, only the 4 lines in the module that created `db` were seen; now all 99 are
+- Dependencies installed from a folder, a git repository or a URL (`name @ git+...`, Poetry `path =`/`git =`, `[tool.uv.sources]`) were looked up on PyPI, where a different package with the same name could be checked instead
+
+### Added
+- The GitHub CLI's token is used when you're signed in (`gh auth login`) and no token is set: 5,000 GitHub API requests an hour instead of 60. `GH_TOKEN` is read too. `gh` is never run from inside the project being checked, and `PYUPCHECK_NO_GH_AUTH=1` turns this off
+- Once anonymous GitHub API requests are rate limited, the rest of the run reads the releases feed instead of spending requests on 403s
+- Monorepos without a uv workspace: local path dependencies inside the project (Poetry `path =`, uv path sources, `name @ file:...` including PDM's `${PROJECT_ROOT}`) are read as members; `review` follows their files too
+- `scripts/screenshot.py` regenerates the README's screenshot from a real run
+
+### Internal
+- If a rich release changes the internal step that trims trailing spaces, output is printed untrimmed instead of failing
+- Measured: the 0.22.1 change to low-confidence notes demoted 9 findings on two real projects and none in the benchmark, all confirmed not to be breaks. Reading every release of an upgrade made no measurable difference to a cold `check-all` of 54 packages (about 35 s either way)
+- Benchmark: 56 cases, 107 breaking lines. `--deep` catches 100%, the API diff alone 98.1%, release notes alone 83.2%, all with no false alarms
+
 ## [0.22.1] - 2026-11-28
 
 ### Fixed

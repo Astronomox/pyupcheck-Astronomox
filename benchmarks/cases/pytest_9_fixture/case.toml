@@ -1,0 +1,4 @@
+package = "pytest"
+from = "3.6.3"
+to = "9.2.0"
+source = "pytest 4 removed positional arguments to @pytest.fixture; keyword arguments and the bare decorator keep working"

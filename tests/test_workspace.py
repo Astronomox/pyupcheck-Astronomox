@@ -72,3 +72,51 @@ def test_review_compares_member_files_too(workspace):
           '[project]\nname = "shared"\ndependencies = ["httpx==0.29.0"]\n')
     changes = changed_dependencies(str(workspace), "HEAD")
     assert [(c.name, c.old, c.new) for c in changes] == [("httpx", "0.28.1", "0.29.0")]
+
+
+# ── other monorepos: local path dependencies ──────────────────────────────────
+
+def test_poetry_path_dependencies_are_members_not_pypi_packages(tmp_path):
+    write(tmp_path / "pyproject.toml", '''[tool.poetry.dependencies]
+python = "^3.10"
+flask = "^3.0"
+mylib = {path = "libs/mylib", develop = true}
+vendored = {git = "https://github.com/example/vendored.git"}
+''')
+    write(tmp_path / "libs" / "mylib" / "pyproject.toml", '[project]\nname = "mylib"\ndependencies = ["numpy>=2"]\n')
+    deps = {d.name: d for d in discover_dependencies(str(tmp_path))}
+    assert set(deps) == {"flask", "numpy"}  # mylib and vendored aren't looked up on PyPI
+    assert deps["numpy"].source == "libs/mylib/pyproject.toml"
+
+
+def test_pep508_and_pdm_file_references(tmp_path):
+    write(tmp_path / "pyproject.toml", '''[project]
+name = "app"
+dependencies = [
+    "core @ file:///${PROJECT_ROOT}/packages/core",
+    "tool @ git+https://github.com/example/tool.git@v1",
+    "requests>=2",
+]
+''')
+    write(tmp_path / "packages" / "core" / "pyproject.toml", '[project]\nname = "core"\ndependencies = ["attrs==23.1.0"]\n')
+    assert {d.name for d in discover_dependencies(str(tmp_path))} == {"requests", "attrs"}
+
+
+def test_uv_path_and_git_sources_are_not_pypi(tmp_path):
+    write(tmp_path / "pyproject.toml", '''[project]
+name = "app"
+dependencies = ["helper", "fork", "httpx==0.28.1"]
+
+[tool.uv.sources]
+helper = { path = "helper" }
+fork = { git = "https://github.com/example/fork" }
+''')
+    write(tmp_path / "helper" / "pyproject.toml", '[project]\nname = "helper"\ndependencies = ["rich"]\n')
+    assert {d.name for d in discover_dependencies(str(tmp_path))} == {"httpx", "rich"}
+
+
+def test_path_dependencies_outside_the_project_are_ignored(tmp_path):
+    write(tmp_path / "elsewhere" / "pyproject.toml", '[project]\nname = "x"\ndependencies = ["evil"]\n')
+    write(tmp_path / "proj" / "pyproject.toml", '[tool.poetry.dependencies]\nx = {path = "../elsewhere"}\n'
+          'y = {path = "/etc"}\n')
+    assert discover_dependencies(str(tmp_path / "proj")) == []

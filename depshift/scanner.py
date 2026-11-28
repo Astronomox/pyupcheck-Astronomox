@@ -26,8 +26,12 @@ class Usage:
 class PackageVisitor(ast.NodeVisitor):
     """Walk an AST and collect every reference to the target package."""
 
-    def __init__(self, package_name: str, source_lines: list[str], filepath: str):
+    def __init__(self, package_name: str, source_lines: list[str], filepath: str,
+                 project_objects: dict[str, str] | None = None):
         self.package = package_name
+        # module-level names this module gets from elsewhere in the project
+        # (``from .extensions import db``) and the third-party object each holds
+        self.project_objects = project_objects or {}
         self.lines = source_lines
         self.filepath = filepath
         self.usages: list[Usage] = []
@@ -62,6 +66,14 @@ class PackageVisitor(ast.NodeVisitor):
                     full = f"{module}.{a.name}"
                     if a.name != "*" and (self._is_package_ref(module) or self._is_package_ref(full)):
                         self.from_imports[a.asname or a.name] = full
+
+        for local, made_by in self.project_objects.items():
+            if local in self.aliases or local in self.from_imports:
+                continue
+            if self._is_package_ref(made_by):
+                self.instances.setdefault(local, made_by)  # db -> flask_sqlalchemy.SQLAlchemy
+            elif _proxied(made_by) == self.package:
+                self.aliases.setdefault(local, self.package)  # db.Column -> sqlalchemy.Column
 
         funcs = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
         classes = [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]
@@ -373,7 +385,105 @@ def _as_names(package_name: PackageNames) -> list[str]:
     return [n for n in package_name if n]
 
 
-def scan_file(filepath: str, package_name: PackageNames) -> list[Usage]:
+# objects that hand out another package's names as their own attributes:
+# Flask-SQLAlchemy's ``db`` gives ``db.Column``, ``db.String``, ``db.Binary``...
+# straight from SQLAlchemy, so those uses are SQLAlchemy's
+PROXIES = {
+    "flask_sqlalchemy.SQLAlchemy": "sqlalchemy",
+    "flask_sqlalchemy.extension.SQLAlchemy": "sqlalchemy",
+}
+
+
+def _proxied(made_by: str) -> str | None:
+    return PROXIES.get(made_by)
+
+
+def _module_name(directory: str, path: str) -> str:
+    rel = os.path.relpath(path, directory)[:-3].replace(os.sep, ".")
+    return rel[: -len(".__init__")] if rel.endswith(".__init__") else rel
+
+
+def _absolute(module: str, is_package: bool, level: int, target: str | None) -> str:
+    """``from ..x import y`` inside ``module``, as an absolute module name."""
+    parts = module.split(".") if is_package else module.split(".")[:-1]
+    if level > 1:
+        parts = parts[: len(parts) - (level - 1)] if level - 1 <= len(parts) else []
+    return ".".join([*parts, target] if target else parts)
+
+
+def project_objects(directory: str, exclude_dirs: set[str] | None = None) -> dict[str, dict[str, str]]:
+    """For each module of the project: its module-level names that hold an
+    object a third-party call made (``db = SQLAlchemy()``), including the
+    ones it imports from other project modules (``from .extensions import
+    db``), as {module: {name: "flask_sqlalchemy.SQLAlchemy"}}."""
+    excludes = DEFAULT_EXCLUDES | set(exclude_dirs or ())
+    made: dict[str, dict[str, str]] = {}
+    internal: dict[str, dict[str, tuple[str, str]]] = {}
+    files = [f for f in _source_files(directory, excludes, include_notebooks=False) if f.endswith(".py")]
+    modules = {_module_name(directory, f): f for f in files}
+    tops = {m.split(".")[0] for m in modules}
+    for mod, path in modules.items():
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                tree = ast.parse(f.read())
+        except (SyntaxError, ValueError, OSError, RecursionError, MemoryError):
+            continue
+        is_pkg = path.endswith("__init__.py")
+        names: dict[str, str] = {}  # local -> third-party dotted name
+        objects: dict[str, str] = {}
+        imported: dict[str, tuple[str, str]] = {}
+        for node in tree.body:
+            if isinstance(node, ast.Import):
+                for a in node.names:
+                    if a.name.split(".")[0] not in tops:
+                        names[a.asname or a.name.split(".")[0]] = a.name if a.asname else a.name.split(".")[0]
+            elif isinstance(node, ast.ImportFrom):
+                src = _absolute(mod, is_pkg, node.level, node.module) if node.level else (node.module or "")
+                for a in node.names:
+                    if a.name == "*":
+                        continue
+                    local = a.asname or a.name
+                    if node.level or src.split(".")[0] in tops:
+                        imported[local] = (src, a.name)
+                    else:
+                        names[local] = f"{src}.{a.name}"
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(node.value, ast.Call):
+                chain = _dotted(node.value.func)
+                if chain:
+                    head, _, rest = chain.partition(".")
+                    if head in names:
+                        made_by = f"{names[head]}.{rest}" if rest else names[head]
+                        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                        for t in targets:
+                            if isinstance(t, ast.Name):
+                                objects[t.id] = made_by
+        made[mod] = objects
+        internal[mod] = imported
+    for _ in range(6):  # objects re-exported through several modules
+        changed = False
+        for mod, imported in internal.items():
+            for local, (src, name) in imported.items():
+                obj = made.get(src, {}).get(name)
+                if obj and made[mod].get(local) != obj:
+                    made[mod][local] = obj
+                    changed = True
+        if not changed:
+            break
+    return {m: o for m, o in made.items() if o}
+
+
+def _dotted(node) -> str | None:
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+        return ".".join(reversed(parts))
+    return None
+
+
+def scan_file(filepath: str, package_name: PackageNames, project_objects: dict[str, str] | None = None) -> list[Usage]:
     """Scan a single Python file for usages of package_name.
 
     package_name may be one import name or several (e.g. ``["attr", "attrs"]``).
@@ -388,7 +498,7 @@ def scan_file(filepath: str, package_name: PackageNames) -> list[Usage]:
 
     found: list[Usage] = []
     for name in _as_names(package_name):
-        visitor = PackageVisitor(name, lines, filepath)
+        visitor = PackageVisitor(name, lines, filepath, project_objects)
         visitor.prepare(tree)
         visitor.visit(tree)
         found.extend(visitor.usages)
@@ -446,12 +556,14 @@ def scan_directory(directory: str, package_name: PackageNames, exclude_dirs: set
     exclude_dirs = default_excludes
 
     usages: list[Usage] = []
+    objects = project_objects(directory, exclude_dirs)
     for fpath in _source_files(directory, exclude_dirs, include_notebooks):
         try:
             if fpath.endswith(".ipynb"):
                 usages.extend(scan_notebook(fpath, package_name))
             else:
-                usages.extend(scan_file(fpath, package_name))
+                module = _module_name(directory, fpath) if fpath.endswith(".py") else ""
+                usages.extend(scan_file(fpath, package_name, objects.get(module)))
         except (RecursionError, MemoryError, SyntaxError, ValueError, OSError):
             # a pathological file (thousands of nested brackets) is skipped:
             # one file must not stop the whole project from being checked.

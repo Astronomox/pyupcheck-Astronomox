@@ -264,3 +264,17 @@ def test_console_never_ends_a_line_in_spaces_but_keeps_badges():
         lines = buf.getvalue().splitlines()
         assert all(not ln.endswith(" ") for ln in lines if "\x1b" not in ln)
         assert ("\x1b[30;42m OK \x1b[0m" in buf.getvalue()) is expect_badge_space
+
+
+def test_trimming_never_costs_output(monkeypatch):
+    """If rich changes the internal step TidyConsole hooks, or trimming
+    fails, output is printed untrimmed rather than lost or crashing."""
+    import io
+
+    def broken(segments, colours=True):
+        raise RuntimeError("unexpected segment")
+        yield  # pragma: no cover
+    monkeypatch.setattr(output, "_without_trailing_blanks", broken)
+    buf = io.StringIO()
+    output.TidyConsole(file=buf, width=40, color_system=None).print("still printed")
+    assert buf.getvalue() == "still printed\n"

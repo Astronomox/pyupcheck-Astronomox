@@ -1,0 +1,4 @@
+package = "marshmallow"
+from = "2.15.3"
+to = "4.4.0"
+source = "Found on a real app: Nested('self') stopped working (3.3 deprecation, removed in 4.0); notes about DateTime's Meta option and Nested's `only` must not flag plain DateTime() and Nested(Schema)"

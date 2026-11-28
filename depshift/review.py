@@ -77,18 +77,25 @@ def export_dependency_files(repo: str, ref: str, dest: str) -> list[str]:
     listed = _git(repo, "ls-tree", "-r", "--name-only", ref).splitlines()
     # the members of a uv workspace, as the root pyproject.toml at ref names them
     members: tuple[list[str], list[str]] = ([], [])
+    local_dirs: set[str] = set()
     if "pyproject.toml" in listed:
         from depshift._toml import tomllib
         from depshift.deps import workspace_patterns
         root_toml = subprocess.run(["git", "-C", repo, "show", f"{ref}:pyproject.toml"], check=True,  # nosec B603 B607
                                    capture_output=True).stdout
         try:
-            members = workspace_patterns(tomllib.loads(root_toml.decode("utf-8", "replace")) if tomllib else {})
+            from depshift.deps import _local_paths
+            data = tomllib.loads(root_toml.decode("utf-8", "replace")) if tomllib else {}
+            members = workspace_patterns(data)
+            local_dirs = {os.path.normpath(p).replace(os.sep, "/") for p in _local_paths(data)
+                          if not os.path.isabs(p)}
         except Exception:
             members = ([], [])
     written = []
     for path in listed:
-        if not (is_dep_file(path) or _workspace_file(path, *members)):
+        if not (is_dep_file(path) or _workspace_file(path, *members)
+                or (path.endswith("/pyproject.toml") and path.rsplit("/", 1)[0] in local_dirs
+                    and not path.startswith("../"))):
             continue
         content = subprocess.run(["git", "-C", repo, "show", f"{ref}:{path}"], check=True,  # nosec B603 B607
                                  capture_output=True).stdout

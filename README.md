@@ -9,7 +9,7 @@
 
 <p align="center"><img src="docs/check-all.svg" alt="pyupcheck check-all --deep: flask and numpy upgrades break 3 lines, requests and click are safe, and it prints the migrate commands that fix them" width="820"></p>
 
-- **Accurate:** on 52 real upgrades (Django, Flask, NumPy, pandas, Pydantic, SQLAlchemy and more), deep mode catches **100%** of breaking lines with **no false alarms**.
+- **Accurate:** on 56 real upgrades (Django, Flask, NumPy, pandas, Pydantic, SQLAlchemy and more), deep mode catches **100%** of breaking lines with **no false alarms**. On a real 2018 Flask app upgraded to today's releases, it reports 15 breaking lines, each confirmed by running the new versions.
 - **Fixes, not just warnings:** `pyupcheck migrate` rewrites moved names, renamed arguments and keyword-only calls, checked against the new version's real API.
 - **Wide reach:** **96.7%** of the 1,000 most-downloaded PyPI packages can be deep-checked. It works with pip, uv, Poetry, PDM, Pipenv, conda and pixi, plus Jupyter notebooks.
 - **Fits your workflow:** a GitHub Action that comments on dependency PRs, `watch` mode, and a VS Code extension.
@@ -54,7 +54,7 @@ Fix what can be fixed automatically (shows the diff first):
   pyupcheck migrate numpy 2.0.0
 ```
 
-A source that couldn't be read (say, GitHub rate-limiting you) is mentioned once in that summary, with a `GITHUB_TOKEN` hint, instead of under every package. Terminals that can't print Unicode get ASCII symbols, and `pyupcheck --help` (or `-h`) fits narrow windows.
+A source that couldn't be read (say, GitHub rate-limiting you) is mentioned once in that summary, with a hint, instead of under every package. Terminals that can't print Unicode get ASCII symbols, and `pyupcheck --help` (or `-h`) fits narrow windows.
 
 ## Commands
 
@@ -361,7 +361,7 @@ It also works where there's no code to diff directly. Type stub packages (`types
 
 ## Accuracy
 
-`benchmarks/` holds 52 real upgrades (103 breaking lines, plus 8 negative controls, and one Jupyter notebook) with known breaking changes (Django 4, Flask 3, NumPy 2, pandas 2, Pydantic 2, SQLAlchemy 2, SciPy 1.14, Pillow 10 and more). On the current set, `--deep` catches 100% of breaking lines with no false alarms; changelog-only mode catches 83.5%, also with no false alarms; `migrate` produces the exact expected rewrite in all 8 rewrite cases. Run it with `make bench`.
+`benchmarks/` holds 56 real upgrades (107 breaking lines, plus 8 negative controls, and one Jupyter notebook) with known breaking changes (Django 4, Flask 3, NumPy 2, pandas 2, Pydantic 2, SQLAlchemy 2, SciPy 1.14, Pillow 10, marshmallow 4 and more). Four come from checking a real Flask app, where the benchmark's earlier cases had missed false alarms. On the current set, `--deep` (the API diff together with release notes) catches 100% of breaking lines with no false alarms; the API diff alone catches 98.1%, and release notes alone 83.2%, both with no false alarms; `migrate` produces the exact expected rewrite in all 8 rewrite cases. Run it with `make bench`.
 
 **Reach.** `benchmarks/coverage.py` runs pyupcheck against the most-downloaded PyPI packages (latest release against the newest one of the previous minor series). On the top 100, deep mode compared the real API of all 97 packages that have two series to compare, and release notes for the upgrade were found for 73% with this session's limited GitHub access. On the top 1,000 with a GitHub token (the monthly *PyPI coverage* workflow), 0.16.0 compared 96.7% in deep mode and found release notes for 82.7%. What deep mode can't compare is almost all compiled-only packages (CUDA libraries), which have no Python API.
 
@@ -371,7 +371,7 @@ Changelogs are read from GitHub releases, root CHANGES files, per-version releas
 
 - Changelog parsing relies on maintainers writing structured changelogs
 - Dynamic attribute access is detected when the name is written out (`getattr(np, "float_")`), not when it's computed at run time (`getattr(np, name)`); `getattr` with a default is a compatibility shim and isn't reported
-- GitHub's API allows 60 requests an hour without a token. pyupcheck falls back to the releases feed and raw files, but set `GITHUB_TOKEN` (or pass `--github-token`) for the most complete release notes
+- GitHub's API allows 60 requests an hour without a token, 5,000 with one. pyupcheck uses `--github-token`, `GITHUB_TOKEN` or `GH_TOKEN` if set, else the GitHub CLI's token when you're signed in (`gh auth login`); set `PYUPCHECK_NO_GH_AUTH=1` to stop that. Without a token it falls back to the releases feed and raw files, and stops asking the API for the rest of a run once it is rate limited
 - Packages that ship only compiled code (CUDA libraries, for example) have no Python API for deep mode to compare; they're checked from their release notes
 - `explain` hasn't been tried against the live Claude API yet
 
@@ -430,7 +430,7 @@ No. pyupcheck reads your files locally and only asks PyPI, GitHub and project do
 
 **Q: How do I use it in CI without hitting GitHub rate limits?**
 
-Set the `GITHUB_TOKEN` environment variable. In GitHub Actions this is available as `${{ secrets.GITHUB_TOKEN }}` automatically.
+Sign in with the GitHub CLI (`gh auth login`), and pyupcheck uses its token; or set the `GITHUB_TOKEN` environment variable. In GitHub Actions this is available as `${{ secrets.GITHUB_TOKEN }}` automatically.
 
 **Q: Can I ignore certain packages?**
 
@@ -461,6 +461,7 @@ What has shipped, newest first (details in [CHANGELOG.md](CHANGELOG.md)):
 
 | Version | Date | Highlights |
 |---|---|---|
+| 0.23.0 | 2026-11-28 | Checked against a real Flask app: 32 false alarms of 46 traced to four causes and fixed, and a missed break caught (objects shared across modules, Flask-SQLAlchemy's `db`); GitHub CLI token used; Poetry/PDM/path monorepos; local and git dependencies no longer looked up on PyPI |
 | 0.22.1 | 2026-11-28 | False alarms from vague release notes on calls that pass the parameter fixed (found on a real Flask project); uv workspaces; `ui` fits any window; diffs fold cleanly; no trailing spaces; branch coverage 90% |
 | 0.22.0 | 2026-11-28 | Every command fits any terminal, 40 columns up; `review` in the terminal; core logic split out of the CLI; coverage 80% to 90%, enforced in CI |
 | 0.21.0 | 2026-11-27 | Strict lint and type checks (three real bugs found); one table style; `fix`, `diff`, `versions`, `scan` redone; `check-all PACKAGE...`; config mistakes reported; release-notes recall 83.5% |
@@ -484,7 +485,7 @@ What has shipped, newest first (details in [CHANGELOG.md](CHANGELOG.md)):
 | 0.7.0 | 2026-11-20 | `migrate`: verified, mechanical rewrites |
 | 0.6.0 | 2026-11-20 | Accuracy overhaul, accuracy benchmark, lockfiles, object tracking, parallel `check-all`, Trusted Publishing |
 
-Where it stands now: deep mode catches 100% of breaking lines on 52 real upgrades with no false alarms; release notes alone catch 83.5%, also with no false alarms; `migrate` gets 8 of 8 rewrite cases exactly right; 96.7% of the top 1,000 PyPI packages can be deep-checked. There are 495 tests on Python 3.10 to 3.14.
+Where it stands now: deep mode catches 100% of breaking lines on 56 real upgrades with no false alarms; release notes alone catch 83.2%, also with no false alarms; on a real Flask app it reports 15 breaking lines, all confirmed; `migrate` gets 8 of 8 rewrite cases exactly right; 96.7% of the top 1,000 PyPI packages can be deep-checked. There are 708 tests on Python 3.10 to 3.14, at 90% branch coverage.
 
 ## Roadmap
 
