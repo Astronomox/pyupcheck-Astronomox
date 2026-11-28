@@ -4,6 +4,20 @@ All notable changes to pyupcheck are documented here.
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-11-28
+
+### Fixed
+- False "breaking" findings on real projects. A call that passes a parameter a release note names was counted as breaking even when pyupcheck itself rated the note low confidence; such notes are now listed as worth a look, as every other low-confidence match already was. Found by running `check-all` on [microblog](https://github.com/miguelgrinberg/microblog): SQLAlchemy 2.1 reported "2 breaking" (and exited 1) for notes about `relationship(primaryjoin=...)` and `mapped_column(default=...)` that don't break it; it now reports 0, which deep mode confirms. The benchmark is unchanged (release notes 83.5% recall at 100% precision)
+- Sphinx links to other sections and pages (``:ref:`change_12168` ``, ``:doc:`...` ``) were read as API names
+- When GitHub releases covered only some of the releases in an upgrade, the changelog file wasn't read, so changes in the other releases were missed (Flask 2.3's `Markup` deprecation, with 3.0.0 on GitHub). Every release in the upgrade must now have been read before other sources are skipped
+- In a uv workspace, run from its root, the members' dependencies were missed: they showed as "imported but not declared", and their constraints were ignored (`sentry-sdk` was checked at 3.x despite `<3`). Members' `pyproject.toml` files are read (globs and `exclude` included, never outside the project), and `review` and `watch` follow them
+- `pyupcheck ui` showed a 61-column table however narrow the window, so the status was off-screen below about 62 columns. The table now drops the uses, current and latest columns in turn so the status is always in view, and lays itself out again as the window is resized
+- `migrate`'s diff on a narrow terminal broke long lines at spaces, so `-x =` and the rest of the line came apart. Long lines are now cut at the terminal's width and each piece keeps its `-` or `+`
+- Lines no longer end in spaces (rich pads table cells and wrapped text); a status badge's coloured padding is kept
+
+### Internal
+- Coverage counts branches now, at 90%; CI fails below 89%. Release-note lookups are tested end to end on real release notes (Flask, NumPy, requests) served by a fake web, covering every source and failure; `changelog.py` 80% to 90%, `tui.py` 82% to 96%
+
 ## [0.22.0] - 2026-11-28
 
 ### Added

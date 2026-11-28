@@ -63,14 +63,32 @@ def _git(repo: str, *args: str) -> str:
                           text=True).stdout
 
 
+def _workspace_file(path: str, members: list[str], exclude: list[str]) -> bool:
+    """A workspace member's pyproject.toml ('backend/pyproject.toml')."""
+    from depshift.deps import is_workspace_member
+    folder, _, name = path.rpartition("/")
+    return name == "pyproject.toml" and bool(members) and is_workspace_member(folder, members, exclude)
+
+
 def export_dependency_files(repo: str, ref: str, dest: str) -> list[str]:
     """Write the dependency files as they are at ``ref`` into ``dest``."""
     if not valid_ref(ref):
         raise ValueError(f"not a git revision pyupcheck accepts: {ref!r}")
     listed = _git(repo, "ls-tree", "-r", "--name-only", ref).splitlines()
+    # the members of a uv workspace, as the root pyproject.toml at ref names them
+    members: tuple[list[str], list[str]] = ([], [])
+    if "pyproject.toml" in listed:
+        from depshift._toml import tomllib
+        from depshift.deps import workspace_patterns
+        root_toml = subprocess.run(["git", "-C", repo, "show", f"{ref}:pyproject.toml"], check=True,  # nosec B603 B607
+                                   capture_output=True).stdout
+        try:
+            members = workspace_patterns(tomllib.loads(root_toml.decode("utf-8", "replace")) if tomllib else {})
+        except Exception:
+            members = ([], [])
     written = []
     for path in listed:
-        if not is_dep_file(path):
+        if not (is_dep_file(path) or _workspace_file(path, *members)):
             continue
         content = subprocess.run(["git", "-C", repo, "show", f"{ref}:{path}"], check=True,  # nosec B603 B607
                                  capture_output=True).stdout

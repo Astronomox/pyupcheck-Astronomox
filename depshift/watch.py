@@ -50,6 +50,15 @@ def dep_file_signature(directory: str) -> Signature:
             except OSError:
                 continue
             out[rel] = (st.st_mtime_ns, st.st_size)
+    from depshift.deps import workspace_members
+    for member in workspace_members(directory):
+        rel = f"{member}/pyproject.toml"
+        if rel not in out:
+            try:
+                st = os.stat(os.path.join(directory, rel))
+            except OSError:
+                continue
+            out[rel] = (st.st_mtime_ns, st.st_size)
     return out
 
 

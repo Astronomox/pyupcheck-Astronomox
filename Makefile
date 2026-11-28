@@ -16,7 +16,7 @@ install:
 	pip install pytest pytest-cov ruff mypy
 
 test:
-	pytest tests/ --cov=depshift --cov-report=term-missing:skip-covered --cov-fail-under=88
+	pytest tests/ --cov=depshift --cov-report=term-missing:skip-covered --cov-fail-under=89
 
 bench:
 	python benchmarks/run.py
