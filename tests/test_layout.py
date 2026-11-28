@@ -235,6 +235,7 @@ def test_ui_relays_out_on_resize(tmp_path):
 
 
 def test_fit_columns_drops_in_order():
+    pytest.importorskip("textual")
     from depshift.tui import fit_columns
     assert fit_columns(200, 30) == (("package", "current", "latest", "status", "uses"), 30)
     assert fit_columns(40, 30)[0] == ("package", "status")
