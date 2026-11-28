@@ -2,7 +2,8 @@
 
 Supported: requirements*.txt (with -r/-c includes), pyproject.toml (PEP 621,
 PEP 735 dependency-groups, Poetry, PDM, uv, pixi), Pipfile, setup.cfg,
-setup.py, conda environment.yml and pixi.toml.
+setup.py, conda environment.yml and pixi.toml; and the pyproject.toml of
+each member of a uv workspace.
 """
 
 import ast
@@ -352,6 +353,59 @@ def requirement_files(directory: str) -> list[str]:
     return out
 
 
+def _read_toml(path: str) -> dict:
+    if tomllib is None:
+        return {}
+    try:
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+
+
+def workspace_patterns(pyproject: dict) -> tuple[list[str], list[str]]:
+    """(members, exclude) globs of a uv workspace ([tool.uv.workspace])."""
+    ws = ((pyproject.get("tool") or {}).get("uv") or {}).get("workspace") or {}
+    if not isinstance(ws, dict):
+        return [], []
+
+    def strings(key):
+        items = ws.get(key) or []
+        return [x.strip("/") for x in items if isinstance(x, str) and x.strip("/")] if isinstance(items, list) else []
+    return strings("members"), strings("exclude")
+
+
+def is_workspace_member(rel_dir: str, members: list[str], exclude: list[str]) -> bool:
+    """Does a project-relative folder ('backend', 'packages/api') match the
+    workspace's member globs and none of its excludes?"""
+    from fnmatch import fnmatchcase
+    if not rel_dir or rel_dir.startswith(("/", "..")) or "/../" in f"/{rel_dir}/":
+        return False
+    return (any(fnmatchcase(rel_dir, m) for m in members)
+            and not any(fnmatchcase(rel_dir, x) for x in exclude))
+
+
+def workspace_members(directory: str) -> list[str]:
+    """The member folders of the uv workspace rooted here, relative to it:
+    folders matching ``[tool.uv.workspace] members`` (minus ``exclude``)
+    that have a pyproject.toml. Never a folder outside the project, also
+    not through a symlink."""
+    members, exclude = workspace_patterns(_read_toml(os.path.join(directory, "pyproject.toml")))
+    if not members:
+        return []
+    root = os.path.realpath(directory)
+    found = []
+    for pattern in members:
+        for path in sorted(glob.glob(os.path.join(directory, pattern))):
+            rel = os.path.relpath(path, directory).replace(os.sep, "/")
+            real = os.path.realpath(path)
+            if (os.path.isfile(os.path.join(path, "pyproject.toml")) and real != root
+                    and real.startswith(root + os.sep) and is_workspace_member(rel, members, exclude)
+                    and rel not in found):
+                found.append(rel)
+    return found
+
+
 def parse_pixi_toml(path: str) -> list[Dependency]:
     """Conda and PyPI dependencies declared in pixi.toml."""
     from .conda import read_pixi_toml
@@ -383,5 +437,17 @@ def discover_dependencies(directory: str) -> list[Dependency]:
             if d.name not in seen:
                 seen.add(d.name)
                 deps.append(d)
-    return deps
+
+    # a uv workspace: each member's dependencies are the project's too. The
+    # members themselves (installed from the workspace) aren't on PyPI
+    members = workspace_members(directory)
+    own = {normalize_name(str((_read_toml(os.path.join(directory, m, "pyproject.toml")).get("project") or {})
+                               .get("name") or "")) for m in members}
+    for member in members:
+        for d in parse_pyproject_toml(os.path.join(directory, member, "pyproject.toml")):
+            d.source = f"{member}/pyproject.toml"
+            if d.name not in seen and d.name not in own:
+                seen.add(d.name)
+                deps.append(d)
+    return [d for d in deps if d.name not in own]
 

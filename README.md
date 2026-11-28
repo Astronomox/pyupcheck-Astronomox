@@ -96,7 +96,7 @@ pyupcheck check-all -j 16           # check 16 dependencies in parallel (default
 pyupcheck check-all --format html -o report.html
 ```
 
-If a lockfile is present (`uv.lock`, `poetry.lock`, `pdm.lock`, `pylock.toml`, `Pipfile.lock`, `conda-lock.yml`, `pixi.lock`), the locked versions are used as the starting point. Packages your code imports that are only in the lockfile because another dependency pulls them in (`urllib3` via `requests`) are checked too and marked **undeclared**: their version can change without you upgrading anything.
+If a lockfile is present (`uv.lock`, `poetry.lock`, `pdm.lock`, `pylock.toml`, `Pipfile.lock`, `conda-lock.yml`, `pixi.lock`), the locked versions are used as the starting point. In a uv workspace (`[tool.uv.workspace]`), every member's `pyproject.toml` counts too, with its own constraints. Packages your code imports that are only in the lockfile because another dependency pulls them in (`urllib3` via `requests`) are checked too and marked **undeclared**: their version can change without you upgrading anything.
 
 Install names and import names don't have to match: `pyyaml` is scanned as `yaml`, `Pillow` as `PIL`, `scikit-learn` as `sklearn`, `protobuf` as `google.protobuf`. Names come from the installed package's metadata when available, then a built-in table of known mismatches.
 
@@ -461,6 +461,7 @@ What has shipped, newest first (details in [CHANGELOG.md](CHANGELOG.md)):
 
 | Version | Date | Highlights |
 |---|---|---|
+| 0.22.1 | 2026-11-28 | False alarms from vague release notes on calls that pass the parameter fixed (found on a real Flask project); uv workspaces; `ui` fits any window; diffs fold cleanly; no trailing spaces; branch coverage 90% |
 | 0.22.0 | 2026-11-28 | Every command fits any terminal, 40 columns up; `review` in the terminal; core logic split out of the CLI; coverage 80% to 90%, enforced in CI |
 | 0.21.0 | 2026-11-27 | Strict lint and type checks (three real bugs found); one table style; `fix`, `diff`, `versions`, `scan` redone; `check-all PACKAGE...`; config mistakes reported; release-notes recall 83.5% |
 | 0.20.0 | 2026-11-27 | Security review: SSRF, terminal and Markdown injection, VS Code workspace trust, size limits, Action hardening ([SECURITY.md](SECURITY.md)) |

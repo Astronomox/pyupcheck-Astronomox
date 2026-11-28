@@ -29,13 +29,60 @@ class View:
 DEFAULT_VIEW = View()
 
 
+def _without_trailing_blanks(segments, colours: bool = True):
+    """``segments`` with the spaces at the end of each line removed: rich
+    leaves one after every word-wrapped line and pads blocks to the width.
+    Spaces with a background colour (a status badge's padding) are kept
+    when colours are shown; without colours they're blanks like any other."""
+    from rich.segment import Segment
+
+    def blank(seg) -> bool:
+        return not (colours and seg.style and seg.style.bgcolor is not None)
+
+    pending: list = []  # trailing blanks, emitted only if more text follows on the line
+    for seg in segments:
+        if seg.control:
+            yield from pending
+            pending.clear()
+            yield seg
+            continue
+        for i, part in enumerate(seg.text.split("\n")):
+            if i:
+                pending.clear()
+                yield Segment("\n")
+            if not part:
+                continue
+            if not blank(seg):
+                yield from pending
+                pending.clear()
+                yield Segment(part, seg.style)
+                continue
+            text = part.rstrip(" ")
+            if text:
+                yield from pending
+                pending.clear()
+                yield Segment(text, seg.style)
+            if len(text) < len(part):
+                pending.append(Segment(part[len(text):], seg.style))
+    yield from pending  # the line isn't finished yet: more may follow
+
+
+class TidyConsole(Console):
+    """A rich Console whose lines never end in spaces (copied output, logs
+    and CI annotations stay clean). Everything else is rich's own."""
+
+    def _render_buffer(self, buffer):
+        colours = self.color_system is not None and not self.no_color
+        return super()._render_buffer(_without_trailing_blanks(buffer, colours))
+
+
 # highlight=False: pyupcheck picks its colours; rich's automatic highlighting
 # split versions into coloured fragments (2.2 . 5) and recoloured code
-console = Console(highlight=False)
+console = TidyConsole(highlight=False)
 
 
 # notes that must never mix into a report written to stdout (-f json)
-err_console = Console(stderr=True, highlight=False)
+err_console = TidyConsole(stderr=True, highlight=False)
 
 
 def styled_table(*columns: str, **kwargs) -> Table:
@@ -524,16 +571,21 @@ def print_report(results: list[dict], quiet: bool = False, view: View = DEFAULT_
             print_result(r, quiet, hide_source_notes=True, view=view)
     print_summary(results, elapsed=elapsed)
 
-def diff_text(diff: str) -> Text:
+def diff_text(diff: str, width: int | None = None) -> Text:
     """A unified diff, coloured: removed lines red, added green, hunk headers
     blue; unchanged lines in the terminal's own colour (readable on light and
-    dark themes)."""
+    dark themes).
+
+    With ``width``, a line longer than that is cut into pieces of exactly
+    that width, and each piece starts with the line's own ``-``/``+``/space,
+    so a wrapped line still reads as removed or added and never breaks at a
+    space mid-statement (print it with ``no_wrap=True``)."""
     from depshift.safe import plain
 
     out = Text()
-    for i, line in enumerate(diff.splitlines()):
-        if i:
-            out.append("\n")
+    first = True
+    for line in diff.splitlines():
+        line = plain(line)
         if line.startswith(("+++", "---")):
             style = "bold"
         elif line.startswith("@@"):
@@ -544,5 +596,14 @@ def diff_text(diff: str) -> Text:
             style = "#FF6B6B"
         else:
             style = ""
-        out.append(plain(line), style=style)
+        pieces = [line]
+        if width and width > 8 and len(line) > width and line[:1] in "+- " and not line.startswith(("+++", "---")):
+            mark, body = line[0], line[1:]
+            step = width - 1
+            pieces = [mark + body[i:i + step] for i in range(0, len(body), step)]
+        for piece in pieces:
+            if not first:
+                out.append("\n")
+            first = False
+            out.append(piece, style=style)
     return out

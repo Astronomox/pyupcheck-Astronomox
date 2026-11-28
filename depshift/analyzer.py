@@ -63,16 +63,22 @@ def match_usage_to_change(usage: Usage, change: ChangeEntry,
         # not a change to every usage of it
         return None
 
+    def sev() -> str:
+        if getattr(change, "confidence", "medium") == "low":
+            return "warning"  # mentioned, not shown to be removed
+        return "breaking" if change.kind in ("removed", "changed") else "deprecated"
+
     # removed/renamed keyword argument the usage actually passes:
-    # change "Retry.method_whitelist" vs call Retry(method_whitelist=...)
+    # change "Retry.method_whitelist" vs call Retry(method_whitelist=...).
+    # Passing the parameter makes the note relevant, not more certain: a
+    # low-confidence note stays a mention here too
     if usage.kwargs and change.kind in ("removed", "changed", "deprecated", "renamed"):
         parts = change.api.rstrip("()").split(".")
         param = parts[-1]
         owner = parts[-2] if len(parts) > 1 else None
         callee = usage.attr_chain.split(".")[-1]
         if param in usage.kwargs and owner is not None and owner == callee:
-            severity = "breaking" if change.kind in ("removed", "changed") else "deprecated"
-            return Risk(usage=usage, change=change, severity=severity)
+            return Risk(usage=usage, change=change, severity=sev())
 
     if _is_param_change(change):
         # "The ``root_path`` parameter in ``FastAPI()`` is deprecated" concerns
@@ -89,11 +95,6 @@ def match_usage_to_change(usage: Usage, change: ChangeEntry,
             member = usage_api[len(change_api) + 1:].split(".")[0]
             if member in excepted:
                 return None
-
-    def sev() -> str:
-        if getattr(change, "confidence", "medium") == "low":
-            return "warning"  # mentioned, not shown to be removed
-        return "breaking" if change.kind in ("removed", "changed") else "deprecated"
 
     # direct match
     if usage_api == change_api:

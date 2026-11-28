@@ -5,7 +5,6 @@ from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
-from rich.console import Console
 
 from depshift import cli, output
 from depshift import review as review_mod
@@ -50,8 +49,8 @@ def project(tmp_path):
 
 
 def run(width, monkeypatch, *args):
-    con = Console(width=width, color_system=None, highlight=False)
-    err = Console(width=width, color_system=None, highlight=False, stderr=True)
+    con = output.TidyConsole(width=width, color_system=None, highlight=False)
+    err = output.TidyConsole(width=width, color_system=None, highlight=False, stderr=True)
     for module in (cli, output):
         monkeypatch.setattr(module, "console", con)
         monkeypatch.setattr(module, "err_console", err)
@@ -62,6 +61,8 @@ def run(width, monkeypatch, *args):
 def fits(text, width):
     wide = [ln for ln in text.splitlines() if len(ln) > width]
     assert not wide, f"{len(wide)} line(s) wider than {width}: {wide[0]!r}"
+    padded = [ln for ln in text.splitlines() if ln != ln.rstrip()]
+    assert not padded, f"{len(padded)} line(s) end in spaces: {padded[0]!r}"
 
 
 @pytest.mark.parametrize("width", WIDTHS)
@@ -174,3 +175,91 @@ def test_explain_dry_run(width, project, monkeypatch):
     out = run(width, monkeypatch, "explain", "flask", "--dry-run", "-d", str(project))
     fits(out, width)
     assert "Nothing was sent" in out
+
+
+# ── pyupcheck ui ──────────────────────────────────────────────────────────────
+
+UI_SIZES = [(40, 20), (50, 24), (60, 24), (80, 24), (120, 30), (160, 40)]
+
+
+def _ui_fits(app):
+    """Every column the table shows fits in it, with nothing to scroll
+    sideways to, and the status column is always among them."""
+    table = app.query_one("DataTable")
+    columns = list(table.columns.values())
+    keys = [c.key.value for c in columns]
+    assert "status" in keys and keys[0] == "package"
+    used = sum(c.get_render_width(table) for c in columns)
+    assert used <= table.size.width, f"table needs {used} cells, has {table.size.width}"
+    longest = max(len(t) for t in ("✗ 99 breaking", "! 99 deprecated", "✓ up to date", "? not checked"))
+    assert next(c for c in columns if c.key.value == "status").width >= longest - 1
+
+
+@pytest.mark.parametrize("size", UI_SIZES)
+def test_ui_table_fits(size, tmp_path):
+    pytest.importorskip("textual")
+    import asyncio
+
+    import test_tui
+
+    async def go():
+        app = test_tui.make_app(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            await test_tui.settle(pilot, app)
+            _ui_fits(app)
+            table = app.query_one("DataTable")
+            assert table.row_count == len(test_tui.RESULTS)
+    asyncio.run(go())
+
+
+def test_ui_relays_out_on_resize(tmp_path):
+    pytest.importorskip("textual")
+    import asyncio
+
+    import test_tui
+
+    async def go():
+        app = test_tui.make_app(tmp_path)
+        async with app.run_test(size=(160, 40)) as pilot:
+            await test_tui.settle(pilot, app)
+            assert "uses" in app.query_one("DataTable").columns
+            await pilot.resize_terminal(40, 20)
+            await pilot.pause(0.1)
+            _ui_fits(app)
+            assert "uses" not in app.query_one("DataTable").columns
+            await pilot.resize_terminal(120, 30)
+            await pilot.pause(0.1)
+            _ui_fits(app)
+            assert "uses" in app.query_one("DataTable").columns
+    asyncio.run(go())
+
+
+def test_fit_columns_drops_in_order():
+    from depshift.tui import fit_columns
+    assert fit_columns(200, 30) == (("package", "current", "latest", "status", "uses"), 30)
+    assert fit_columns(40, 30)[0] == ("package", "status")
+    assert fit_columns(20, 30) == (("package", "status"), 6)  # tiny: the status still wins
+
+
+# ── diffs and trailing spaces ─────────────────────────────────────────────────
+
+def test_long_diff_lines_fold_by_character_and_keep_their_sign():
+    text = output.diff_text("--- a/x.py\n+++ b/x.py\n-x = flask.Markup('" + "y" * 50 + "')\n+short\n", width=20)
+    rows = text.plain.splitlines()
+    assert rows[:2] == ["--- a/x.py", "+++ b/x.py"]
+    removed = [r for r in rows if r.startswith("-") and not r.startswith("---")]
+    assert len(removed) == 4 and all(len(r) <= 20 for r in rows)
+    assert "".join(r[1:] for r in removed) == "x = flask.Markup('" + "y" * 50 + "')"  # nothing lost
+    assert rows[-1] == "+short"
+    assert output.diff_text("-" + "z" * 50).plain == "-" + "z" * 50  # no width: unchanged
+
+
+def test_console_never_ends_a_line_in_spaces_but_keeps_badges():
+    import io
+    for colours, expect_badge_space in ((None, False), ("truecolor", True)):
+        buf = io.StringIO()
+        con = output.TidyConsole(file=buf, width=30, color_system=colours, force_terminal=bool(colours))
+        con.print("[black on green] OK [/]\n" + "word " * 12)
+        lines = buf.getvalue().splitlines()
+        assert all(not ln.endswith(" ") for ln in lines if "\x1b" not in ln)
+        assert ("\x1b[30;42m OK \x1b[0m" in buf.getvalue()) is expect_badge_space

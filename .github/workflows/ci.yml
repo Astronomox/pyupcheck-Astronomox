@@ -31,9 +31,9 @@ jobs:
           pip install -e ".[ai,ui]"
           pip install pytest pytest-cov
 
-      # the floor only rises: lower coverage than this fails the build
+      # branch coverage; the floor only rises: lower than this fails the build
       - name: Run tests
-        run: pytest tests/ --cov=depshift --cov-report=term-missing:skip-covered --cov-fail-under=88
+        run: pytest tests/ --cov=depshift --cov-report=term-missing:skip-covered --cov-fail-under=89
 
       - name: Smoke test CLI
         run: |

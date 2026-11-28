@@ -361,7 +361,13 @@ def _extract_apis(line: str) -> list[str]:
     return _SNAKE.findall(m.group(1)) if m else []
 
 
+# Sphinx cross-references to pages, sections and terms, not APIs:
+# :ref:`change_12168`, :doc:`migration`, :term:`2.0 style`
+_NON_API_ROLE = re.compile(r":(?:ref|doc|term|download|numref|envvar|token|keyword|option|pep|rfc):`[^`]*`")
+
+
 def _extract_marked_apis(line: str) -> list[str]:
+    line = _NON_API_ROLE.sub("", line)
     # ``Retry(method_whitelist=...)`` names the parameter Retry.method_whitelist
     line = _API_CALL_KWARG.sub(lambda m: f"``{m.group(1)}.{m.group(2)}``", line)
     apis = [a.rstrip("()").strip(".") for a in _API_BACKTICK.findall(line)]
@@ -1481,6 +1487,7 @@ def collect_changes(package: str, current_version: str, target_version: str,
         return ChangeReport([], [], [f"PyPI metadata ({_short_err(e)})"])
 
     repo_info = extract_github_repo(pypi_info)
+    in_range = _versions_between(pypi_info, current_version, target_version)
     # the sources don't depend on each other: fetch them together, then
     # combine them in a fixed order
     from concurrent.futures import ThreadPoolExecutor
@@ -1492,7 +1499,7 @@ def collect_changes(package: str, current_version: str, target_version: str,
                                  _docs_versions(pypi_info, current_version, target_version, lookback),
                                  seen=versions_seen)
             f_guides = pool.submit(fetch_migration_guides, owner, repo, current_version, target_version,
-                                   _versions_between(pypi_info, current_version, target_version))
+                                   in_range)
         f_desc = pool.submit(get_pypi_version_info, package, target_version)
 
         if repo_info:
@@ -1513,9 +1520,10 @@ def collect_changes(package: str, current_version: str, target_version: str,
             except Exception as e:
                 failed.append(f"GitHub releases ({_short_err(e)})")
 
-            if not all_entries or not _seen_in_range(versions_seen, current_version, target_version):
-                # no releases on GitHub, or none for this upgrade (many
-                # projects tag without writing release notes)
+            if not all_entries or not _covers(versions_seen, in_range, current_version, target_version):
+                # no releases on GitHub, or not for every release in this
+                # upgrade (many projects tag without writing release notes,
+                # or publish only some releases there)
                 try:
                     raw = fetch_raw_changelog(owner, repo, token=github_token)
                     if raw:
@@ -1541,8 +1549,8 @@ def collect_changes(package: str, current_version: str, target_version: str,
             except Exception as e:
                 failed.append(f"migration guide ({_short_err(e)})")
 
-        if not all_entries or not _seen_in_range(versions_seen, current_version, target_version):
-            # nothing from GitHub for this upgrade: the changelog the project links from PyPI
+        if not all_entries or not _covers(versions_seen, in_range, current_version, target_version):
+            # GitHub didn't cover this upgrade: the changelog the project links from PyPI
             try:
                 linked = fetch_linked_changelog(package, pypi_info)
                 if linked:
@@ -1616,6 +1624,22 @@ def _seen_in_range(seen: set, current: str, target: str) -> bool:
     except InvalidVersion:
         return bool(seen)
     return any(_in_range(v, lo, hi) for v in seen)
+
+
+def _covers(seen: set, wanted: list[str], current: str, target: str) -> bool:
+    """Were the notes of every release in the upgrade read? Without a list
+    of releases, any release in the range counts."""
+    if not wanted:
+        return _seen_in_range(seen, current, target)
+    from packaging.version import InvalidVersion, Version
+
+    def norm(v: str):
+        try:
+            return Version(v)
+        except InvalidVersion:
+            return v
+    have = {norm(v) for v in seen}
+    return all(norm(v) in have for v in wanted)
 
 
 def _has_in_range(entries: list[ChangeEntry], current: str, target: str) -> bool:

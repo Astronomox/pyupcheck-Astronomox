@@ -44,6 +44,25 @@ _STATUS = {
 }
 FILTERS = ("all", "attention", "used")
 COLUMNS = ("package", "current", "latest", "status", "uses")
+# fixed widths: Textual sizes a column from its first contents, so
+# "… checking" would cut off "✓ up to date" and long versions later
+WIDTHS = {"current": 10, "latest": 12, "status": 14, "uses": 5}
+LABELS = {"package": "Package", "current": "Current", "latest": "Latest", "status": "Status", "uses": "Uses"}
+# what a narrower table gives up first; the status is never given up
+LAYOUTS = (COLUMNS, ("package", "current", "latest", "status"), ("package", "latest", "status"),
+           ("package", "status"))
+
+
+def fit_columns(table_width: int, name_width: int) -> tuple[tuple[str, ...], int]:
+    """The columns that fit a table ``table_width`` cells wide, and the
+    package column's width. Every column takes two cells of padding, and
+    two more are kept for the scrollbar."""
+    room = table_width - 2
+    for shown in LAYOUTS:
+        others = sum(WIDTHS[k] + 2 for k in shown if k != "package")
+        if room - others - 2 >= 8 or shown is LAYOUTS[-1]:
+            return shown, max(6, min(name_width, room - others - 2))
+    raise AssertionError("unreachable")
 FILTER_LABEL = {"all": "all packages", "attention": "needs attention", "used": "used by your code"}
 
 
@@ -412,6 +431,9 @@ class PyupcheckApp(App):
         self.show_low = False
         self.generation = 0  # a re-check makes earlier results stale
         self.user_moved = False  # once you've picked a row, re-sorting keeps it
+        self.name_width = 12  # widened to the longest name once dependencies are known
+        self.shown: tuple[str, ...] = ()  # the columns the table has room for
+        self.package_width = 0
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -424,7 +446,6 @@ class PyupcheckApp(App):
 
     def on_mount(self) -> None:
         self.sub_title = os.path.basename(os.path.abspath(self.directory)) or self.directory
-        self.add_columns(12)
         self.layout_for(self.size.width)
         self.run_checks()
 
@@ -432,7 +453,16 @@ class PyupcheckApp(App):
         self.layout_for(event.size.width)
 
     def layout_for(self, width: int) -> None:
-        self.query_one("#main").set_class(width < 100, "narrow")
+        narrow = width < 100
+        self.query_one("#main").set_class(narrow, "narrow")
+        # the table's width in this layout (see CSS: 58% beside the details, at least 40)
+        table_width = width if narrow else max(40, int(width * 0.58))
+        layout = fit_columns(table_width, self.name_width)
+        if layout != (self.shown, self.package_width):
+            self.shown, self.package_width = layout
+            self.add_columns()
+            if self.deps:
+                self.refresh_table()
 
     # ── checking ──────────────────────────────────────────────────────────
 
@@ -461,17 +491,16 @@ class PyupcheckApp(App):
     def _check_one(self, dep):
         return self.check(dep, self.deep)
 
-    def add_columns(self, name_width: int) -> None:
-        # fixed widths: Textual sizes a column from its first contents, so
-        # "… checking" would cut off "✓ up to date" and long versions later
+    def add_columns(self) -> None:
         table = self.query_one(DataTable)
         table.clear(columns=True)
-        for label, width in (("Package", name_width), ("Current", 10), ("Latest", 12),
-                             ("Status", 14), ("Uses", 5)):
-            table.add_column(label, key=label.lower(), width=width)
+        for key in self.shown:
+            table.add_column(LABELS[key], key=key, width=self.package_width if key == "package" else WIDTHS[key])
 
     def start(self, deps: list) -> None:
-        self.add_columns(min(max([len(d.name) for d in deps] + [7]) + 2, 30))
+        self.name_width = min(max([len(d.name) for d in deps] + [7]) + 2, 30)
+        self.shown = ()  # lay the columns out again for the new names
+        self.layout_for(self.size.width)
         self.deps = deps
         self.usage_cache.clear()  # files may have changed since the last check
         self.results = {d.name: None for d in deps}
@@ -496,8 +525,9 @@ class PyupcheckApp(App):
     def update_row(self, name: str) -> None:
         table = self.query_one(DataTable)
         if name in table.rows:
-            for key, value in zip(COLUMNS, self.cells(name), strict=True):
-                table.update_cell(name, key, value)
+            cells = dict(zip(COLUMNS, self.cells(name), strict=True))
+            for key in self.shown:
+                table.update_cell(name, key, cells[key])
 
     def mark_pending(self, name: str) -> None:
         self.results[name] = None
@@ -544,7 +574,8 @@ class PyupcheckApp(App):
         selected = self.selected_name()
         table.clear()
         for name in self.visible_names():
-            table.add_row(*self.cells(name), key=name)
+            cells = dict(zip(COLUMNS, self.cells(name), strict=True))
+            table.add_row(*(cells[k] for k in self.shown), key=name)
         if selected and selected in table.rows:
             table.move_cursor(row=table.get_row_index(selected))
         self.show_selected()

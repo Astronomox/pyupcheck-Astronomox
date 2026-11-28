@@ -16,7 +16,7 @@ pip install pytest pytest-cov ruff mypy
 CI runs all of these on every pull request; run them before you push:
 
 ```bash
-make test    # pytest, failing below 88% coverage
+make test    # pytest, failing below 89% branch coverage
 make lint    # ruff (depshift, tests, examples) and mypy
 make bench   # the accuracy benchmark (needs the network)
 ```
@@ -53,8 +53,13 @@ Anything printed from text pyupcheck doesn't control (release notes, PyPI
 metadata, your code) goes through `output.esc` or `safe.plain`.
 
 Output must fit the terminal: `tests/test_layout.py` renders every command at
-40 to 160 columns and fails on any line that is too wide or any status that
-is cut short. Add your command there if it prints a table.
+40 to 160 columns (and `pyupcheck ui` at six window sizes) and fails on any
+line that is too wide, ends in spaces, or cuts a status short. Add your
+command there if it prints a table.
+
+Release-note parsing is tested on real release notes in
+`tests/fixtures/release_notes/` (sources and licenses in its README). When a
+package's notes are misread, add a trimmed excerpt there with a test.
 
 ## What to work on
 

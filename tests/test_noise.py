@@ -72,3 +72,30 @@ def test_parameter_change_only_hits_calls_that_pass_it(tmp_path):
     assert risks == []  # importing, annotating or calling FastAPI without root_path is fine
     risks, _ = analyze(_usages(tmp_path, APP.format(extra=', root_path="/api"')), [ROOT_PATH, PREFIX], "fastapi")
     assert [(r.usage.line, r.severity) for r in risks] == [(8, "deprecated")]
+
+
+def test_passing_a_parameter_a_vague_note_names_is_a_mention_not_a_break():
+    """microblog passes primaryjoin= to relationship(); SQLAlchemy 2.1's
+    note about ORM entities in primaryjoin expressions is low confidence, so
+    it must not count as breaking (it did, with exit 1)."""
+    from depshift.analyzer import match_usage_to_change
+    from depshift.changelog import ChangeEntry
+    from depshift.scanner import Usage
+    usage = Usage("models.py", 115, "so.relationship(primaryjoin=x)", "sqlalchemy.orm.relationship",
+                  "function_call", kwargs=["secondary", "primaryjoin"])
+    vague = ChangeEntry("removed", "_orm.relationship.primaryjoin", "ORM entities can now be involved within "
+                        "the SQL expressions used within :paramref:`_orm.relationship.primaryjoin`", "2.1",
+                        confidence="low")
+    assert match_usage_to_change(usage, vague, "sqlalchemy").severity == "warning"
+    clear = ChangeEntry("removed", "relationship.primaryjoin", "The ``primaryjoin`` parameter was removed.", "2.1",
+                        confidence="high")
+    assert match_usage_to_change(usage, clear, "sqlalchemy").severity == "breaking"
+
+
+def test_sphinx_section_links_are_not_apis():
+    from depshift.changelog import _extract_marked_apis
+    line = ("A consequence of the change described at :ref:`change_12168` is that "
+            ":paramref:`_orm.mapped_column.default` remains mapped; see :doc:`orm/dataclasses`.")
+    apis = _extract_marked_apis(line)
+    assert "_orm.mapped_column.default" in apis
+    assert not any("change_12168" in a or "dataclasses" in a for a in apis)

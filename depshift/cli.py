@@ -696,7 +696,8 @@ def migrate(package, target_version, directory, write, exclude, github_token, no
                                 notebook.cells_text(fc.notebook, fc.after))
         else:
             diff = unified_diff(fc.rel, fc.before, fc.after)
-        console.print(Padding(diff_text(diff), (0, 0, 0, 4), expand=False))
+        console.print(Padding(diff_text(diff, width=console.width - 4), (0, 0, 0, 4), expand=False),
+                      no_wrap=True, overflow="fold")
         if write:
             try:
                 fc.write(directory)
