@@ -145,7 +145,7 @@ def check(package, target_version, directory, github_token, fmt, output, fail_on
     if no_cache or not cfg.cache:
         cache_mod.disable_cache()
 
-    status_msg = f"Deep-checking [bold]{package}[/]..." if deep else f"Checking [bold]{package}[/]..."
+    status_msg = f"Deep-checking [bold]{esc(package)}[/]..." if deep else f"Checking [bold]{esc(package)}[/]..."
     with console.status(status_msg):
         result = run_check(package, target_version, directory, github_token, cfg, since=since, deep=deep)
 
@@ -525,8 +525,9 @@ def watch(directory, interval, releases_every, deep, bell, quiet, jobs, github_t
                       "lockfiles...). Watching for one to appear.")
     else:
         rel = "" if not releases_every else \
-            f", and PyPI every {releases_every:g} min for {len(watcher.known_latest)} direct dependencies"
-        console.print(f"Watching [bold]{esc(', '.join(files))}[/] ({len(watcher.snapshot)} packages){rel}. "
+            f", and PyPI every {releases_every:g} min for " \
+            f"{plural(len(watcher.known_latest), 'direct dependency', 'direct dependencies')}"
+        console.print(f"Watching [bold]{esc(', '.join(files))}[/] ({plural(len(watcher.snapshot), 'package')}){rel}. "
                       "[dim]Ctrl+C to stop.[/]")
     n = 0
     try:
@@ -577,7 +578,7 @@ def explain(package, target_version, directory, deep, max_findings, effort, mode
         cache_mod.disable_cache()
     dep = next((d for d in discover_dependencies(directory) if d.name == normalize_name(package)), None)
     spec = specifier_of(dep.raw) if dep else None
-    with console.status(f"Checking what upgrading [bold]{package}[/] breaks..."):
+    with console.status(f"Checking what upgrading [bold]{esc(package)}[/] breaks..."):
         r = run_check(package, target_version, directory, github_token, cfg, deep=deep, spec=spec)
     if r is None:
         console.print(f"[red]{esc(package)}:[/] not found on PyPI.")
@@ -624,7 +625,7 @@ def explain(package, target_version, directory, deep, max_findings, effort, mode
                       f"[cyan]pyupcheck check {esc(package)} {esc(r['target_version'])}[/].")
     elif info["stop_reason"] == "max_tokens":
         console.print("[yellow]The answer was cut off;[/] use --max to explain fewer findings at once.")
-    console.print(f"[dim]{info['model']}: {info['input_tokens']} tokens in, {info['output_tokens']} out. "
+    console.print(f"[dim]{esc(info['model'])}: {info['input_tokens']} tokens in, {info['output_tokens']} out. "
                   "Check the advice before applying it; `pyupcheck check` verifies the result.[/]")
 
 
@@ -826,22 +827,22 @@ def ci_setup(ci_type, directory):
         os.makedirs(gha_dir, exist_ok=True)
         path = os.path.join(gha_dir, "pyupcheck.yml")
         if os.path.exists(path):
-            console.print(f"[yellow]Already exists:[/] {os.path.relpath(path)}")
+            console.print(f"[yellow]Already exists:[/] {esc(os.path.relpath(path))}")
         else:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(_GH_ACTIONS)
-            console.print(f"[green]Created:[/] {os.path.relpath(path)}")
+            console.print(f"[green]Created:[/] {esc(os.path.relpath(path))}")
 
     if ci_type in ("pre-commit", "all"):
         path = os.path.join(directory, ".pre-commit-config.yaml")
         if os.path.exists(path):
-            console.print(f"[yellow]Already exists:[/] {os.path.relpath(path)} (not modified)")
+            console.print(f"[yellow]Already exists:[/] {esc(os.path.relpath(path))} (not modified)")
             console.print("Add this to your existing config:")
-            console.print(_PRE_COMMIT)
+            console.print(esc(_PRE_COMMIT))
         else:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(_PRE_COMMIT)
-            console.print(f"[green]Created:[/] {os.path.relpath(path)}")
+            console.print(f"[green]Created:[/] {esc(os.path.relpath(path))}")
             console.print("\nInstall the hook with: [bold]pre-commit install[/]")
 
     console.print("\nDone. Commit the generated files and push.")
@@ -904,14 +905,16 @@ def outdated(directory, safe, jobs, github_token, no_cache):
         if safe:
             plan = r.get("plan") or {}
             if plan.get("safe") == r["latest"]:
-                cells.append(f"[green]{plan['safe']}[/]")
+                cells.append(f"[green]{esc(plan['safe'])}[/]")
                 status = "[green]safe to upgrade[/]"
             elif plan.get("safe") and plan["safe"] != r["current"]:
-                cells.append(f"[yellow]{plan['safe']}[/]")
-                status = f"[red]{r['latest']} breaks {plan['breaking_at_latest']} usage(s)[/]"
+                cells.append(f"[yellow]{esc(plan['safe'])}[/]")
+                status = f"[red]{esc(r['latest'])} breaks {plural(plan['breaking_at_latest'], 'usage')}[/]"
             else:
                 cells.append("[red]none[/]" if not plan.get("unchecked") else "[magenta]not checked[/]")
-                status = f"[red]{r['latest']} breaks {plan.get('breaking_at_latest', '?')} usage(s)[/]"
+                n = plan.get("breaking_at_latest")
+                status = (f"[red]{esc(r['latest'])} breaks {plural(n, 'usage')}[/]" if isinstance(n, int)
+                          else "[magenta]couldn't be checked[/]")
         cells.append(status)
         table.add_row(*cells)
         detail = status + (f" [dim]· highest safe:[/] {cells[3]}" if safe else "")
@@ -948,33 +951,34 @@ def diff(package, from_version, to_version, github_token, no_cache, since):
         try:
             Version(v)
         except InvalidVersion:
-            console.print(f"[red]Error:[/] '{v}' is not a valid version string ({label}_version).")
+            console.print(f"[red]Error:[/] '{esc(v)}' is not a valid version string ({label}_version).")
             sys.exit(2)
 
     try:
         available = set(get_available_versions(package))
     except Exception as e:
-        console.print(f"[red]Error:[/] could not fetch {package} from PyPI: {e}")
+        console.print(f"[red]Error:[/] could not fetch {esc(package)} from PyPI: {esc(str(e))}")
         sys.exit(2)
 
     for label, v in (("from", from_version), ("to", to_version)):
         if v not in available:
-            console.print(f"[red]Error:[/] {package} {v} not found on PyPI ({label}_version). "
-                          f"Run [bold]pyupcheck versions {package}[/] to see available versions.")
+            console.print(f"[red]Error:[/] {esc(package)} {esc(v)} not found on PyPI ({label}_version). "
+                          f"Run [bold]pyupcheck versions {esc(package)}[/] to see available versions.")
             sys.exit(2)
 
-    with console.status(f"Fetching changes for [bold]{package}[/] {from_version} -> {to_version}..."):
+    with console.status(f"Fetching changes for [bold]{esc(package)}[/] {esc(from_version)} -> {esc(to_version)}..."):
         try:
             changes = get_changes_between(package, from_version, to_version, github_token=github_token)
         except Exception as e:
-            console.print(f"[red]Error:[/] {e}")
+            console.print(f"[red]Error:[/] {esc(str(e))}")
             sys.exit(2)
 
     if since and changes:
         changes = filter_by_since(changes, since, package)
 
     if not changes:
-        console.print(f"[green]No breaking/deprecated changes found[/] between {from_version} and {to_version}.")
+        console.print(f"[green]No breaking/deprecated changes found[/] between {esc(from_version)} and "
+                      f"{esc(to_version)}.")
         return
 
     print_changes(package, from_version, to_version, changes)
@@ -993,11 +997,11 @@ def scan(package, directory, exclude):
     cfg.exclude_dirs.update(exclude)
 
     names = import_names_for(package)
-    with console.status(f"Scanning for usages of [bold]{package}[/]..."):
+    with console.status(f"Scanning for usages of [bold]{esc(package)}[/]..."):
         usages = scan_directory(directory, names, exclude_dirs=cfg.exclude_dirs)
 
     if not usages:
-        console.print(f"[yellow]No usages of {package} found[/] (looked for imports of: {', '.join(names)})")
+        console.print(f"[yellow]No usages of {esc(package)} found[/] (looked for imports of: {esc(', '.join(names))})")
         sys.exit(0)
 
     from rich.padding import Padding

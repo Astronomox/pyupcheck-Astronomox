@@ -180,7 +180,7 @@ def test_cli_starts_and_stops(tmp_path, monkeypatch):
     monkeypatch.setattr("time.sleep", lambda s: None)
     res = CliRunner().invoke(cli.main, ["watch", "-d", str(tmp_path), "--releases", "0", "--cycles", "2"])
     assert res.exit_code == 0, res.output
-    assert "Watching requirements.txt (1 packages)" in res.output
+    assert "Watching requirements.txt (1 package)." in res.output
 
 
 def test_cli_prints_release_verdict(capsys):
