@@ -106,3 +106,92 @@ def test_key_reader_in_a_real_terminal(monkeypatch):
     finally:
         stdin.close()
         os.close(master)
+
+
+# ── PyPI data, the live loop and the first-run greeting ───────────────────────
+
+class _Resp:
+    def __init__(self, data):
+        self.data = data
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self.data
+
+
+def test_fetch_pypi_data_keeps_six_real_releases(monkeypatch):
+    import depshift.http
+    files = [{"upload_time": "2026-11-01T00:00:00", "yanked": False}]
+    releases = {f"1.{i}.0": files for i in range(9)}
+    releases.update({"2.0.0rc1": files, "1.9.0": [{"upload_time": "x", "yanked": True}], "junk": files, "0.1": []})
+    monkeypatch.setattr(depshift.http, "http_get",
+                        lambda url, timeout: _Resp({"info": {"version": "1.8.0"}, "releases": releases}))
+    data = w._fetch_pypi_data()
+    assert data["latest"] == "1.8.0" and [r["version"] for r in data["releases"]][:2] == ["1.8.0", "1.7.0"]
+    assert len(data["releases"]) == 6 and data["releases"][0]["date"] == "2026-11-01"
+
+
+def test_fetch_pypi_data_offline():
+    assert w._fetch_pypi_data() == {"latest": None, "releases": []}  # the network is blocked in tests
+
+
+def test_newer_ignores_junk():
+    assert w._newer("2.0", "1.9") and not w._newer("junk", "1.0")
+
+
+def test_run_live_until_a_key_then_leaves_a_static_copy(monkeypatch):
+    presses = iter([False, False, True])
+
+    class Keys:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def pressed(self):
+            return next(presses)
+    monkeypatch.setattr(w, "_Keys", Keys)
+    monkeypatch.setattr(w, "_fetch_pypi_data", lambda: DATA)
+    monkeypatch.setattr(w.time, "sleep", lambda s: None)
+    monkeypatch.setattr(w, "_can_go_live", lambda c: True)
+    buf = io.StringIO()
+    con = Console(file=buf, width=100, height=40, force_terminal=True, color_system=None)
+    w.show_banner(con, live=True)
+    assert "9.9.0" in buf.getvalue() and "pip install" in buf.getvalue()
+
+
+def test_ctrl_c_ends_the_live_banner(monkeypatch):
+    class Keys:
+        def __enter__(self):
+            raise KeyboardInterrupt
+
+        def __exit__(self, *a):
+            return False
+    monkeypatch.setattr(w, "_Keys", Keys)
+    monkeypatch.setattr(w, "_fetch_pypi_data", lambda: DATA)
+    assert w.run_live(Console(file=io.StringIO(), width=80)) == DATA
+
+
+def test_first_run_greets_once(monkeypatch, tmp_path):
+    monkeypatch.setattr(w, "MARKER", tmp_path / "cache" / ".welcomed")
+    monkeypatch.setattr(w, "_fetch_pypi_data", lambda: DATA)
+    first, second = io.StringIO(), io.StringIO()
+    w.show_if_first_run(Console(file=first, width=100))
+    w.show_if_first_run(Console(file=second, width=100))
+    assert "9.9.0" in first.getvalue() and second.getvalue() == ""
+
+
+def test_first_run_with_a_read_only_home(monkeypatch, tmp_path):
+    marker = tmp_path / "ro" / ".welcomed"
+    monkeypatch.setattr(w, "MARKER", marker)
+    monkeypatch.setattr(w, "_fetch_pypi_data", lambda: DATA)
+
+    def denied(*a, **k):
+        raise PermissionError
+    monkeypatch.setattr(type(marker), "mkdir", denied)
+    out = io.StringIO()
+    w.show_if_first_run(Console(file=out, width=100))  # still greets; never crashes
+    assert "9.9.0" in out.getvalue()

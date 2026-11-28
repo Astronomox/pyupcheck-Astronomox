@@ -1,10 +1,11 @@
 """Example: check all dependencies in a project programmatically."""
 
 import sys
+
+from depshift.analyzer import analyze
+from depshift.changelog import get_changes_between, get_current_version
 from depshift.deps import discover_dependencies
 from depshift.scanner import scan_directory
-from depshift.changelog import get_changes_between, get_current_version
-from depshift.analyzer import analyze
 
 
 def check_all(directory: str = "."):
@@ -38,7 +39,7 @@ def check_all(directory: str = "."):
             continue
 
         changes = get_changes_between(dep.name, current, latest)
-        risks, safe = analyze(usages, changes, dep.name)
+        risks, _safe = analyze(usages, changes, dep.name)
         breaking = [r for r in risks if r.severity == "breaking"]
 
         if breaking:

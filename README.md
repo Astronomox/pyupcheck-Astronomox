@@ -131,7 +131,7 @@ Each `==x.y.z` pin moves to the newest release that breaks none of your code, ch
 pyupcheck review --base origin/main
 ```
 
-Finds every dependency whose resolved version changed since `--base` (dependency files and lockfiles, uncommitted changes included). It checks each one from its old version to its new one and writes a Markdown report. The [GitHub Action](#review-dependency-pull-requests) posts that report as a PR comment.
+Finds every dependency whose resolved version changed since `--base` (dependency files and lockfiles, uncommitted changes included). It checks each one from its old version to its new one. Run in a terminal, it shows the same table and findings as `check-all`; piped, or with `-o`, it writes a Markdown report (`--format terminal` or `--format md` picks one). The [GitHub Action](#review-dependency-pull-requests) posts that report as a PR comment.
 
 ### `outdated` - list stale dependencies
 
@@ -461,6 +461,7 @@ What has shipped, newest first (details in [CHANGELOG.md](CHANGELOG.md)):
 
 | Version | Date | Highlights |
 |---|---|---|
+| 0.22.0 | 2026-11-28 | Every command fits any terminal, 40 columns up; `review` in the terminal; core logic split out of the CLI; coverage 80% to 90%, enforced in CI |
 | 0.21.0 | 2026-11-27 | Strict lint and type checks (three real bugs found); one table style; `fix`, `diff`, `versions`, `scan` redone; `check-all PACKAGE...`; config mistakes reported; release-notes recall 83.5% |
 | 0.20.0 | 2026-11-27 | Security review: SSRF, terminal and Markdown injection, VS Code workspace trust, size limits, Action hardening ([SECURITY.md](SECURITY.md)) |
 | 0.19.1 | 2026-11-27 | `ui`: where your code uses each package (`u` lists every line); status no longer cut off |

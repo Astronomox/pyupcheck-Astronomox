@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyupcheck"
-version = "0.21.0"
+version = "0.22.0"
 description = "Check if upgrading a Python dependency will break your code"
 readme = "README.md"
 license = "MIT"
@@ -66,6 +66,13 @@ ignore = [
 "depshift/tui.py" = ["RUF012"]
 # tests: long fixture strings, throwaway unpacking and lambda stubs are fine
 "tests/*" = ["E501", "B006", "B011", "E731", "RUF012", "RUF059", "SIM115"]
+
+[tool.coverage.run]
+branch = false
+omit = ["depshift/__main__.py"]
+
+[tool.coverage.report]
+exclude_also = ["if __name__ == .__main__.:", "if TYPE_CHECKING:"]
 
 [tool.mypy]
 python_version = "3.10"

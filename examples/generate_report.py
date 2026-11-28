@@ -5,12 +5,13 @@ Usage:
 """
 
 import sys
-from depshift.deps import discover_dependencies
-from depshift.scanner import scan_directory
-from depshift.changelog import get_changes_between, get_current_version
+
 from depshift.analyzer import analyze
-from depshift.report import render_html
+from depshift.changelog import get_changes_between, get_current_version
 from depshift.config import load_config
+from depshift.deps import discover_dependencies
+from depshift.report import render_html
+from depshift.scanner import scan_directory
 
 
 def build_report(directory: str, output: str = "pyupcheck-report.html"):

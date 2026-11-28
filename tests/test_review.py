@@ -72,7 +72,7 @@ def test_render_has_marker_table_and_migrate_hint(tmp_path):
             "replacement": "scipy.integrate.simpson", "precise": True}
     text = render_review([result("scipy", 1, [risk], fixable=1), result("requests")], repo_root=str(tmp_path))
     assert text.startswith(COMMENT_MARKER)
-    assert "**1 breaking** usage(s) across 2 changed package(s)." in text
+    assert "**1 breaking** usage across 2 changed packages." in text
     assert "| `scipy` | 1.0 → 2.0 | 1 | 0 | 1 |" in text
     assert "`app.py:3`" in text and ":pr:" not in text
     assert "use `scipy.integrate.simpson` instead" in text
@@ -96,11 +96,11 @@ def test_clean_release_note_markup():
 # ── duplicate findings ────────────────────────────────────────────────────────
 
 def test_dedupe_keeps_most_severe_verified_finding():
-    from depshift.cli import _dedupe_risks
+    from depshift.project import dedupe_risks
     base = {"file": "a.py", "line": 1, "api": "pkg.x"}
     risks = [dict(base, severity="deprecated"), dict(base, severity="breaking"),
              dict(base, severity="breaking", precise=True), dict(base, line=2, severity="deprecated")]
-    kept = _dedupe_risks(risks)
+    kept = dedupe_risks(risks)
     assert [(r["line"], r["severity"], r.get("precise", False)) for r in kept] == \
         [(1, "breaking", True), (2, "deprecated", False)]
 

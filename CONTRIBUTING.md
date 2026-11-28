@@ -7,67 +7,80 @@ Thanks for your interest. This document covers how to get set up, what to work o
 ```bash
 git clone https://github.com/Astronomox/pyupcheck-Astronomox.git
 cd pyupcheck-Astronomox
-pip install -e "."
-pip install pytest
+pip install -e ".[ai,ui]"
+pip install pytest pytest-cov ruff mypy
 ```
 
-## Running tests
+## Checks
+
+CI runs all of these on every pull request; run them before you push:
 
 ```bash
-pytest tests/
+make test    # pytest, failing below 88% coverage
+make lint    # ruff (depshift, tests, examples) and mypy
+make bench   # the accuracy benchmark (needs the network)
 ```
 
-## Project structure
+Tests never touch the network or your real cache: `tests/conftest.py` blocks
+every HTTP request and points the cache at a temporary directory. Fake PyPI,
+release notes and API diffs with `monkeypatch` instead (see
+`tests/test_project.py` and `tests/test_apisurface_download.py`).
+
+## How the code is laid out
 
 ```
-depshift/           # Package source (named depshift internally)
-  __init__.py       # Version string
-  cli.py            # All CLI commands (click)
-  scanner.py        # AST-based code scanner
-  changelog.py      # Changelog fetching and parsing
-  analyzer.py       # Cross-reference usages against changes
-  apisurface.py     # Real API surface extraction and diffing
-  precise.py        # Argument-level risk matching
-  deps.py           # Dependency file parsing
-  config.py         # Config loading (.pyupcheckignore, pyproject.toml)
-  cache.py          # Local response cache
-  report.py         # HTML and markdown report generation
-  welcome.py        # Live banner
-
-tests/              # Test suite
-examples/           # Example scripts
+depshift/           # the package (named depshift internally)
+  cli.py            # the commands: parse options, call project.py, print with output.py
+  project.py        # what a command needs to know, with no printing: checks,
+                    #   the highest safe version, migration plans, outdated rows
+  output.py         # everything shown in the terminal: tables that fit any
+                    #   width, findings, summaries; a frozen View, never globals
+  safe.py           # making untrusted text safe for terminals and Markdown
+  http.py           # the one way out to the network (https, public hosts, size caps)
+  scanner.py        # where code uses a package (AST)
+  changelog.py      # finding and parsing release notes
+  analyzer.py       # release-note changes against usages
+  apisurface.py     # downloading both versions and diffing their real API
+  precise.py        # API changes against usages, down to arguments
+  rewrite.py        # the edits migrate makes
+  deps.py, conda.py, lockfiles.py, notebook.py, names.py   # reading projects
+  review.py, watch.py, report.py, explain.py, tui.py, welcome.py
 ```
+
+The rule that keeps it tidy: `project.py` and the analysis modules never
+print, and `cli.py` never decides anything a test would want to check.
+Anything printed from text pyupcheck doesn't control (release notes, PyPI
+metadata, your code) goes through `output.esc` or `safe.plain`.
+
+Output must fit the terminal: `tests/test_layout.py` renders every command at
+40 to 160 columns and fails on any line that is too wide or any status that
+is cut short. Add your command there if it prints a table.
 
 ## What to work on
 
-The most impactful contributions are:
+**Release-note parsing.** If `pyupcheck diff` misses changes for a package you
+care about, open an issue with the package and the versions. The fix usually
+lives in `changelog.py`, and a benchmark case in `benchmarks/cases/` keeps it fixed.
 
-**Changelog parsing accuracy**
-Many packages use non-standard changelog formats. If `pyupcheck diff` misses changes for a package you care about, open an issue with the package name and version range. The fix usually lives in `changelog.py`.
+**API extraction.** Packages that are mostly compiled code, or that build
+their API at import time, extract less cleanly. Improvements belong in `apisurface.py`.
 
-**API surface extraction**
-`apisurface.py` currently handles pure-Python wheels and sdists. Packages that ship C extensions or use complex import machinery may not extract cleanly. Improving extraction coverage is high-value.
-
-**Dependency file parsers**
-`deps.py` handles requirements.txt, pyproject.toml, setup.cfg, setup.py, and environment.yml. `pip-tools` compiled requirements and `conda-lock` files are not yet supported.
-
-**Test coverage**
-Most of the codebase has no tests yet. Any test you add for the scanner, analyzer, or deps parser is a genuine improvement.
-
-**`--watch` mode**
-A background process that monitors your lockfile for changes and alerts when a new version would break your code. This is a meaningful feature that doesn't exist yet.
+**Benchmark cases.** A small project that uses an API a real upgrade broke,
+with the breaking lines marked `# BREAK`, is the most useful contribution of all.
 
 ## Submitting changes
 
-1. Open an issue describing what you want to change before writing code.
-2. Fork the repo and create a branch.
-3. Make your change. Keep commits focused — one logical change per commit.
-4. Run `pytest tests/` and make sure nothing is broken.
-5. Submit a pull request. Include a short description of what changed and why.
+1. For anything larger than a fix, open an issue first.
+2. Fork the repo and create a branch; keep commits focused.
+3. Add a test that fails without your change.
+4. Run `make test` and `make lint`.
+5. Open a pull request saying what changed and why.
 
 ## Code style
 
-No linter is enforced yet. Match the style of the file you're editing. Type hints on public functions.
+ruff and mypy settle it (configured in `pyproject.toml`): Python 3.10 syntax,
+lines up to 120 characters, type hints on public functions. Comments say why,
+not what.
 
 ## License
 

@@ -6,7 +6,7 @@ import json
 import pytest
 from click.testing import CliRunner
 
-from depshift import cli
+from depshift import cli, output
 from depshift.changelog import ChangeEntry, clip
 from depshift.config import load_config
 
@@ -18,8 +18,12 @@ def run(*args, **kw):
 @pytest.fixture(autouse=True)
 def _wide(monkeypatch):
     from rich.console import Console
-    monkeypatch.setattr(cli, "console", Console(width=140, color_system=None, highlight=False))
-    monkeypatch.setattr(cli, "err_console", Console(width=140, color_system=None, highlight=False, stderr=True))
+    # commands print through cli's names, shared helpers through output's
+    con = Console(width=140, color_system=None, highlight=False)
+    err = Console(width=140, color_system=None, highlight=False, stderr=True)
+    for module in (cli, output):
+        monkeypatch.setattr(module, "console", con)
+        monkeypatch.setattr(module, "err_console", err)
     cli._REPORTED_CONFIG.clear()
 
 

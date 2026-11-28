@@ -8,8 +8,8 @@ import pytest
 
 pytest.importorskip("textual")
 
-from depshift import tui
-from depshift.cli import FileChange, MigrationPlan
+from depshift import cli, tui
+from depshift.project import FileChange, MigrationPlan
 
 
 def result(pkg, cur="1.0", new="2.0", **kw):
@@ -147,7 +147,6 @@ def test_ui_command_without_textual(monkeypatch):
 
     from click.testing import CliRunner
 
-    from depshift import cli
     real = builtins.__import__
 
     def fake(name, *a, **k):

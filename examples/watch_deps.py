@@ -10,11 +10,12 @@ Run it in the background while developing:
 
 import sys
 import time
+
+from depshift.analyzer import analyze
+from depshift.changelog import get_changes_between, get_current_version
+from depshift.config import load_config
 from depshift.deps import discover_dependencies
 from depshift.scanner import scan_directory
-from depshift.changelog import get_changes_between, get_current_version
-from depshift.analyzer import analyze
-from depshift.config import load_config
 
 
 def check_once(directory: str) -> list:
@@ -70,7 +71,8 @@ def watch(directory: str, interval: int = 60):
             if new_alerts:
                 for pkg, ver, count in alerts:
                     if (pkg, ver) in new_alerts:
-                        print(f"[ALERT] {pkg} {ver} is available but has {count} breaking change(s) affecting your code.")
+                        print(f"[ALERT] {pkg} {ver} is available but has {count} breaking change(s) "
+                              "affecting your code.")
                         print(f"        Run: pyupcheck check {pkg} {ver} for details.")
             elif not alerts:
                 print(f"[OK] All deps safe at {time.strftime('%H:%M:%S')}")

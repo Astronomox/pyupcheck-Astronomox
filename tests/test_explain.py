@@ -6,6 +6,7 @@ import sys
 import pytest
 from click.testing import CliRunner
 
+from depshift import cli
 from depshift import explain as ex
 
 
@@ -41,7 +42,7 @@ def test_warnings_and_duplicates_are_not_sent(app, tmp_path):
 def test_prompt(app, tmp_path):
     findings = ex.findings_from(result_for(app, replacement="numpy.asarray"), str(tmp_path))
     prompt = ex.build_prompt("numpy", "1.26.4", "2.0.0", findings)
-    assert prompt.startswith("Upgrading `numpy` from 1.26.4 to 2.0.0. 1 place(s)")
+    assert prompt.startswith("Upgrading `numpy` from 1.26.4 to 2.0.0. 1 place in the code breaks")
     assert "Verified replacement in 2.0.0: `numpy.asarray`" in prompt
     assert "```python\n" in prompt and "y = np.asfarray(x)" in prompt
 
@@ -122,8 +123,7 @@ def test_missing_package_is_a_clear_error(monkeypatch):
 
 
 def run_cli(monkeypatch, app, tmp_path, args, client=None):
-    from depshift import cli
-    monkeypatch.setattr(cli, "_run_single_check", lambda *a, **k: result_for(app))
+    monkeypatch.setattr(cli, "run_check", lambda *a, **k: result_for(app))
     if client is not None:
         monkeypatch.setattr(ex, "make_client", lambda: client)
     return CliRunner().invoke(cli.main, ["explain", "numpy", "2.0.0", "-d", str(tmp_path), *args])
@@ -143,5 +143,80 @@ def test_cli_streams_and_reports_refusal(monkeypatch, app, tmp_path):
     res = run_cli(monkeypatch, app, tmp_path, ["--effort", "medium"],
                   client=FakeClient(FakeStream(["advice text"], stop="refusal")))
     assert res.exit_code == 0, res.output
-    assert "Sending 1 finding(s) and 4 lines of your code" in res.output
+    assert "Sending 1 finding and 4 lines of your code" in res.output
     assert "advice text" in res.output and "Claude declined" in res.output
+
+
+# ── API errors become plain, actionable messages ──────────────────────────────
+
+def _api_errors():
+    anthropic = pytest.importorskip("anthropic")
+    import httpx
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+
+    def status(cls, code):
+        return cls(f"error {code}", response=httpx.Response(code, request=request), body=None)
+    return [
+        (status(anthropic.AuthenticationError, 401), "rejected the credentials"),
+        (status(anthropic.PermissionDeniedError, 403), "refused the request: error 403"),
+        (status(anthropic.RateLimitError, 429), "Rate limited"),
+        (anthropic.APIConnectionError(request=request), "network error"),
+        (status(anthropic.InternalServerError, 500), "Claude API error 500: error 500"),
+    ]
+
+
+def test_api_errors_are_explained():
+    for error, message in _api_errors():
+        with pytest.raises(ex.ExplainError, match=message):
+            ex.stream_advice(FakeClient(FakeStream([], error=error)), "P", print)
+
+
+def test_unrelated_type_errors_are_not_hidden():
+    pytest.importorskip("anthropic")
+    with pytest.raises(TypeError, match="something else"):
+        ex.stream_advice(FakeClient(FakeStream([], error=TypeError("something else"))), "P", print)
+
+
+def test_make_client_without_credentials(monkeypatch):
+    anthropic = pytest.importorskip("anthropic")
+
+    def no_key(*a, **k):
+        raise anthropic.AnthropicError("no key")
+    monkeypatch.setattr(anthropic, "Anthropic", no_key)
+    with pytest.raises(ex.ExplainError, match="No Claude API credentials"):
+        ex.make_client()
+    monkeypatch.setattr(anthropic, "Anthropic", lambda: "client")
+    assert ex.make_client() == "client"
+
+
+# ── findings ──────────────────────────────────────────────────────────────────
+
+def test_findings_limit_auto_fixes_and_missing_files(tmp_path):
+    (tmp_path / "a.py").write_text("\n".join(f"line{i}" for i in range(1, 11)) + "\n")
+    risks = [{"file": str(tmp_path / "a.py"), "line": n, "severity": "breaking", "api": f"x.f{n}",
+              "change_description": "gone"} for n in (2, 5, 9)]
+    risks.append({"file": str(tmp_path / "missing.py"), "line": 1, "severity": "breaking", "api": "x.g",
+                  "change_description": ""})
+    found = ex.findings_from({"risks": risks}, str(tmp_path), fixable={(str(tmp_path / "a.py"), None, 5): "x.f5 -> y"})
+    assert [f["where"] for f in found] == ["a.py:2", "a.py:5", "a.py:9", "missing.py:1"]
+    assert found[1]["auto"] == "x.f5 -> y" and found[3]["code"] == ""
+    assert "> 2 | line2" in found[0]["code"] and "  5 | line5" in found[0]["code"]
+    assert len(ex.findings_from({"risks": risks}, str(tmp_path), limit=2)) == 2
+    prompt = ex.build_prompt("x", "1", "2", found)
+    assert "4 places in the code break" in prompt and "already rewrites this automatically (x.f5 -> y)" in prompt
+    assert "(code not available)" in prompt and "Release note: (none)" in prompt
+
+
+def test_notebook_findings_show_the_cell(tmp_path):
+    import json
+    nb = {"cells": [{"cell_type": "code", "source": ["import x\n", "x.old()\n"], "metadata": {}, "outputs": [],
+                     "execution_count": None}],
+          "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
+    path = tmp_path / "n.ipynb"
+    path.write_text(json.dumps(nb))
+    risk = {"file": str(path), "line": 7, "cell": 1, "cell_line": 2, "severity": "breaking", "api": "x.old",
+            "change_description": "removed"}
+    (found,) = ex.findings_from({"risks": [risk]}, str(tmp_path))
+    assert found["where"] == "n.ipynb cell 1, line 2" and "> 2 | x.old()" in found["code"]
+    path.write_text("not json")
+    assert ex.findings_from({"risks": [risk]}, str(tmp_path))[0]["code"] == ""

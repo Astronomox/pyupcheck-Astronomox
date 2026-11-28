@@ -24,10 +24,11 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Static
 
+from depshift.output import diff_text
 from depshift.safe import plain, plain_all
 
 if TYPE_CHECKING:  # annotations only: cli imports this module lazily
-    from depshift.cli import FileChange, MigrationPlan
+    from depshift.project import FileChange, MigrationPlan
 
 PENDING = "pending"
 
@@ -78,21 +79,6 @@ def _indent(text: Text, n: int = 2) -> Padding:
     return Padding(text, (0, 0, 0, n))
 
 
-def _diff_text(diff: str) -> Text:
-    out = Text()
-    for line in diff.splitlines():
-        if line.startswith(("+++", "---")):
-            style = "bold #8a8f98"
-        elif line.startswith("@@"):
-            style = "#79C0FF"
-        elif line.startswith("+"):
-            style = "#7EE787"
-        elif line.startswith("-"):
-            style = "#FF6B6B"
-        else:
-            style = "#E7E5E4"
-        out.append(plain(line) + "\n", style=style)
-    return out
 
 
 def places(usages: list, risks: list[dict], root: str) -> list[dict]:
@@ -151,7 +137,7 @@ def usage_summary(rows: list[dict] | None, limit_files: int = 8, lines_per_file:
 def details(r: dict | None, name: str, root: str, show_low: bool = False,
             rows: list[dict] | None = None) -> Group:
     """What the right-hand pane shows for one package."""
-    from depshift.cli import _distinct, _is_major, tidy_note
+    from depshift.output import distinct, is_major, tidy_note
 
     if r is None:
         return Group(Text(name, style="bold"), Text("Checking…", style="#8a8f98"), *usage_summary(rows))
@@ -159,7 +145,7 @@ def details(r: dict | None, name: str, root: str, show_low: bool = False,
     _, label, style = _STATUS[st]
     cur, new = r.get("current_version") or "?", r.get("target_version") or "?"
     head = Text.assemble((r["package"], "bold"), "  ", (cur, "#8a8f98"), " → ", (new, "bold"))
-    if _is_major(cur, new):
+    if is_major(cur, new):
         head.append("  major", style="#F2CC60")
     parts: list[RenderableType] = [
         head, Text(label.format(n=r.get("breaking_count") or r.get("deprecated_count") or 0), style=style), Text()]
@@ -177,7 +163,7 @@ def details(r: dict | None, name: str, root: str, show_low: bool = False,
         parts.append(Text(f"{n} line{'s' if n != 1 else ''} in your code use{'s' if n == 1 else ''} it.",
                           style="#8a8f98"))
 
-    risks = _distinct(r.get("risks", []))
+    risks = distinct(r.get("risks", []))
     hard = [k for k in risks if k["severity"] != "warning"]
     if hard:
         parts += [Text(), Text("What breaks", style="bold underline")]
@@ -330,7 +316,7 @@ class MigrateScreen(ModalScreen[bool]):
                                         notebook.cells_text(fc.notebook, fc.after))
                 else:
                     diff = unified_diff(fc.rel, fc.before, fc.after)
-                body.append(_diff_text(diff))
+                body.append(diff_text(diff))
             if plan.manual:
                 n = len(plan.manual)
                 body += [Text(), Text(f"{n} change{'s need' if n != 1 else ' needs'} you", style="bold #F2CC60")]
@@ -532,7 +518,7 @@ class PyupcheckApp(App):
     # ── table ─────────────────────────────────────────────────────────────
 
     def cells(self, name: str) -> list:
-        from depshift.cli import _is_major
+        from depshift.output import is_major
         r = self.results.get(name)
         st = status_of(r)
         _, label, style = _STATUS[st]
@@ -540,7 +526,7 @@ class PyupcheckApp(App):
         if r is None:
             return [Text(name, style="bold"), Text(""), Text(""), Text(label, style=style), Text("")]
         cur, new = r.get("current_version") or "?", r.get("target_version") or "?"
-        latest = Text(new, style="#F2CC60" if _is_major(cur, new) else "")
+        latest = Text(new, style="#F2CC60" if is_major(cur, new) else "")
         uses = "" if st in ("current", "unchecked") else ("—" if st == "unused" else str(_uses(r)))
         return [Text(name, style="bold"), Text(cur, style="#8a8f98"), latest,
                 Text(label.format(n=n), style=style), Text(uses, justify="right")]
@@ -699,8 +685,8 @@ class PyupcheckApp(App):
 
 def run(directory: str, github_token: str | None = None, deep: bool = False, jobs: int = 8,
         exclude=()) -> None:
-    from depshift.cli import check_dependency, plan_project_migration, project_dependencies
     from depshift.config import load_config
+    from depshift.project import check_dependency, plan_project_migration, project_dependencies
 
     directory = os.path.abspath(directory)
     cfg = load_config(directory)

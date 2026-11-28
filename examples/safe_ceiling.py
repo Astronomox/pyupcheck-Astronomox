@@ -8,12 +8,13 @@ Usage:
 """
 
 import sys
-from packaging.version import Version, InvalidVersion
 
-from depshift.changelog import get_available_versions, get_changes_between
-from depshift.scanner import scan_directory
+from packaging.version import InvalidVersion, Version
+
 from depshift.analyzer import analyze
+from depshift.changelog import get_available_versions, get_changes_between
 from depshift.config import load_config
+from depshift.scanner import scan_directory
 
 
 def find_safe_ceiling(package: str, directory: str = "."):
@@ -68,9 +69,8 @@ def find_safe_ceiling(package: str, directory: str = "."):
         if breaking:
             print(f"  {vs}: BREAKING ({len(breaking)} issues) — stop here")
             break
-        else:
-            safe_ceiling = vs
-            print(f"  {vs}: safe")
+        safe_ceiling = vs
+        print(f"  {vs}: safe")
 
     if safe_ceiling:
         print(f"\nSafe ceiling: {package}=={safe_ceiling}")

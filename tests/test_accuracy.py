@@ -7,6 +7,7 @@ import textwrap
 
 import pytest
 
+from depshift import project
 from depshift.apisurface import build_surface, diff_surfaces
 from depshift.changelog import (
     ChangeReport,
@@ -190,26 +191,23 @@ def test_rate_limit_is_an_error_not_empty(monkeypatch):
 # ── CLI version handling ──────────────────────────────────────────────────────
 
 def test_latest_allowed_respects_constraint(monkeypatch):
-    import depshift.cli as cli
-    monkeypatch.setattr(cli, "get_pypi_info", lambda p: {"releases": {
+    monkeypatch.setattr(project, "get_pypi_info", lambda p: {"releases": {
         "1.0": [{}], "2.5": [{}], "3.0": [{}], "3.1rc1": [{}], "2.9": [{"yanked": True}],
     }})
-    assert cli.latest_allowed_version("pkg", ">=2,<3") == "2.5"
-    assert cli.latest_allowed_version("pkg") == "3.0"
+    assert project.latest_allowed_version("pkg", ">=2,<3") == "2.5"
+    assert project.latest_allowed_version("pkg") == "3.0"
 
 
 def test_specifier_and_lower_bound():
-    import depshift.cli as cli
-    assert cli.specifier_of("flask>=2.0,<3") in (">=2.0,<3", "<3,>=2.0")
-    assert cli._lower_bound(">=2.0,<3") == "2.0"
-    assert cli._lower_bound("<3") is None
+    assert project.specifier_of("flask>=2.0,<3") in (">=2.0,<3", "<3,>=2.0")
+    assert project.lower_bound(">=2.0,<3") == "2.0"
+    assert project.lower_bound("<3") is None
 
 
 def test_unknown_current_is_not_checked(monkeypatch, tmp_path):
-    import depshift.cli as cli
     from depshift.config import load_config
-    monkeypatch.setattr(cli, "get_installed_version", lambda p: None)
-    r = cli._run_single_check("somepkg", "2.0", str(tmp_path), None, load_config(str(tmp_path)))
+    monkeypatch.setattr(project, "get_installed_version", lambda p: None)
+    r = project.run_check("somepkg", "2.0", str(tmp_path), None, load_config(str(tmp_path)))
     assert r["unchecked"] is True
     assert r["current_version"] is None
     assert r["warnings"]
@@ -425,11 +423,10 @@ def test_method_param_change_matches_instance_call_only():
 
 
 def test_exact_pin_does_not_cap_target_and_no_downgrades():
-    import depshift.cli as cli
-    assert cli._is_exact_pin("==2.25.0")
-    assert not cli._is_exact_pin(">=2,<3")
-    assert cli._not_newer("7.1.2", "8.5.1")
-    assert not cli._satisfies("8.5.1", ">=7.0,<8")
+    assert project.is_exact_pin("==2.25.0")
+    assert not project.is_exact_pin(">=2,<3")
+    assert project.not_newer("7.1.2", "8.5.1")
+    assert not project.satisfies("8.5.1", ">=7.0,<8")
 
 
 def test_removed_reexport_detected():
