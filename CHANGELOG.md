@@ -16,6 +16,7 @@ All notable changes to pyupcheck are documented here.
 - Lines no longer end in spaces (rich pads table cells and wrapped text); a status badge's coloured padding is kept
 
 ### Internal
+- CI also runs the tests without the optional extras, as the release does and most people install: a UI test that needed Textual stopped the first 0.22.1 release run before anything was published
 - Coverage counts branches now, at 90%; CI fails below 89%. Release-note lookups are tested end to end on real release notes (Flask, NumPy, requests) served by a fake web, covering every source and failure; `changelog.py` 80% to 90%, `tui.py` 82% to 96%
 
 ## [0.22.0] - 2026-11-28
