@@ -69,11 +69,26 @@ def _without_trailing_blanks(segments, colours: bool = True):
 
 class TidyConsole(Console):
     """A rich Console whose lines never end in spaces (copied output, logs
-    and CI annotations stay clean). Everything else is rich's own."""
+    and CI annotations stay clean). Everything else is rich's own.
 
-    def _render_buffer(self, buffer):
-        colours = self.color_system is not None and not self.no_color
-        return super()._render_buffer(_without_trailing_blanks(buffer, colours))
+    ``_render_buffer`` is rich's (13 to 15) internal step from segments to
+    text. Trimming is cosmetic, so it must never cost output: if a rich
+    release renames that step this override is simply not called, and if it
+    changes how the step is called, or trimming fails, the untrimmed
+    segments are rendered instead."""
+
+    def _render_buffer(self, buffer, *args, **kwargs):
+        segments = list(buffer)
+        try:
+            colours = self.color_system is not None and not self.no_color
+            trimmed = list(_without_trailing_blanks(segments, colours))
+        except Exception:
+            trimmed = segments
+        try:
+            return super()._render_buffer(trimmed, *args, **kwargs)
+        except TypeError:
+            # a rich whose step takes different arguments: let it render as it would
+            return super()._render_buffer(segments, *args, **kwargs)
 
 
 # highlight=False: pyupcheck picks its colours; rich's automatic highlighting
@@ -428,7 +443,8 @@ def print_summary(results: list[dict], elapsed: float | None = None) -> None:
                     failed[src] = failed.get(src, 0) + 1
     for src, n in sorted(failed.items(), key=lambda kv: -kv[1]):
         limited = "GitHub" in src and ("403" in src or "429" in src)
-        hint = " Set GITHUB_TOKEN for GitHub's higher limits." if limited else ""
+        hint = (" Sign in with the GitHub CLI (gh auth login) or set GITHUB_TOKEN for GitHub's higher limits."
+                if limited else "")
         packages = f"{n} package{'s' if n != 1 else ''}"
         console.print(f"[magenta]note:[/] [dim]couldn't read {esc(src)} for {packages}.{hint}[/]")
     if unchecked:

@@ -1,5 +1,6 @@
 """Fetch changelog and deprecation data for a package version."""
 
+import os
 import re
 from dataclasses import dataclass, field
 
@@ -129,6 +130,51 @@ def extract_github_repo(pypi_info: dict) -> tuple[str, str] | None:
     return None
 
 
+_TOKEN = re.compile(r"^[A-Za-z0-9_]{20,255}$")
+_found_token: list = []  # [token or None] once looked up: gh is asked once per run
+
+
+def gh_cli_token(project_dir: str | None = None) -> str | None:
+    """The token of the GitHub CLI (``gh auth token``), if it is installed
+    and signed in: GitHub allows 5,000 API requests an hour with it, 60
+    without. Asked once per run; never a ``gh`` inside the current or
+    project directory (Windows looks there first, and the project may be
+    someone else's); off with PYUPCHECK_NO_GH_AUTH=1."""
+    if _found_token:
+        return _found_token[0]
+    token = None
+    import shutil
+
+    # gh, found on PATH and run without a shell, with a fixed argument list
+    import subprocess  # nosec B404
+    exe = None if os.environ.get("PYUPCHECK_NO_GH_AUTH") else shutil.which("gh")
+    if exe:
+        real = os.path.realpath(exe)
+        here = [os.path.realpath(d) for d in (os.getcwd(), project_dir) if d]
+        if not any(real == d or real.startswith(d + os.sep) for d in here):
+            try:
+                out = subprocess.run([real, "auth", "token", "--hostname", "github.com"],  # nosec B603
+                                     capture_output=True, text=True, timeout=5, check=False)
+                candidate = out.stdout.strip()
+                if out.returncode == 0 and _TOKEN.match(candidate):
+                    token = candidate
+            except (OSError, subprocess.SubprocessError, ValueError):
+                token = None
+    _found_token.append(token)
+    return token
+
+
+def github_token_for(explicit: str | None) -> str | None:
+    """The token to use: --github-token / GITHUB_TOKEN, else GH_TOKEN, else
+    the GitHub CLI's. It is only ever sent to GitHub's own hosts."""
+    return explicit or os.environ.get("GH_TOKEN") or gh_cli_token()
+
+
+# set once anonymous API requests are rate limited: for the rest of the run
+# the releases feed is read instead of spending requests on 403s
+_api_exhausted: list = []
+
+
 def fetch_github_releases(owner: str, repo: str, token: str | None = None) -> list[dict]:
     """Fetch releases from GitHub (cached)."""
     if not valid_repo(owner, repo):
@@ -141,6 +187,12 @@ def fetch_github_releases(owner: str, repo: str, token: str | None = None) -> li
     headers = {"Accept": "application/vnd.github+json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    elif _api_exhausted:
+        feed = fetch_releases_feed(owner, repo)
+        if feed:
+            cache_set(key, feed)
+            return feed
+        raise RuntimeError("HTTP 403: GitHub API rate limit reached")
 
     releases = []
     page = 1
@@ -152,6 +204,8 @@ def fetch_github_releases(owner: str, repo: str, token: str | None = None) -> li
             headers.pop("Authorization")
             resp = http_get(url, headers=headers, timeout=15, follow_redirects=True)
         if resp.status_code != 200:
+            if resp.status_code in (403, 429) and "Authorization" not in headers:
+                _api_exhausted.append(True)
             if page == 1 and resp.status_code in (401, 403, 429):
                 # rate limited: the releases feed isn't, though it only has
                 # the latest releases. If that fails too, say so rather than
@@ -265,7 +319,8 @@ _RENAME_PATTERNS = [
 # lines that describe a fix, not an API change ("Fixed crash when removing items")
 _FIX_LINE = re.compile(r"^(fix(e[sd])?|fixing|correct(ed|s)?|resolve[sd]?|prevent(ed|s)?)\b", re.IGNORECASE)
 
-_API_BACKTICK = re.compile(r"`{1,2}:?(?:\w+:)*`?~?\.?([a-zA-Z_][\w.]*(?:\(\))?)`{1,2}")
+# ``@pytest.fixture`` (a decorator) names pytest.fixture
+_API_BACKTICK = re.compile(r"`{1,2}:?(?:\w+:)*`?[~@]?\.?([a-zA-Z_][\w.]*(?:\(\))?)`{1,2}")
 _API_DOTTED = re.compile(r"(?:^|[\s(])([a-zA-Z_]\w*\.[a-zA-Z_][\w.]*(?:\(\))?)")
 _REPLACEMENT = re.compile(
     r"(?:use|in favou?r of|replaced (?:by|with)|superseded by|renamed to|moved to|instead,? use|"
@@ -311,6 +366,44 @@ _PARAM_OF = re.compile(
     r"`{1,2}([a-zA-Z_]\w*)`{1,2}\s+(?:option|param|parameter|argument|arg|kwarg|keyword argument|keyword)s?"
     r"\s+(?:of|to|in|for|from)\s+(?:the\s+)?(?::\w+:)?`{1,2}~?\.?([a-zA-Z_][\w.]*(?:\(\))?)`{1,2}",
     re.IGNORECASE)
+# "Passing a string argument as ``only`` to ``fields.Nested``": Nested.only
+_ARG_AS = re.compile(
+    r"\b(?:option|param|parameter|argument|arg|kwarg|keyword argument|keyword)s?\s+(?:as|named|called)\s+"
+    r"`{1,2}([a-zA-Z_]\w*)`{1,2}\s+(?:to|of|in|for|on)\s+(?:the\s+)?(?::\w+:)?`{1,2}~?\.?"
+    r"([a-zA-Z_][\w.]*(?:\(\))?)`{1,2}", re.IGNORECASE)
+# "Rename ``DateTime``'s ``dateformat`` Meta option": DateTime.dateformat
+_POSSESSIVE = re.compile(r"(?::\w+:)?`{1,2}~?\.?([a-zA-Z_][\w.]*?)(?:\(\))?`{1,2}['\u2019]s\s+"
+                         r"`{1,2}([a-zA-Z_]\w*)`{1,2}")
+
+
+_CONDITIONAL = re.compile(r"^\W*(?:if|when|whenever|unless)\b", re.IGNORECASE)
+
+
+class _ParamOf:
+    """A (parameter, owner) pair found in a note, shaped like _PARAM_OF's match."""
+
+    def __init__(self, param: str, owner: str):
+        self._groups = (param, owner)
+
+    def group(self, i: int) -> str:
+        return self._groups[i - 1]
+
+
+def _param_of(line: str):
+    """The parameter (or option, or member) of one API that a note is about,
+    as group(1) and the API as group(2); None when the note names none."""
+    m = _PARAM_OF.search(line)
+    if m:
+        return m
+    m = _ARG_AS.search(line)
+    if m:
+        return _ParamOf(m.group(1), m.group(2))
+    m = _POSSESSIVE.search(line)
+    if m:
+        return _ParamOf(m.group(2), m.group(1))
+    return None
+
+
 _KEYWORD_FROM = re.compile(
     r"\b(?:option|param|parameter|argument|arg|kwarg|keyword argument|keyword)s?\s+"
     r"`{1,2}([a-zA-Z_]\w*)`{1,2}\s+(?:from|of|in(?!\s+favou?r)|to|for)\b", re.IGNORECASE)
@@ -701,12 +794,17 @@ def _classify_item(line: str, section: str | None, version: str) -> list[ChangeE
         if not apis:
             conf = "low"
 
+    if _CONDITIONAL.match(_prose(line)):
+        # "If only a name is passed to ``option()``, Click suggests...": what
+        # happens under a condition, not a change to every use of the API
+        conf = "low"
+
     repl = _REPLACEMENT.search(line)
     replacement = repl.group(1).rstrip(".") if repl else None
     targets = [a for a in apis if a != replacement] or (apis[:1] if apis else ["unknown"])
     if repl and _qualified(line, repl):
         replacement = None  # advice ("use X with a float dtype"), not a drop-in
-    param_of = _PARAM_OF.search(line)
+    param_of = _param_of(line)
     kw_from = None if param_of else _KEYWORD_FROM.search(line)
     if param_of:
         # "The ``even`` argument of ``simpson`` has been removed": simpson.even
@@ -1474,6 +1572,7 @@ def collect_changes(package: str, current_version: str, target_version: str,
     the last that many), for deprecations whose announced removal falls in
     the upgrade and for the replacements they name."""
     global _github_token
+    github_token = github_token_for(github_token)
     if github_token:
         _github_token = github_token
     ok: list[str] = []

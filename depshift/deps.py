@@ -51,6 +51,10 @@ def parse_requirement_line(line: str, source: str) -> Dependency | None:
         return None
     # drop environment markers and per-requirement options
     line = line.split(";")[0].split(" --")[0].strip()
+    if re.match(r"^[A-Za-z0-9][\w.-]*\s*(?:\[[^\]]*\])?\s*@\s*\S", line):
+        # "name @ git+https://..." / "name @ file:///...": installed from
+        # there, not from PyPI. A namesake on PyPI is a different package
+        return None
     m = _REQ_LINE.match(line)
     if not m:
         return None
@@ -170,9 +174,12 @@ def parse_pyproject_toml(path: str) -> list[Dependency]:
         lock = os.path.join(os.path.dirname(path), "pixi.lock")
         raw_deps.extend(pixi_requirements(pixi, pixi_lock_names(lock) if os.path.isfile(lock) else None))
 
+    # [tool.uv.sources]: names installed from a folder, the workspace, git or a URL
+    elsewhere = {normalize_name(n) for n, src in (((tool.get("uv") or {}).get("sources") or {}).items())
+                 if isinstance(src, dict) and any(k in src for k in ("path", "workspace", "git", "url"))}
     for raw in raw_deps:
         d = parse_requirement_line(raw, source=os.path.basename(path))
-        if d:
+        if d and d.name not in elsewhere:
             deps.append(d)
     return deps
 
@@ -184,6 +191,8 @@ def _poetry_style(table) -> list[str]:
         if name.lower() == "python":
             continue
         if isinstance(spec, dict):
+            if any(k in spec for k in ("path", "git", "url", "file")):
+                continue  # installed from a folder, repository or URL, not PyPI
             spec = spec.get("version", "*")
         if isinstance(spec, str):
             spec = spec.strip()
@@ -385,16 +394,54 @@ def is_workspace_member(rel_dir: str, members: list[str], exclude: list[str]) ->
             and not any(fnmatchcase(rel_dir, x) for x in exclude))
 
 
+def _local_paths(pyproject: dict) -> list[str]:
+    """Folders the project installs dependencies from: Poetry ``path =``,
+    uv ``[tool.uv.sources]`` paths, and ``name @ file:...`` references
+    (PDM writes ``file:///${PROJECT_ROOT}/...``)."""
+    out: list[str] = []
+    tool = pyproject.get("tool") or {}
+    poetry = tool.get("poetry") or {}
+    tables = [poetry.get("dependencies") or {}, poetry.get("dev-dependencies") or {}]
+    tables += [(g or {}).get("dependencies") or {} for g in (poetry.get("group") or {}).values()]
+    for table in tables:
+        for spec in table.values():
+            if isinstance(spec, dict) and isinstance(spec.get("path"), str):
+                out.append(spec["path"])
+    for src in ((tool.get("uv") or {}).get("sources") or {}).values():
+        if isinstance(src, dict) and isinstance(src.get("path"), str):
+            out.append(src["path"])
+    project = pyproject.get("project") or {}
+    reqs = list(project.get("dependencies") or [])
+    for group in (project.get("optional-dependencies") or {}).values():
+        reqs += list(group or [])
+    for raw in reqs:
+        m = re.search(r"@\s*file:(?://)?(\S+)", raw) if isinstance(raw, str) else None
+        if m:
+            out.append(m.group(1).replace("${PROJECT_ROOT}", ".").lstrip("/") if "${PROJECT_ROOT}" in m.group(1)
+                       else m.group(1))
+    return out
+
+
 def workspace_members(directory: str) -> list[str]:
     """The member folders of the uv workspace rooted here, relative to it:
     folders matching ``[tool.uv.workspace] members`` (minus ``exclude``)
     that have a pyproject.toml. Never a folder outside the project, also
     not through a symlink."""
-    members, exclude = workspace_patterns(_read_toml(os.path.join(directory, "pyproject.toml")))
-    if not members:
-        return []
+    root_toml = _read_toml(os.path.join(directory, "pyproject.toml"))
+    members, exclude = workspace_patterns(root_toml)
     root = os.path.realpath(directory)
     found = []
+    # local path dependencies inside the project are its members too (a
+    # Poetry, PDM or Hatch monorepo has no workspace table)
+    for rel in _local_paths(root_toml):
+        path = os.path.join(directory, rel)
+        real = os.path.realpath(path)
+        rel_norm = os.path.relpath(real, root).replace(os.sep, "/")
+        if (not os.path.isabs(rel) and real != root and real.startswith(root + os.sep)
+                and os.path.isfile(os.path.join(real, "pyproject.toml")) and rel_norm not in found):
+            found.append(rel_norm)
+    if not members:
+        return found
     for pattern in members:
         for path in sorted(glob.glob(os.path.join(directory, pattern))):
             rel = os.path.relpath(path, directory).replace(os.sep, "/")

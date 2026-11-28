@@ -19,6 +19,10 @@ def _no_network(monkeypatch):
     monkeypatch.setattr(depshift.apisurface, "http_get", blocked)
     # the URL policy resolves host names: answer "public" without DNS
     monkeypatch.setattr(depshift.http, "_resolves_internal", lambda host: False)
+    # never use the developer's own GitHub CLI token, or carry state between tests
+    monkeypatch.setattr(depshift.changelog, "_found_token", [None])
+    monkeypatch.setattr(depshift.changelog, "_api_exhausted", [])
+    monkeypatch.delenv("GH_TOKEN", raising=False)
 
 
 @pytest.fixture(autouse=True)

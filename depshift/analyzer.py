@@ -80,6 +80,19 @@ def match_usage_to_change(usage: Usage, change: ChangeEntry,
         if param in usage.kwargs and owner is not None and owner == callee:
             return Risk(usage=usage, change=change, severity=sev())
 
+    value = _PASSING_VALUE.search(change.description)
+    if value and usage.usage_type == "function_call" and not _passes(usage.code, value.group(1)):
+        # "Passing the string ``"self"`` to ``fields.Nested`` is deprecated":
+        # only calls that pass that value
+        return None
+
+    if _POSITIONAL.search(change.description) and not _POSITIONAL_ONLY.search(change.description):
+        # "Passing arguments to pytest.fixture() as positional arguments is
+        # deprecated": only calls that pass a positional argument
+        positional = next((int(a[4:]) for a in usage.call_args or [] if a.startswith("pos:")), 0)
+        if positional == 0:
+            return None
+
     if _is_param_change(change):
         # "The ``root_path`` parameter in ``FastAPI()`` is deprecated" concerns
         # calls that pass root_path (handled above), not every use of FastAPI
@@ -128,6 +141,22 @@ def match_usage_to_change(usage: Usage, change: ChangeEntry,
     return None
 
 
+# "Passing the string ``"self"`` to", "passing ``None`` as": one value, quoted or a constant
+_PASSING_VALUE = re.compile(
+    r"\bpass(?:ing|ed)?\s+(?:the\s+)?(?:(?:string|value|literal)\s+)?`{1,2}"
+    r"((?:\"[^\"`]{1,40}\"|'[^'`]{1,40}'|None|True|False))`{1,2}\s+(?:to|as|for|into)\b", re.IGNORECASE)
+
+
+def _passes(code: str, value: str) -> bool:
+    """Does this line of code pass ``value`` (either quote style)?"""
+    if value[:1] in "\"'":
+        inner = value[1:-1]
+        return f'"{inner}"' in code or f"'{inner}'" in code
+    return re.search(rf"\b{value}\b", code) is not None
+
+
+_POSITIONAL = re.compile(r"\bpositional(?:ly)?\s+(?:arguments?|args?|parameters?)\b|\bpositionally\b", re.IGNORECASE)
+_POSITIONAL_ONLY = re.compile(r"\bpositional[- ]only\b|\bkeyword[- ]only\b", re.IGNORECASE)
 _PARAM_WORDS = re.compile(r"\b(?:param(?:eter)?s?|arguments?|args?|kwargs?|keywords?|options?)\b", re.IGNORECASE)
 
 

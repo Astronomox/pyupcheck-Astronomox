@@ -47,6 +47,9 @@ class APISurface:
     bases: dict[str, list[str]] = field(default_factory=dict)
     # public module-level / class-level constants, dotted
     attributes: set[str] = field(default_factory=set)
+    # attributes a class's methods set on instances (``self.root_path = ...``):
+    # only ever evidence that an attribute still exists, never a removal
+    instance_attributes: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -319,12 +322,16 @@ class _SurfaceVisitor(ast.NodeVisitor):
         self.exports: set[str] = set()
         self.bases: dict[str, list[str]] = {}
         self.attributes: set[str] = set()
+        self.instance_attributes: set[str] = set()
         self._class_stack: list[str] = []
         self._depth = 0  # >0 would mean inside a function body (never visited)
         self._literals: dict[str, set[str]] = {}  # module-level NAME = [..]/{..} string literals
         self._deferred: set[str] = set()          # names __getattr__ checks `in` (resolved later)
         self.star_imports: list[tuple[int, str]] = []  # (relative level, module) of `from x import *`
         self.all_names: set[str] | None = None      # __all__, when the module defines one
+        # names imported under another name: Flask 3's
+        # `from .sansio.blueprints import Blueprint as SansioBlueprint`
+        self._aliases: dict[str, str] = {}
 
     def finalize(self):
         """Resolve names a module ``__getattr__`` serves from module-level literals."""
@@ -382,7 +389,9 @@ class _SurfaceVisitor(ast.NodeVisitor):
         dotted = ".".join([*self._class_stack, node.name])
         self.classes.add(dotted)
         self.names.add(node.name)
-        self.bases[dotted] = [name for name in map(_base_name, node.bases) if name]
+        # a base imported under an alias is looked up by its real name, or
+        # everything it defines would look removed from the subclass
+        self.bases[dotted] = [self._aliases.get(name, name) for name in map(_base_name, node.bases) if name]
         self._class_stack.append(node.name)
         for item in node.body:
             if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -416,6 +425,8 @@ class _SurfaceVisitor(ast.NodeVisitor):
                 self.star_imports.append((node.level or 0, node.module or ""))
                 continue
             local = a.asname or a.name
+            if a.asname and a.asname != a.name:
+                self._aliases[a.asname] = a.name.rsplit(".", 1)[-1]
             if self._public(local):
                 self.exports.add(local)
 
@@ -454,6 +465,16 @@ class _SurfaceVisitor(ast.NodeVisitor):
         if node.name == "__getattr__" and not self._class_stack:
             self._getattr_names(node)
             return
+        if self._class_stack:
+            # self.NAME = ... anywhere in a method: an instance attribute
+            cls = ".".join(self._class_stack)
+            for sub in ast.walk(node):
+                targets = sub.targets if isinstance(sub, ast.Assign) else \
+                    [sub.target] if isinstance(sub, (ast.AnnAssign, ast.AugAssign)) else []
+                for t in targets:
+                    if (isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name) and t.value.id == "self"
+                            and not t.attr.startswith("_")):
+                        self.instance_attributes.add(f"{cls}.{t.attr}")
         if not self._public(node.name):
             return
         dotted = ".".join([*self._class_stack, node.name])
@@ -568,6 +589,8 @@ def build_surface(version: str, sources: dict[str, list[str]],
                 surface.bases[f"{module_path}.{cls}"] = bases
             for attr in visitor.attributes:
                 surface.attributes.add(f"{module_path}.{attr}")
+            for attr in visitor.instance_attributes:
+                surface.instance_attributes.add(f"{module_path}.{attr}")
             for cls in visitor.classes:
                 surface.classes.add(f"{module_path}.{cls}")
             for fname, sig in visitor.functions.items():
@@ -642,7 +665,7 @@ def _resolve_star_imports(surface: APISurface, stars: dict[str, list[tuple[int, 
 
 def extract_surface(package: str, version: str, _follow: bool = True) -> APISurface | None:
     """Download a version and extract its public API surface (cached)."""
-    key = f"surface8:{package}:{version}"
+    key = f"surface10:{package}:{version}"
     cached = cache_get(key)
     if cached is not None:
         surf = APISurface(version=version)
@@ -655,6 +678,7 @@ def extract_surface(package: str, version: str, _follow: bool = True) -> APISurf
         surf.exports = {k: set(v) for k, v in cached.get("exports", {}).items()}
         surf.bases = cached.get("bases", {})
         surf.attributes = set(cached.get("attributes", []))
+        surf.instance_attributes = set(cached.get("instance_attributes", []))
         return surf
 
     dist = _find_sdist_or_wheel_url(package, version)
@@ -690,6 +714,7 @@ def extract_surface(package: str, version: str, _follow: bool = True) -> APISurf
         "exports": {k: sorted(v) for k, v in surface.exports.items()},
         "bases": surface.bases,
         "attributes": sorted(surface.attributes),
+        "instance_attributes": sorted(surface.instance_attributes),
     })
     return surface
 
@@ -733,6 +758,7 @@ def _surface_of_pinned_deps(package: str, version: str) -> APISurface | None:
             merged.exports.setdefault(k, set()).update(v)
         merged.bases.update(surf.bases)
         merged.attributes |= surf.attributes
+        merged.instance_attributes |= surf.instance_attributes
     return merged
 
 
@@ -745,6 +771,26 @@ def _is_public_api(dotted: str) -> bool:
         if seg in ("tests", "test"):
             return False
     return True
+
+
+def _instance_attribute(surface: APISurface, dotted: str) -> bool:
+    """Is ``dotted`` (Class.attr) set on instances by the class or a base?"""
+    if dotted in surface.instance_attributes:
+        return True
+    cls, _, attr = dotted.rpartition(".")
+    if cls not in surface.classes:
+        return False
+    idx = _classes_by_short(surface)
+    seen, todo = {cls}, [cls]
+    while todo:
+        for base in surface.bases.get(todo.pop(), []):
+            for cand in idx.get(base, []):
+                if f"{cand}.{attr}" in surface.instance_attributes:
+                    return True
+                if cand not in seen:
+                    seen.add(cand)
+                    todo.append(cand)
+    return False
 
 
 def _reachable(surface: APISurface, dotted: str) -> bool:
@@ -991,7 +1037,7 @@ def diff_surfaces(old: APISurface, new: APISurface) -> list[APIChange]:
 
     # removed public constants / attributes
     for attr in old.attributes - new.attributes:
-        if not _is_public_api(attr) or _reachable(new, attr):
+        if not _is_public_api(attr) or _reachable(new, attr) or _instance_attribute(new, attr):
             continue
         parent = attr.rsplit(".", 1)[0]
         if parent in new.modules or parent in new.classes:

@@ -9,7 +9,7 @@
 <meta name="theme-color" content="#FFF8F0" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#141414" media="(prefers-color-scheme: dark)">
 <meta property="og:title" content="pyupcheck: know what breaks before you upgrade">
-<meta property="og:description" content="Finds every line a Python dependency upgrade breaks, before you run pip install. 100% of breaking lines caught on 52 real upgrades, zero false alarms.">
+<meta property="og:description" content="Finds every line a Python dependency upgrade breaks, before you run pip install. 100% of breaking lines caught on 56 real upgrades, zero false alarms.">
 <meta property="og:image" content="https://pyupcheck.vercel.app/banner.png">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://pyupcheck.vercel.app/">
@@ -340,7 +340,7 @@ footer a:hover{text-decoration:underline}
   <h2 id="proof-h" class="sr">Measured accuracy</h2>
   <div class="wrap">
     <div class="stats">
-      <div class="stat reveal"><div class="num">100%</div><div class="lbl">of breaking lines caught across 52 real upgrades</div><span class="chip" style="background:var(--mint);color:#1a1a1a">deep mode</span></div>
+      <div class="stat reveal"><div class="num">100%</div><div class="lbl">of breaking lines caught across 56 real upgrades</div><span class="chip" style="background:var(--mint);color:#1a1a1a">deep mode</span></div>
       <div class="stat reveal"><div class="num">0</div><div class="lbl">false alarms on those upgrades, including 8 that break nothing</div><span class="chip" style="background:var(--pink);color:#1a1a1a">precision</span></div>
       <div class="stat reveal"><div class="num">96.7%</div><div class="lbl">of the 1,000 most-downloaded PyPI packages can be deep-checked</div><span class="chip" style="background:var(--sky);color:#1a1a1a">reach</span></div>
       <div class="stat reveal"><div class="num">8/8</div><div class="lbl">automatic rewrites came out exactly as a person would write them</div><span class="chip" style="background:var(--yel);color:#1a1a1a">migrate</span></div>
@@ -512,7 +512,7 @@ footer a:hover{text-decoration:underline}
     <div class="faq">
       <details class="reveal"><summary>Does it install or run the packages it checks?</summary><p>No. It downloads the published wheel or source of each version and reads it as text. Nothing is imported or executed, so checking a package can't run its code.</p></details>
       <details class="reveal"><summary>How is this different from Dependabot or Renovate?</summary><p>They tell you a new version exists and open the PR. pyupcheck tells you what that PR breaks in <em>your</em> code, line by line, and can fix it. Use them together: the GitHub Action comments on their PRs.</p></details>
-      <details class="reveal"><summary>What does “deep mode” cost?</summary><p>Time: it downloads both versions of each package (a few seconds each, cached afterwards). It's what reaches 100% on the benchmark; changelog-only mode is faster and catches about 81%, with no false alarms.</p></details>
+      <details class="reveal"><summary>What does “deep mode” cost?</summary><p>Time: it downloads both versions of each package (a few seconds each, cached afterwards). It's what reaches 100% on the benchmark; changelog-only mode is faster and catches about 83%, with no false alarms.</p></details>
       <details class="reveal"><summary>Does <code>explain</code> send my code anywhere?</summary><p>Only when you run it, and only the few lines around each breaking usage, plus the release note. It says how much it's about to send first, and <code>--dry-run</code> prints the exact request without sending it. Everything else runs locally.</p></details>
       <details class="reveal"><summary>Which projects does it understand?</summary><p>requirements files, <code>pyproject.toml</code> (PEP 621, Poetry, PDM, uv, pixi), Pipfile, setup.cfg, setup.py, conda <code>environment.yml</code> and <code>pixi.toml</code>, plus all the major lockfiles. Type stubs and Jupyter notebooks are scanned too.</p></details>
     </div>
