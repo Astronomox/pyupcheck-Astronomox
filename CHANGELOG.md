@@ -4,6 +4,27 @@ All notable changes to pyupcheck are documented here.
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-11-28
+
+### Added
+- `review` shows its results in the terminal the way `check-all` does when you run it yourself, and writes Markdown when piped or with `-o`; `--format terminal|md` chooses
+- `migrate` is laid out in two parts, what pyupcheck fixes (with a coloured diff) and what needs you, and exits 1 while manual changes remain or a file couldn't be written
+- `explain --dry-run` shows the exact prompt in a panel and ends by confirming nothing was sent
+
+### Changed
+- Every command fits the terminal it runs in, from a 40-column split pane up. Tables measure their columns and pick the widest layout that fits: with "Your code", without it, with the two version columns merged, then just the package and its status. The status is never cut short and the package name gives way first. On narrow terminals `outdated`, `fix` and `scan` list each row with its details under it, and a finding's code moves to a line of its own instead of being cut off
+- `review`'s git errors say what's wrong ("isn't a git repository", "git isn't installed") instead of showing git's output
+
+### Fixed
+- `watch` said "1 packages" and "1 direct dependencies"; `outdated --safe` said "usage(s)"
+- `diff`, `ci-setup` and some progress lines printed package names, versions, paths and error text as rich markup, so a name like `[red]x` changed how the output looked; they're shown exactly as written now
+- Release notes with code like ``np.cast[dtype](arg)`` lost the `(arg)` in pull-request comments: it was taken for a link. Code spans are now kept exactly, and only real link targets are removed
+
+### Internal
+- `cli.py` held every command and their logic, with module-level state for options. It is now three parts: `project.py` (what pyupcheck knows, never printing), `output.py` (presentation, with a frozen `View` instead of globals) and `cli.py` (the commands)
+- Test coverage rose from 80% to 90% (`project.py` 54% to 98%, `cli.py` 64% to 93%, `explain.py` to 100%), and CI now fails below 88%. `tests/test_layout.py` renders every command at seven widths; `examples/` is linted too
+- CONTRIBUTING.md describes the code as it is now
+
 ## [0.21.0] - 2026-11-27
 
 ### Added
